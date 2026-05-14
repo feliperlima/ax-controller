@@ -1,0 +1,192 @@
+get_input_str
+emscripten_request_pointerlock
+env&emscripten_request_fullscreen_strategy
+emscripten_glDeleteQueriesEXT
+emscripten_glBlendEquation
+env"emscripten_glBlendEquationSeparate
+emscripten_glCompileShader
+env!emscripten_glCompressedTexImage2D
+env$emscripten_glCompressedTexSubImage2D
+env"emscripten_glReleaseShaderCompiler
+confirmInput
+cancelInput
+EqE A
+Frequency
+edit_efx
+edit_output
+set_output
+xinput
+edit_input
+set_input
+mouse_input
+color convert from palette mode requested without setting the palette data in it
+iTXt chunk too short to contain required bytes
+Can't request partial sample frames
+glDeleteQueries
+color conversion to palette requested while a color isn't in palette, or index out of bounds
+Frequency
+font_face_requester
+glReleaseShaderCompiler
+glCompileShader
+brief_fader
+invalid compression method in zlib header
+set_phantom_group
+set_mute_group
+usb audio
+USB Audio
+Input channel selection
+glBlendEquation
+given output image colortype or bitdepth not supported for color conversion
+NLEN is not ones complement of LEN in a deflate block
+lv_group_add_obj
+res/media/img_usb_music.png
+tried to decompress zlib or deflate data larger than desired max_output_size
+Renderer doesn't support querying output size
+invalid decompressed idat size
+glBlendEquationSeparate
+lv_group_create
+compressed text unreasonably large
+end of input memory reached without huffman end code
+System audio output device
+Software renderer doesn't have an output surface
+unknown compression method
+illegal PNG compression method
+requested color conversion not supported
+must provide custom zlib function pointer if LODEPNG_COMPILE_ZLIB is not defined
+custom zlib or inflate decompression failed
+custom zlib or deflate compression failed
+STEREO-FX-AUX%d
+FX%d
+F:\zebond\Project\axios16e\code\ui\lvgl\src\core\lv_group.c
+FREQUENCY
+WIFI_GATEWAY
+ETH_GATEWAY
+ST-FX
+DIGI-FX
+glDeleteQueriesEXT
+OUTPUT
+SDL_TEXTINPUT
+SENDS ON FADERS
+OUTPUT CHANNELS
+INPUT CHANNELS
+COMPRESSOR
+GRAPHIC EQUALIZER
+FADER
+FREQ
+PHANTOM GROUP
+MUTE GROUP
+DCA GROUP
+COMP
+group != NULL
+OUTPUT CHANNEL MAPPING
+INPUT CHANNEL MAPPING
+SDL_DROPCOMPLETE
+REVERB GATE
+glCompressedTexImage2D
+glCompressedTexSubImage2D
+GATE REVERB
+empty input buffer given to decoder. Maybe caused by non-existing file?
+required size has become 0?
+==== usb disk pull out ====
+==== usb disk plug in ====
+Gateway:
+required_size > 0
+full_refresh requires at least screen sized draw buffer(s)
+while decoding, invalid compression method encountering in zTXt or iTXt chunk (it must be 0)
+INPUT
+INPUT
+[INFO] usb audio pulled!
+[INFO] usb audio plugged!
+if (document.documentElement.requestFullscreen) {                   document.documentElement.requestFullscreen();               } else if (document.documentElement.mozRequestFullScreen) {         document.documentElement.mozRequestFullScreen();            } else if (document.documentElement.webkitRequestFullscreen) {      document.documentElement.webkitRequestFullscreen();         } else if (document.documentElement.msRequestFullscreen) {          document.documentElement.msRequestFullscreen();             }                                                               
+WIFI_GATEWAY=%s
+ETH_GATEWAY=%s
+ETH_GATEWAY=
+WIFI_GATEWAY=
+     #extension GL_OES_EGL_image_external : require
+EQ$ESDEUdEW
+eQ&eSFeUfeW
+EQ$ESDEUdEW
+eQ&eSFeUfeW
+            <rdf:Seq>
+            </rdf:Seq>
+2EQdVv
+9vifx;;xfiv9
+9vifx;;xfiv9
+EQOF
+PEQv=
+~L8Eq
+MGpEqE
+IjX54.FXB
+*"$<*EQ:
+FXEUZ
+$Fx+
+fX'g]
+8:fX
+oEq:
+.S``FXX9
+%&Mi3eQA
+EEQ097'*
++-SdeQ2)
+Fx=.
+Fx-Bc
+1a||Fxx4$
+?KEQ-
+1_qqEQQ*$
+nqqqqq,Eq
+qqqqq,EqbZg\a2cnm
+!5EQ
+^nEq
+fX&@
+>eQ?Oa>
+ruFxx
+VH5fXE
+\FsmulFeq]
+SIEQE
+H`'FX
+eQ!X&
+)a>5`0FXZa
+DFXX%.
+Fx8*+1
+:BjLd^J*p;<-9+C24FX"JD?C
+F(C09gY74&';,.EQ
+N*FXN:
++eqqy
+$<EQ
+E+?EqC;21
+HPF JK
+eQA)
+pFFxX
+BmEqA
+FFxCE)?
+:Fxx
+#+;@;4;7U$N1EQ8
+|mEqu
+]vFx
+eqqAcc
+FXE*!*>LG
+ggttDnneeqq
+nEQQ
+!lFXXYYFn
+;EFX
+-sEQUe
+T6fx=^^
++K)6-<HEq
+BHuFxH
+8CwS>jFX
+FXX?.f
+Eqq7(
+wfx3
+/2SFXM2%f1-..%;*r&&
+ouYFXJ'
+66uFFx-<&5622)..k
+<1+eQ
+.E#2aJUUO7FXTuh
+fX6,5
+eSk\;0/OeQ
+]EfX
+FTK"2EQ1.@3
+{{VEE=s<FFX{{
+KFXB
+Copyright ?2020-2021 Alibaba (China) Co., Ltd. All rights reserved.Alibaba PuHuiTi 2.0Alibaba PuHuiTi 2 55 RegularHanyi Alibaba-PuHuiTi-2-55-Regular v2.00Version 2.00AlibabaPuHuiTi_2_55_RegularAlibaba is a trademark of Alibaba Group Holding Limited.Alibaba Design;Hanyi FontsGB18030-2000(c) 2020-2021 
+\eqq
+,.FX

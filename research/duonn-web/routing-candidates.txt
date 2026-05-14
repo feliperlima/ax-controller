@@ -1,0 +1,83 @@
+emscripten_set_main_loop_arg
+env,emscripten_asm_const_int_sync_on_main_thread
+emscripten_glUniformMatrix2fv
+emscripten_glUniformMatrix3fv
+emscripten_glUniformMatrix4fv
+__main_argc_argv
+glUniformMatrix4fv
+glUniformMatrix3fv
+glUniformMatrix2fv
+multi-masters
+set_phones
+set_monitor
+set_phantom_group
+set_mute_group
+Solo
+lv_palette_main
+No display created yet. No place to assign the new screen
+lv_group_add_obj
+Mute
+lv_group_create
+STEREO-FX-AUX%d
+DCA%d
+AUX%d&%d
+F:\zebond\Project\axios16e\code\ui\lvgl\src\widgets\lv_btnmatrix.c
+F:\zebond\Project\axios16e\code\ui\lvgl\src\core\lv_group.c
+edit_dca
+HEADPHONE MONITORING SETTINGS
+PHONES
+L MAIN R
+PHANTOM GROUP
+MUTE GROUP
+DCA GROUP
+SOLO
+DOMAIN
+group != NULL
+UNMUTE
+ALL MUTED
+AUX1-8
+DCA1-4
+DOMAIN=
+     uniform mat4 u_projection;     attribute vec2 a_position;     attribute vec4 a_color;     attribute vec2 a_texCoord;     varying vec2 v_texCoord;     varying vec4 v_color;         void main()     {         v_texCoord = a_texCoord;         gl_Position = u_projection * vec4(a_position, 0.0, 1.0);        gl_PointSize = 1.0;         v_color = a_color;     } 
+     varying vec4 v_color;         void main()     {         gl_FragColor = v_color;     } 
+        void main()     {         gl_FragColor = texture2D(u_texture, v_texCoord);         gl_FragColor *= v_color;     } 
+        void main()     {         vec4 abgr = texture2D(u_texture, v_texCoord);         gl_FragColor = abgr;         gl_FragColor.r = abgr.b;         gl_FragColor.b = abgr.r;         gl_FragColor *= v_color;     } 
+        void main()     {         vec4 abgr = texture2D(u_texture, v_texCoord);         gl_FragColor = abgr;         gl_FragColor.r = abgr.b;         gl_FragColor.b = abgr.r;         gl_FragColor.a = 1.0;         gl_FragColor *= v_color;     } 
+        void main()     {         vec4 abgr = texture2D(u_texture, v_texCoord);         gl_FragColor = abgr;         gl_FragColor.a = 1.0;         gl_FragColor *= v_color;     } 
+const mat3 matrix = mat3( 1,       1,        1,
+void main()
+    rgb = matrix * yuv;
+const mat3 matrix = mat3( 1.1644,  1.1644,   1.1644,
+void main()
+    rgb = matrix * yuv;
+const mat3 matrix = mat3( 1.1644,  1.1644,   1.1644,
+void main()
+    rgb = matrix * yuv;
+const mat3 matrix = mat3( 1,       1,        1,
+void main()
+    rgb = matrix * yuv;
+const mat3 matrix = mat3( 1.1644,  1.1644,   1.1644,
+void main()
+    rgb = matrix * yuv;
+const mat3 matrix = mat3( 1.1644,  1.1644,   1.1644,
+void main()
+    rgb = matrix * yuv;
+const mat3 matrix = mat3( 1.1644,  1.1644,   1.1644,
+void main()
+    rgb = matrix * yuv;
+const mat3 matrix = mat3( 1.1644,  1.1644,   1.1644,
+void main()
+    rgb = matrix * yuv;
+const mat3 matrix = mat3( 1,       1,        1,
+void main()
+    rgb = matrix * yuv;
+const mat3 matrix = mat3( 1.1644,  1.1644,   1.1644,
+void main()
+    rgb = matrix * yuv;
+const mat3 matrix = mat3( 1.1644,  1.1644,   1.1644,
+void main()
+    rgb = matrix * yuv;
+        void main()     {         gl_FragColor = texture2D(u_texture, v_texCoord);         gl_FragColor *= v_color;     } 
+eDCA
+DCAMPC=>M\
+Copyright ?2020-2021 Alibaba (China) Co., Ltd. All rights reserved.Alibaba PuHuiTi 2.0Alibaba PuHuiTi 2 55 RegularHanyi Alibaba-PuHuiTi-2-55-Regular v2.00Version 2.00AlibabaPuHuiTi_2_55_RegularAlibaba is a trademark of Alibaba Group Holding Limited.Alibaba Design;Hanyi FontsGB18030-2000(c) 2020-2021 
