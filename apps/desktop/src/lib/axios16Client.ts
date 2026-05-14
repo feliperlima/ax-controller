@@ -668,8 +668,13 @@ function valueToFilterTypeSlope(filter: "hpf" | "lpf", value: number) {
 export class Axios16Client {
   private ws: WebSocket | null = null;
   private readQueue: Promise<void> = Promise.resolve();
+  private onDisconnectCallback: (() => void) | null = null;
 
   constructor(private ip: string, private port = 8088) {}
+
+  setOnDisconnect(callback: () => void) {
+    this.onDisconnectCallback = callback;
+  }
 
   get url() {
     return `ws://${this.ip}:${this.port}/`;
@@ -699,6 +704,10 @@ export class Axios16Client {
 
         if (this.ws === ws) {
           this.ws = null;
+          // Notify about unexpected disconnect
+          if (this.onDisconnectCallback) {
+            this.onDisconnectCallback();
+          }
         }
       };
     });
@@ -1084,6 +1093,24 @@ export class Axios16Client {
   setMainMasterMute(shouldMute: boolean) {
     this.setMasterMute("left", shouldMute);
     this.setMasterMute("right", shouldMute);
+  }
+
+  setAuxMute(auxNumber: number, shouldMute: boolean) {
+    // AUX mute params: 1678 (AUX1), 1787 (AUX2), stride=109
+    const auxIndex = Math.round(auxNumber);
+    if (auxIndex < 1 || auxIndex > 8) return;
+    
+    const muteParam = 1678 + (auxIndex - 1) * 109;
+    this.sendParam(muteParam, shouldMute ? 0 : 1);
+  }
+
+  setFxMute(fxNumber: number, shouldMute: boolean) {
+    // FX mute params: 2900 (FX1), 2945 (FX2), stride=45
+    const fxIndex = Math.round(fxNumber);
+    if (fxIndex < 1 || fxIndex > 2) return;
+    
+    const muteParam = fxIndex === 1 ? 2900 : 2945;
+    this.sendParam(muteParam, shouldMute ? 0 : 1);
   }
 
   setMasterFader(side: MasterSide, db: number | "-inf") {

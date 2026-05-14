@@ -23,6 +23,8 @@ import {
   toMixerSafeName,
 } from "./lib/axios16Client";
 import { ChannelStrip } from "./components/ChannelStrip";
+import { AuxStrip } from "./components/AuxStrip";
+import { FxStrip } from "./components/FxStrip";
 import { MasterBus } from "./components/MasterBus";
 import { DuonnIconsSprite, DUONN_CHANNEL_ICONS } from "./components/DuonnIcon";
 import { ChannelCustomizer } from "./components/ChannelCustomizer";
@@ -1183,7 +1185,7 @@ function App() {
       soloRight: channelParam(channelNumber, 88),
     };
 
-    const response = await client.readParams(Object.values(params));
+    const response = await client.readParams(Object.values(params), 2000);
     const values = new Map(response.map((item) => [item.param, item.value]));
 
     const faderDb = valueToFaderDb(values.get(params.fader) ?? 1200);
@@ -1207,7 +1209,7 @@ function App() {
     if (!client) return;
 
     const params = processorParams(channelNumber);
-    const response = await client.readParams(Object.values(params));
+    const response = await client.readParams(Object.values(params), 2500);
     const values = new Map(response.map((item) => [item.param, item.value]));
     const getValue = (param: number, fallback: number) =>
       values.get(param) ?? fallback;
@@ -1302,6 +1304,7 @@ function App() {
       setStatus(
         error instanceof Error ? error.message : "Erro ao sincronizar canais"
       );
+      throw error;
     } finally {
       setIsSyncing(false);
     }
@@ -2171,14 +2174,32 @@ function App() {
       setIsConnected(true);
       setStatus(`Conectado em ${ip}`);
 
-      await syncAllChannels();
-      await syncChannelEqPreviewStates();
-      await syncAllStripNames();
+      // Sync operations with better error isolation
+      try {
+        await syncAllChannels();
+      } catch (syncError) {
+        console.error("Erro ao sincronizar canais:", syncError);
+        setStatus("Conexão estabelecida, mas erro ao sincronizar canais");
+      }
+
+      try {
+        await syncChannelEqPreviewStates();
+      } catch (syncError) {
+        console.error("Erro ao sincronizar EQ:", syncError);
+      }
+
+      try {
+        await syncAllStripNames();
+      } catch (syncError) {
+        console.error("Erro ao sincronizar nomes:", syncError);
+      }
+
       startMeterPolling();
     } catch (error) {
       stopMeterPolling();
       setIsConnected(false);
       setStatus(error instanceof Error ? error.message : "Erro ao conectar");
+      clientRef.current = null;
     }
   }
 
@@ -2523,17 +2544,22 @@ function App() {
       return;
     }
 
+    const client = clientRef.current;
+    if (!client) return;
+
     const strips = getSectionStrips(section);
     const nextValue = !strips[index - 1].muted;
 
     if (section === "aux") {
       const targets = getLinkedAuxTargets(index);
       targets.forEach((target) => {
+        client.setAuxMute(target, nextValue);
         updateAuxStripState(target, { muted: nextValue });
       });
       return;
     }
 
+    client.setFxMute(index, nextValue);
     updateFxStripState(index, { muted: nextValue });
   }
 
@@ -3788,7 +3814,7 @@ function App() {
               const pair = getChannelPair(stripNumber);
               const pairKeyValue = pairKey(pair[0], pair[1]);
               const pairLinked = Boolean(channelLinks[pairKeyValue]);
-              const wrapperMarginRight = 4;
+              const wrapperMarginRight = index === channels.length - 1 ? 0 : 4;
 
               return (
                 <div
@@ -3853,6 +3879,106 @@ function App() {
                       handleStripGainChange("inputs", stripNumber, value)
                     }
                     onOpenDetail={goToDetailChannel}
+                  />
+                </div>
+              );
+            })}
+
+            {/* FX Strips separator */}
+            <div
+              style={{
+                flex: "0 0 auto",
+                width: 1,
+                alignSelf: "stretch",
+                background: "var(--border-default)",
+                margin: "0 6px",
+                borderRadius: 1,
+              }}
+            />
+
+            {/* FX 1-2 */}
+            {fxStrips.map((fxState, index) => {
+              const fxNumber = (index + 1) as 1 | 2;
+              return (
+                <div
+                  key={`fx-${fxNumber}`}
+                  style={{
+                    marginLeft: 0,
+                    marginRight: index === fxStrips.length - 1 ? 0 : 4,
+                    flex: "0 0 auto",
+                    position: "relative",
+                    overflow: "visible",
+                  }}
+                >
+                  <FxStrip
+                    fxNumber={fxNumber}
+                    channelName={fxState.channelName}
+                    muted={fxState.muted}
+                    soloOn={fxState.soloOn}
+                    faderDb={fxState.faderDb}
+                    faderPosition={fxState.faderPosition}
+                    meterDb={fxState.meterDb}
+                    peakDb={fxState.peakDb}
+                    clipped={fxState.clipUntil > Date.now()}
+                    disabled={!isConnected}
+                    onToggleMute={() => toggleStripMute("fx", fxNumber)}
+                    onToggleSolo={() => toggleStripSolo("fx", fxNumber)}
+                    onFaderChange={(position) =>
+                      handleStripFaderChange("fx", fxNumber, position)
+                    }
+                  />
+                </div>
+              );
+            })}
+
+            {/* AUX Strips separator */}
+            <div
+              style={{
+                flex: "0 0 auto",
+                width: 1,
+                alignSelf: "stretch",
+                background: "var(--border-default)",
+                margin: "0 6px",
+                borderRadius: 1,
+              }}
+            />
+
+            {/* AUX 1-8 */}
+            {auxStrips.map((auxState, index) => {
+              const auxNumber = index + 1;
+              const [odd, even] = getAuxPair(auxNumber);
+              const key = pairKey(odd, even);
+              const isLinked = Boolean(auxLinks[key]);
+              return (
+                <div
+                  key={`aux-${auxNumber}`}
+                  style={{
+                    marginLeft: 0,
+                    marginRight: index === auxStrips.length - 1 ? 0 : 4,
+                    flex: "0 0 auto",
+                    position: "relative",
+                    overflow: "visible",
+                  }}
+                >
+                  <AuxStrip
+                    auxNumber={auxNumber}
+                    channelName={auxState.channelName}
+                    muted={auxState.muted}
+                    soloOn={auxState.soloOn}
+                    faderDb={auxState.faderDb}
+                    faderPosition={auxState.faderPosition}
+                    meterDb={auxState.meterDb}
+                    peakDb={auxState.peakDb}
+                    clipped={auxState.clipUntil > Date.now()}
+                    isLinked={isLinked}
+                    disabled={!isConnected}
+                    eqState={auxProcessorStates[index].eq}
+                    onToggleMute={() => toggleStripMute("aux", auxNumber)}
+                    onToggleSolo={() => toggleStripSolo("aux", auxNumber)}
+                    onFaderChange={(position) =>
+                      handleStripFaderChange("aux", auxNumber, position)
+                    }
+                    onOpenDetail={goToDetailAux}
                   />
                 </div>
               );

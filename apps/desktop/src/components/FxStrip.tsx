@@ -1,0 +1,379 @@
+import { useMemo } from "react";
+import { VerticalFader } from "./VerticalFader";
+import { MeterBar, MeterScale } from "./Meter";
+import { eqMagnitudeDb, type EqState } from "./ChannelProcessors";
+
+type FxStripProps = {
+  fxNumber: 1 | 2;
+  channelName?: string;
+  muted: boolean;
+  soloOn: boolean;
+  faderDb: number;
+  faderPosition: number;
+  meterDb?: number;
+  peakDb?: number;
+  clipped?: boolean;
+  disabled?: boolean;
+  onToggleMute: () => void;
+  onToggleSolo: () => void;
+  onFaderChange: (value: number) => void;
+};
+
+const FX_COLOR = "var(--module-fx-primary)";
+
+const EQ_PREVIEW_WIDTH = 78;
+const EQ_PREVIEW_HEIGHT = 48;
+
+const FADER_DB_POINTS = [
+  { pos: 0, db: -120 },
+  { pos: 10, db: -50 },
+  { pos: 25, db: -30 },
+  { pos: 45, db: -20 },
+  { pos: 65, db: -10 },
+  { pos: 80, db: -5 },
+  { pos: 90, db: 0 },
+  { pos: 95, db: 5 },
+  { pos: 100, db: 10 },
+];
+
+function dbToFaderScalePosition(db: number) {
+  for (let i = 0; i < FADER_DB_POINTS.length - 1; i++) {
+    const current = FADER_DB_POINTS[i];
+    const next = FADER_DB_POINTS[i + 1];
+    if (db >= current.db && db <= next.db) {
+      const t = (db - current.db) / (next.db - current.db);
+      return current.pos + t * (next.pos - current.pos);
+    }
+  }
+  return db <= -120 ? 0 : 100;
+}
+
+const FADER_SNAP_POINTS_DB = [-50, -40, -30, -20, -10, -5, 0, 5, 10];
+const FADER_SNAP_POINTS = FADER_SNAP_POINTS_DB.map(dbToFaderScalePosition);
+
+function ratioToDisplayFreq(ratio: number) {
+  const min = Math.log10(10);
+  const max = Math.log10(24000);
+  return 10 ** (min + Math.max(0, Math.min(1, ratio)) * (max - min));
+}
+
+const FLAT_EQ: EqState = {
+  enabled: false,
+  hpfEnabled: false,
+  hpfType: "butterworth",
+  hpfSlope: 24,
+  hpfFreq: 20,
+  lpfEnabled: false,
+  lpfType: "butterworth",
+  lpfSlope: 24,
+  lpfFreq: 20000,
+  bands: [],
+};
+
+function buildFlatPreview(width: number, height: number, pointCount = 40) {
+  const zeroY = height / 2;
+  const points = Array.from({ length: pointCount }, (_, i) => {
+    const ratio = pointCount <= 1 ? 0 : i / (pointCount - 1);
+    const x = ratio * width;
+    const gain = eqMagnitudeDb(ratioToDisplayFreq(ratio), FLAT_EQ);
+    const y = zeroY - (gain / 12) * zeroY;
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(" ");
+  return { points, zeroY };
+}
+
+export function FxStrip({
+  fxNumber,
+  channelName,
+  muted,
+  soloOn,
+  faderDb,
+  faderPosition,
+  meterDb = -75,
+  peakDb,
+  clipped = false,
+  disabled = false,
+  onToggleMute,
+  onToggleSolo,
+  onFaderChange,
+}: FxStripProps) {
+  const label = `FX${fxNumber}`;
+  const displayName = channelName?.trim().length
+    ? channelName.trim()
+    : `FX ${fxNumber}`;
+
+  // FX strips don't have EQ state — always show a flat preview line
+  const eqPreview = useMemo(
+    () => buildFlatPreview(EQ_PREVIEW_WIDTH, EQ_PREVIEW_HEIGHT, 40),
+    [],
+  );
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "24px",
+        alignItems: "center",
+        justifyContent: "flex-start",
+        overflow: "hidden",
+        padding: 0,
+        borderRadius: "4px",
+        width: 110,
+        minWidth: 110,
+        height: "100%",
+        backgroundColor: "var(--surface-card)",
+        boxShadow: "0px 4px 2px rgba(0,0,0,0.25)",
+        color: "var(--text-primary)",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "10px",
+      }}
+    >
+      {/* Header: flat preview (FX has no EQ state) */}
+      <div
+        style={{
+          width: "100%",
+          display: "flex",
+          flexDirection: "column",
+          paddingTop: "8px",
+          paddingLeft: "4px",
+          paddingRight: "4px",
+          paddingBottom: 0,
+        }}
+      >
+        <svg
+          viewBox={`0 0 ${EQ_PREVIEW_WIDTH} ${EQ_PREVIEW_HEIGHT}`}
+          preserveAspectRatio="xMidYMid meet"
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            width: "100%",
+            height: `${EQ_PREVIEW_HEIGHT}px`,
+            display: "block",
+            backgroundColor: "rgba(0,0,0,0.8)",
+            borderRadius: "4px",
+            cursor: "pointer",
+          }}
+        >
+          <line
+            x1={0}
+            y1={eqPreview.zeroY}
+            x2={EQ_PREVIEW_WIDTH}
+            y2={eqPreview.zeroY}
+            stroke={FX_COLOR}
+            strokeWidth={0.9}
+            opacity={0.3}
+          />
+          <polyline
+            points={eqPreview.points}
+            fill="none"
+            stroke="var(--text-primary)"
+            strokeWidth={1.4}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            opacity={0.4}
+          />
+        </svg>
+      </div>
+
+      {/* MUTE + SOLO buttons */}
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: "8px",
+          width: "100%",
+          paddingLeft: 4,
+          paddingRight: 4,
+          boxSizing: "border-box",
+        }}
+      >
+        <button
+          disabled={disabled}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleMute();
+          }}
+          style={{
+            width: "100%",
+            height: "32px",
+            borderRadius: "8px",
+            border: muted
+              ? "2px solid var(--button-mute-border)"
+              : "1px solid var(--button-default-border)",
+            background: muted ? "var(--button-mute-bg)" : "var(--button-default-bg)",
+            color: muted ? "var(--button-mute-text)" : "var(--button-default-text)",
+            fontSize: "9px",
+            fontWeight: 700,
+            letterSpacing: "0.8px",
+            padding: "0 4px",
+            cursor: disabled ? "not-allowed" : "pointer",
+            opacity: disabled ? 0.5 : 1,
+            boxShadow: muted ? "var(--button-mute-glow)" : "none",
+          }}
+        >
+          MUTE
+        </button>
+
+        <button
+          disabled={disabled}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleSolo();
+          }}
+          style={{
+            width: "100%",
+            height: "32px",
+            borderRadius: "8px",
+            border: soloOn
+              ? "2px solid var(--button-solo-border)"
+              : "1px solid var(--button-default-border)",
+            background: soloOn ? "var(--button-solo-bg)" : "var(--button-default-bg)",
+            color: soloOn ? "var(--button-solo-text)" : "var(--button-default-text)",
+            fontSize: "9px",
+            fontWeight: 700,
+            letterSpacing: "0.8px",
+            padding: "0 4px",
+            cursor: disabled ? "not-allowed" : "pointer",
+            opacity: disabled ? 0.5 : 1,
+            boxShadow: soloOn ? "var(--button-solo-glow)" : "none",
+          }}
+        >
+          SOLO
+        </button>
+      </div>
+
+      {/* Fader + Meter */}
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        style={{
+          display: "flex",
+          gap: 0,
+          alignItems: "center",
+          justifyContent: "space-between",
+          flex: "1 1 0",
+          minHeight: 0,
+          width: "calc(100% - 8px)",
+          alignSelf: "stretch",
+          paddingLeft: 0,
+          paddingRight: 0,
+          boxSizing: "border-box",
+          marginLeft: "auto",
+          marginRight: "auto",
+        }}
+      >
+        {/* Meter */}
+        <div
+          style={{
+            display: "flex",
+            gap: 4,
+            height: "100%",
+            alignItems: "flex-end",
+            justifyContent: "center",
+            flex: "0 0 auto",
+          }}
+        >
+          <MeterScale clipped={clipped} />
+          <MeterBar meterDb={meterDb} peakDb={peakDb} clipped={clipped} />
+        </div>
+
+        {/* Fader */}
+        <div style={{ flex: "0 0 auto", height: "100%", display: "flex", alignItems: "center", overflow: "visible" }}>
+          <VerticalFader
+            value={faderPosition}
+            height="100%"
+            width={23}
+            disabled={disabled}
+            dragFromThumbOnly
+            snapPoints={FADER_SNAP_POINTS}
+            snapThreshold={1.8}
+            zeroMarkerValue={dbToFaderScalePosition(0)}
+            thumbVariant="default"
+            onChange={onFaderChange}
+          />
+        </div>
+      </div>
+
+      {/* dB display */}
+      <div
+        style={{
+          marginTop: "-16px",
+          width: "calc(100% - 8px)",
+          alignSelf: "center",
+          height: "36px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          fontSize: "16px",
+          fontWeight: 400,
+          color: "var(--text-primary)",
+          backgroundColor: "var(--surface-overlay-strong)",
+          borderRadius: "4px",
+          overflow: "hidden",
+          padding: "11px 4px",
+          boxSizing: "border-box",
+          fontFamily: "Inter, system-ui, sans-serif",
+          lineHeight: 1,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {faderDb <= -120 ? "-∞" : `${faderDb} dB`}
+      </div>
+
+      {/* Footer */}
+      <div
+        onDoubleClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%",
+          height: "40px",
+          marginTop: "-16px",
+          padding: "4px",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-start",
+          justifyContent: "center",
+          gap: "3px",
+          backgroundColor: FX_COLOR,
+          borderRadius: "0 0 4px 4px",
+          boxSizing: "border-box",
+          minHeight: "40px",
+          cursor: "pointer",
+        }}
+      >
+        <span
+          style={{
+            width: "100%",
+            fontSize: "10px",
+            lineHeight: "12px",
+            fontWeight: 600,
+            letterSpacing: "0.5px",
+            textTransform: "uppercase",
+            color: "rgba(0,0,0,0.7)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {label}
+        </span>
+        <span
+          style={{
+            width: "100%",
+            fontSize: "16px",
+            fontWeight: 700,
+            color: "rgba(0,0,0,0.85)",
+            lineHeight: "20px",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {displayName}
+        </span>
+      </div>
+    </div>
+  );
+}
