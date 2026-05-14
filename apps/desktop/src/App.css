@@ -565,13 +565,27 @@ body {
   min-height: 0;
   display: flex;
   gap: 8px;
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: hidden;
   padding-bottom: 0;
   padding-right: 183px;
   scroll-snap-type: x proximity;
   -webkit-overflow-scrolling: touch;
   align-items: stretch;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  will-change: scroll-position;
+}
+
+.channels-scroller--dragging {
+  cursor: grabbing;
+  scroll-snap-type: none;
+}
+
+.app-shell--dragging .mixer-master {
+  box-shadow: none;
 }
 
 .detail-layout {

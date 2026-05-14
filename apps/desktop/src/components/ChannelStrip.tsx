@@ -503,6 +503,7 @@ export function ChannelStrip({
             height="100%"
             width={23}
             disabled={disabled}
+            dragFromThumbOnly
             snapPoints={FADER_SNAP_POINTS}
             snapThreshold={1.8}
             zeroMarkerValue={dbToFaderScalePosition(0)}

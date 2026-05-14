@@ -11,6 +11,7 @@ type VerticalFaderProps = {
   layoutWidth?: number;
   thumbVariant?: "default" | "master";
   thumbIndicatorColor?: string;
+  dragFromThumbOnly?: boolean;
   onChange: (value: number) => void;
 };
 
@@ -25,9 +26,11 @@ export function VerticalFader({
   layoutWidth,
   thumbVariant = "default",
   thumbIndicatorColor,
+  dragFromThumbOnly = false,
   onChange,
 }: VerticalFaderProps) {
   const faderRef = useRef<HTMLDivElement | null>(null);
+  const thumbRef = useRef<HTMLDivElement | null>(null);
   const onChangeRef = useRef(onChange);
   const isDraggingRef = useRef(false);
   const pendingValueRef = useRef(value);
@@ -147,6 +150,8 @@ export function VerticalFader({
     <div
       ref={faderRef}
       role="slider"
+      data-thumb-only-drag={dragFromThumbOnly ? "true" : "false"}
+      data-drag-scroll-priority={dragFromThumbOnly ? undefined : "control"}
       tabIndex={disabled ? -1 : 0}
       aria-label="Fader"
       aria-valuemin={0}
@@ -154,6 +159,15 @@ export function VerticalFader({
       aria-valuenow={displayValue}
       onClick={(event) => event.stopPropagation()}
       onPointerDown={(event) => {
+        if (dragFromThumbOnly) {
+          const target = event.target;
+          const thumbElement = thumbRef.current;
+
+          if (!thumbElement || !(target instanceof Node) || !thumbElement.contains(target)) {
+            return;
+          }
+        }
+
         event.preventDefault();
         event.stopPropagation();
         if (disabled) return;
@@ -207,7 +221,7 @@ export function VerticalFader({
         position: "relative",
         width: renderedWidth,
         height,
-        cursor: disabled ? "not-allowed" : "ns-resize",
+        cursor: disabled ? "not-allowed" : dragFromThumbOnly ? "default" : "ns-resize",
         opacity: disabled ? 0.55 : 1,
         touchAction: "none",
         userSelect: "none",
@@ -312,6 +326,8 @@ export function VerticalFader({
       />
 
       <div
+        ref={thumbRef}
+        data-drag-scroll-priority="thumb"
         style={{
           position: "absolute",
           left: "50%",
@@ -330,6 +346,7 @@ export function VerticalFader({
           alignItems: "center",
           justifyContent: "center",
           zIndex: 10,
+          cursor: disabled ? "not-allowed" : "ns-resize",
         }}
       >
         <div

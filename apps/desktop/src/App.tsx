@@ -255,6 +255,68 @@ type StripSection = "inputs" | "aux" | "fx";
 type CustomizationView = { section: StripSection; index: number } | null;
 type PairLinkState = Record<string, boolean>;
 
+type DragScrollState = {
+  pointerId: number | null;
+  pointerType: "mouse" | "touch" | "pen" | "";
+  scrollerElement: HTMLElement | null;
+  startX: number;
+  startY: number;
+  startScrollLeft: number;
+  startAtMs: number;
+  dragging: boolean;
+  suppressClick: boolean;
+};
+
+function getDragScrollProfile(pointerType: "mouse" | "touch" | "pen" | "") {
+  if (pointerType === "mouse") {
+    return {
+      holdMs: 0,
+      thresholdPx: 2,
+      horizontalBias: 1,
+    };
+  }
+
+  if (pointerType === "pen") {
+    return {
+      holdMs: 0,
+      thresholdPx: 3,
+      horizontalBias: 1.02,
+    };
+  }
+
+  return {
+    holdMs: 8,
+    thresholdPx: 4,
+    horizontalBias: 1.04,
+  };
+}
+
+function shouldPrioritizeLocalControl(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false;
+
+  if (
+    target.closest(
+      "button, input, select, textarea, label, a, [role='button'], [data-drag-scroll-priority='control'], [data-drag-scroll-priority='thumb']"
+    )
+  ) {
+    return true;
+  }
+
+  const sliderElement = target.closest("[role='slider']");
+  if (!sliderElement) return false;
+
+  const thumbOnlySlider =
+    sliderElement.getAttribute("data-thumb-only-drag") === "true";
+
+  // For thumb-only sliders, only the thumb itself blocks horizontal drag.
+  if (thumbOnlySlider) {
+    return Boolean(target.closest("[data-drag-scroll-priority='thumb']"));
+  }
+
+  // Other sliders (e.g. knobs/master faders) keep local interaction priority.
+  return true;
+}
+
 
 const AUX_MASTER_FADER_PARAMS: Record<number, number> = {
   1: 1676,
@@ -806,6 +868,150 @@ function App() {
   const meterTimerRef = useRef<number | null>(null);
   const meterBusyRef = useRef(false);
   const auxLinkBusyRef = useRef(false);
+  const meterUpdateLastAtRef = useRef(0);
+  const isChannelsDraggingRef = useRef(false);
+  const dragScrollRafRef = useRef<number | null>(null);
+  const pendingDragScrollLeftRef = useRef<number | null>(null);
+  const dragScrollStateRef = useRef<DragScrollState>({
+    pointerId: null,
+    pointerType: "",
+    scrollerElement: null,
+    startX: 0,
+    startY: 0,
+    startScrollLeft: 0,
+    startAtMs: 0,
+    dragging: false,
+    suppressClick: false,
+  });
+  const [isChannelsDragging, setIsChannelsDragging] = useState(false);
+
+  useEffect(() => {
+    isChannelsDraggingRef.current = isChannelsDragging;
+  }, [isChannelsDragging]);
+
+  function scheduleDragScrollLeft(scrollerElement: HTMLElement, scrollLeft: number) {
+    pendingDragScrollLeftRef.current = scrollLeft;
+
+    if (dragScrollRafRef.current !== null) {
+      return;
+    }
+
+    dragScrollRafRef.current = requestAnimationFrame(() => {
+      dragScrollRafRef.current = null;
+      const nextScrollLeft = pendingDragScrollLeftRef.current;
+      pendingDragScrollLeftRef.current = null;
+      if (nextScrollLeft === null) return;
+
+      scrollerElement.scrollLeft = nextScrollLeft;
+    });
+  }
+
+  function cancelPendingDragScrollFrame() {
+    if (dragScrollRafRef.current !== null) {
+      cancelAnimationFrame(dragScrollRafRef.current);
+      dragScrollRafRef.current = null;
+    }
+
+    pendingDragScrollLeftRef.current = null;
+  }
+
+  function resetDragScrollState() {
+    cancelPendingDragScrollFrame();
+    dragScrollStateRef.current.pointerId = null;
+    dragScrollStateRef.current.pointerType = "";
+    dragScrollStateRef.current.scrollerElement = null;
+    dragScrollStateRef.current.startX = 0;
+    dragScrollStateRef.current.startY = 0;
+    dragScrollStateRef.current.startScrollLeft = 0;
+    dragScrollStateRef.current.startAtMs = 0;
+    dragScrollStateRef.current.dragging = false;
+    setIsChannelsDragging(false);
+  }
+
+  function handleChannelsPointerDown(
+    event: React.PointerEvent<HTMLElement>
+  ) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (shouldPrioritizeLocalControl(event.target)) return;
+
+    dragScrollStateRef.current.pointerId = event.pointerId;
+    dragScrollStateRef.current.pointerType =
+      event.pointerType === "mouse" ||
+      event.pointerType === "touch" ||
+      event.pointerType === "pen"
+        ? event.pointerType
+        : "touch";
+    dragScrollStateRef.current.startX = event.clientX;
+    dragScrollStateRef.current.startY = event.clientY;
+    dragScrollStateRef.current.scrollerElement = event.currentTarget;
+    dragScrollStateRef.current.startScrollLeft = event.currentTarget.scrollLeft;
+    dragScrollStateRef.current.startAtMs = Date.now();
+    dragScrollStateRef.current.dragging = false;
+    dragScrollStateRef.current.suppressClick = false;
+  }
+
+  function handleChannelsPointerMove(
+    event: React.PointerEvent<HTMLElement>
+  ) {
+    if (dragScrollStateRef.current.pointerId !== event.pointerId) return;
+
+    const deltaX = event.clientX - dragScrollStateRef.current.startX;
+    const deltaY = event.clientY - dragScrollStateRef.current.startY;
+
+    if (!dragScrollStateRef.current.dragging) {
+      const profile = getDragScrollProfile(dragScrollStateRef.current.pointerType);
+      const holdElapsed =
+        Date.now() - dragScrollStateRef.current.startAtMs >= profile.holdMs;
+      const passedThreshold = Math.abs(deltaX) >= profile.thresholdPx;
+      const horizontalIntent =
+        Math.abs(deltaX) > Math.abs(deltaY) * profile.horizontalBias;
+
+      if (!(holdElapsed && passedThreshold && horizontalIntent)) return;
+
+      dragScrollStateRef.current.dragging = true;
+      dragScrollStateRef.current.suppressClick = true;
+      setIsChannelsDragging(true);
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+
+    event.preventDefault();
+    const scrollerElement =
+      dragScrollStateRef.current.scrollerElement ?? event.currentTarget;
+    scheduleDragScrollLeft(
+      scrollerElement,
+      dragScrollStateRef.current.startScrollLeft - deltaX
+    );
+  }
+
+  function handleChannelsPointerUp(
+    event: React.PointerEvent<HTMLElement>
+  ) {
+    if (dragScrollStateRef.current.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    resetDragScrollState();
+  }
+
+  function handleChannelsPointerCancel(
+    event: React.PointerEvent<HTMLElement>
+  ) {
+    if (dragScrollStateRef.current.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    resetDragScrollState();
+  }
+
+  function handleChannelsClickCapture(
+    event: React.MouseEvent<HTMLElement>
+  ) {
+    if (!dragScrollStateRef.current.suppressClick) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    dragScrollStateRef.current.suppressClick = false;
+  }
 
   function updateChannelState(
     channelNumber: number,
@@ -1724,6 +1930,11 @@ function App() {
     }[]
   ) {
     const now = Date.now();
+    if (isChannelsDraggingRef.current && now - meterUpdateLastAtRef.current < 140) {
+      return;
+    }
+    meterUpdateLastAtRef.current = now;
+
     const CLIP_HOLD_MS = 2500;
     const mainMaster = response.find((item) => item.param === 47);
     const monitorSolo = response.find((item) => item.param === 48);
@@ -1897,6 +2108,7 @@ function App() {
 
     let cancelled = false;
     const METER_POLL_INTERVAL_MS = 100;
+    const METER_POLL_INTERVAL_DRAGGING_MS = 165;
 
     async function poll() {
       if (cancelled) return;
@@ -1917,7 +2129,10 @@ function App() {
       }
 
       if (!cancelled) {
-        meterTimerRef.current = window.setTimeout(poll, METER_POLL_INTERVAL_MS);
+        const nextDelay = isChannelsDraggingRef.current
+          ? METER_POLL_INTERVAL_DRAGGING_MS
+          : METER_POLL_INTERVAL_MS;
+        meterTimerRef.current = window.setTimeout(poll, nextDelay);
       }
     }
 
@@ -3494,7 +3709,9 @@ function App() {
   }, [detailView, isConnected]);
 
   return (
-    <main className={`app-shell ${detailView ? "app-shell--detail" : ""}`}>
+    <main
+      className={`app-shell ${detailView ? "app-shell--detail" : ""} ${isChannelsDragging ? "app-shell--dragging" : ""}`}
+    >
       <DuonnIconsSprite />
       <div className="portrait-orientation-hint">
         Para melhor experiência, use em modo paisagem.
@@ -3555,7 +3772,12 @@ function App() {
           : renderAuxDetail()
         : <section className="mixer-layout">
           <section
-            className="channels-scroller mixer-channels"
+            className={`channels-scroller mixer-channels ${isChannelsDragging ? "channels-scroller--dragging" : ""}`}
+            onPointerDownCapture={handleChannelsPointerDown}
+            onPointerMoveCapture={handleChannelsPointerMove}
+            onPointerUpCapture={handleChannelsPointerUp}
+            onPointerCancelCapture={handleChannelsPointerCancel}
+            onClickCapture={handleChannelsClickCapture}
             style={{
               alignItems: "stretch",
               gap: 0,
