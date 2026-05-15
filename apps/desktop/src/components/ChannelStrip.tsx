@@ -8,6 +8,7 @@ type ChannelStripProps = {
   channel?: number;
   channelName?: string;
   section?: "inputs" | "aux" | "fx";
+  variant?: "default" | "detail";
   isPairLinked?: boolean;
   muted: boolean;
   soloOn: boolean;
@@ -103,6 +104,7 @@ export function ChannelStrip({
   channel = 1,
   channelName,
   section,
+  variant = "default",
   isPairLinked = false,
   muted,
   soloOn,
@@ -154,6 +156,7 @@ export function ChannelStrip({
   const phaseInverted = !phasePositive;
   const canTogglePhase = typeof onTogglePhase === "function";
   const canOpenDetail = typeof onOpenDetail === "function";
+  const isDetailVariant = variant === "detail";
 
   return (
     <div
@@ -164,7 +167,7 @@ export function ChannelStrip({
         alignItems: "center",
         justifyContent: "flex-start",
         overflow: "hidden",
-        padding: 0,
+        padding: isDetailVariant ? "8px 4px" : 0,
         borderRadius: "4px",
         width: 110,
         minWidth: 110,
@@ -176,104 +179,105 @@ export function ChannelStrip({
         fontSize: "10px",
       }}
     >
-      {/* Header com EQ visual */}
-      <div
-        style={{
-          width: "100%",
-          display: "flex",
-          flexDirection: "column",
-          paddingTop: "8px",
-          paddingLeft: "4px",
-          paddingRight: "4px",
-          paddingBottom: 0,
-        }}
-      >
-        {eqState && eqPreview ? (
-          <svg
-            viewBox={`0 0 ${EQ_PREVIEW_WIDTH} ${EQ_PREVIEW_HEIGHT}`}
-            preserveAspectRatio="xMidYMid meet"
-            onClick={(event) => {
-              if (!canOpenDetail) return;
-              event.stopPropagation();
-              onOpenDetail?.(channel);
-            }}
-            style={{
-              width: "100%",
-              height: `${EQ_PREVIEW_HEIGHT}px`,
-              display: "block",
-              backgroundColor: "rgba(0,0,0,0.8)",
-              borderRadius: "4px",
-              cursor: canOpenDetail ? "pointer" : "default",
-            }}
-          >
-            <line
-              x1={0}
-              y1={eqPreview.zeroY}
-              x2={EQ_PREVIEW_WIDTH}
-              y2={eqPreview.zeroY}
-              stroke={channelColor}
-              strokeWidth={0.9}
-              opacity={0.22}
+      {!isDetailVariant && (
+        <div
+          style={{
+            width: "100%",
+            display: "flex",
+            flexDirection: "column",
+            paddingTop: "8px",
+            paddingLeft: "4px",
+            paddingRight: "4px",
+            paddingBottom: 0,
+          }}
+        >
+          {eqState && eqPreview ? (
+            <svg
+              viewBox={`0 0 ${EQ_PREVIEW_WIDTH} ${EQ_PREVIEW_HEIGHT}`}
+              preserveAspectRatio="xMidYMid meet"
+              onClick={(event) => {
+                if (!canOpenDetail) return;
+                event.stopPropagation();
+                onOpenDetail?.(channel);
+              }}
+              style={{
+                width: "100%",
+                height: `${EQ_PREVIEW_HEIGHT}px`,
+                display: "block",
+                backgroundColor: "rgba(0,0,0,0.8)",
+                borderRadius: "4px",
+                cursor: canOpenDetail ? "pointer" : "default",
+              }}
+            >
+              <line
+                x1={0}
+                y1={eqPreview.zeroY}
+                x2={EQ_PREVIEW_WIDTH}
+                y2={eqPreview.zeroY}
+                stroke={channelColor}
+                strokeWidth={0.9}
+                opacity={0.22}
+              />
+              <polygon
+                points={`0,${eqPreview.zeroY.toFixed(2)} ${eqPreview.points} ${EQ_PREVIEW_WIDTH},${eqPreview.zeroY.toFixed(2)}`}
+                fill={channelColor}
+                opacity={eqState.enabled ? 0.22 : 0.1}
+              />
+              <polyline
+                points={eqPreview.points}
+                fill="none"
+                stroke="var(--text-primary)"
+                strokeWidth={1.4}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                opacity={eqState.enabled ? 0.95 : 0.62}
+              />
+              {!eqState.enabled && (
+                <>
+                  <rect
+                    x={0}
+                    y={0}
+                    width={EQ_PREVIEW_WIDTH}
+                    height={EQ_PREVIEW_HEIGHT}
+                    fill="rgba(0,0,0,0.48)"
+                  />
+                  <text
+                    x={EQ_PREVIEW_WIDTH / 2}
+                    y={EQ_PREVIEW_HEIGHT / 2}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fill="rgba(241,245,249,0.95)"
+                    style={{
+                      fontSize: "10px",
+                      fontWeight: 800,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    EQ OFF
+                  </text>
+                </>
+              )}
+            </svg>
+          ) : (
+            <div
+              onClick={(event) => {
+                if (!canOpenDetail) return;
+                event.stopPropagation();
+                onOpenDetail?.(channel);
+              }}
+              style={{
+                width: "100%",
+                height: `${EQ_PREVIEW_HEIGHT}px`,
+                backgroundColor: "rgba(0,0,0,0.8)",
+                borderRadius: "4px",
+                cursor: canOpenDetail ? "pointer" : "default",
+              }}
+              title={canOpenDetail ? "Open channel detail" : undefined}
             />
-            <polygon
-              points={`0,${eqPreview.zeroY.toFixed(2)} ${eqPreview.points} ${EQ_PREVIEW_WIDTH},${eqPreview.zeroY.toFixed(2)}`}
-              fill={channelColor}
-              opacity={eqState.enabled ? 0.22 : 0.1}
-            />
-            <polyline
-              points={eqPreview.points}
-              fill="none"
-              stroke="var(--text-primary)"
-              strokeWidth={1.4}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              opacity={eqState.enabled ? 0.95 : 0.62}
-            />
-            {!eqState.enabled && (
-              <>
-                <rect
-                  x={0}
-                  y={0}
-                  width={EQ_PREVIEW_WIDTH}
-                  height={EQ_PREVIEW_HEIGHT}
-                  fill="rgba(0,0,0,0.48)"
-                />
-                <text
-                  x={EQ_PREVIEW_WIDTH / 2}
-                  y={EQ_PREVIEW_HEIGHT / 2}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  fill="rgba(241,245,249,0.95)"
-                  style={{
-                    fontSize: "10px",
-                    fontWeight: 800,
-                    letterSpacing: "0.08em",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  EQ OFF
-                </text>
-              </>
-            )}
-          </svg>
-        ) : (
-          <div
-            onClick={(event) => {
-              if (!canOpenDetail) return;
-              event.stopPropagation();
-              onOpenDetail?.(channel);
-            }}
-            style={{
-              width: "100%",
-              height: `${EQ_PREVIEW_HEIGHT}px`,
-              backgroundColor: "rgba(0,0,0,0.8)",
-              borderRadius: "4px",
-              cursor: canOpenDetail ? "pointer" : "default",
-            }}
-            title={canOpenDetail ? "Open channel detail" : undefined}
-          />
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       {/* Knobs: GAIN + PAN */}
       <div
@@ -544,67 +548,68 @@ export function ChannelStrip({
       </div>
 
       {/* FooterChannel (51:1392) */}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onFooterClick?.();
-        }}
-        onDoubleClick={(e) => {
-          if (!canOpenDetail) return;
-          e.stopPropagation();
-          // TODO: support explicit double-tap gesture for touch devices.
-          onOpenDetail(channel);
-        }}
-        style={{
-          width: "100%",
-          height: "40px",
-          marginTop: "-16px",
-          padding: "4px",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "flex-start",
-          justifyContent: "center",
-          gap: "3px",
-          textAlign: "left",
-          color: "var(--text-inverse)",
-          backgroundColor: channelColor,
-          border: "none",
-          borderRadius: "0 0 4px 4px",
-          cursor: canOpenDetail ? "pointer" : "default",
-          minHeight: "40px",
-          fontFamily: "Inter, system-ui, sans-serif",
-          fontStyle: "normal",
-        }}
-        title={canOpenDetail ? "Double click to open channel detail" : undefined}
-      >
-        <span
+      {!isDetailVariant && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onFooterClick?.();
+          }}
+          onDoubleClick={(e) => {
+            if (!canOpenDetail) return;
+            e.stopPropagation();
+            onOpenDetail(channel);
+          }}
           style={{
             width: "100%",
-            fontSize: "10px",
-            lineHeight: "12px",
-            fontWeight: 600,
-            letterSpacing: "0.5px",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            height: "40px",
+            marginTop: "-16px",
+            padding: "4px",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-start",
+            justifyContent: "center",
+            gap: "3px",
+            textAlign: "left",
+            color: "var(--text-inverse)",
+            backgroundColor: channelColor,
+            border: "none",
+            borderRadius: "0 0 4px 4px",
+            cursor: canOpenDetail ? "pointer" : "default",
+            minHeight: "40px",
+            fontFamily: "Inter, system-ui, sans-serif",
+            fontStyle: "normal",
           }}
+          title={canOpenDetail ? "Double click to open channel detail" : undefined}
         >
-          {footerTitle}
-        </span>
-        <span
-          style={{
-            width: "100%",
-            fontSize: "16px",
-            lineHeight: "20px",
-            fontWeight: 700,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {footerName}
-        </span>
-      </button>
+          <span
+            style={{
+              width: "100%",
+              fontSize: "10px",
+              lineHeight: "12px",
+              fontWeight: 600,
+              letterSpacing: "0.5px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {footerTitle}
+          </span>
+          <span
+            style={{
+              width: "100%",
+              fontSize: "16px",
+              lineHeight: "20px",
+              fontWeight: 700,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {footerName}
+          </span>
+        </button>
+      )}
     </div>
   );
 }

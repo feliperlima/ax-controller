@@ -236,13 +236,13 @@
   --knob-label: var(--text-tertiary);
   --knob-value: var(--text-primary);
   --graph-background: var(--surface-app);
-  --graph-panel: var(--surface-shell);
+  --graph-panel: #030712;
   --graph-border: var(--border-default);
-  --graph-grid-major: var(--alpha-slate-24);
-  --graph-grid-minor: var(--alpha-slate-12);
-  --graph-grid-zero: var(--semantic-accent-border);
+  --graph-grid-major: rgba(148, 163, 184, 0.22);
+  --graph-grid-minor: rgba(148, 163, 184, 0.10);
+  --graph-grid-zero: rgba(56, 189, 248, 0.45);
   --graph-axis-text: var(--text-tertiary);
-  --graph-curve-main: var(--text-primary);
+  --graph-curve-main: #f8fafc;
   --graph-curve-secondary: var(--text-secondary);
   --graph-fill-eq: var(--module-eq-surface);
   --graph-fill-gate: var(--module-gate-surface);

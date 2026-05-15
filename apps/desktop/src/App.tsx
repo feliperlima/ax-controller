@@ -495,6 +495,53 @@ const DEFAULT_AUX_EQ: EqState = {
   ],
 };
 
+const EQ_MIN_FREQ = 20;
+const EQ_MAX_FREQ = 20000;
+const EQ_MIN_GAP = 10;
+
+function clampEqFrequency(value: number) {
+  return Math.max(EQ_MIN_FREQ, Math.min(EQ_MAX_FREQ, Math.round(value)));
+}
+
+function normalizeEqFrequencies(hpfFreq: number, lpfFreq: number) {
+  let nextHpf = clampEqFrequency(hpfFreq);
+  let nextLpf = clampEqFrequency(lpfFreq);
+
+  if (nextHpf > EQ_MAX_FREQ - EQ_MIN_GAP) {
+    nextHpf = EQ_MAX_FREQ - EQ_MIN_GAP;
+  }
+
+  if (nextLpf < EQ_MIN_FREQ + EQ_MIN_GAP) {
+    nextLpf = EQ_MIN_FREQ + EQ_MIN_GAP;
+  }
+
+  if (nextHpf >= nextLpf) {
+    nextLpf = Math.min(EQ_MAX_FREQ, nextHpf + EQ_MIN_GAP);
+    if (nextLpf - nextHpf < EQ_MIN_GAP) {
+      nextHpf = Math.max(EQ_MIN_FREQ, nextLpf - EQ_MIN_GAP);
+    }
+  }
+
+  return {
+    hpfFreq: nextHpf,
+    lpfFreq: nextLpf,
+  };
+}
+
+function mergeEqPatch(current: EqState, patch: Partial<EqState>): EqState {
+  const merged = {
+    ...current,
+    ...patch,
+  };
+  const normalized = normalizeEqFrequencies(merged.hpfFreq, merged.lpfFreq);
+
+  return {
+    ...merged,
+    hpfFreq: normalized.hpfFreq,
+    lpfFreq: normalized.lpfFreq,
+  };
+}
+
 function createDefaultProcessorState(): ProcessorState {
   return {
     gate: { ...DEFAULT_GATE },
@@ -750,16 +797,36 @@ function filterTypeSlopeToRaw(
   return slope === 24 ? base + 12 : base;
 }
 
-function inferHpfEnabledFromRaw(rawValue: number) {
+function inferHpfEnabledFromRaw(rawValue: number, currentEnabled = true) {
   if (rawValue === 0) return false;
 
-  return valueToFrequency(rawValue) > 20;
+  if (valueToFrequency(rawValue) <= DEFAULT_EQ.hpfFreq) {
+    return currentEnabled;
+  }
+
+  return true;
 }
 
-function inferLpfEnabledFromRaw(rawValue: number) {
+function inferLpfEnabledFromRaw(rawValue: number, currentEnabled = true) {
   if (rawValue === 0) return false;
 
-  return valueToFrequency(rawValue) < 20000;
+  if (valueToFrequency(rawValue) >= DEFAULT_EQ.lpfFreq) {
+    return currentEnabled;
+  }
+
+  return true;
+}
+
+function shouldKeepCachedHpfFreq(rawValue: number | undefined) {
+  if (rawValue === undefined || rawValue === 0) return true;
+
+  return valueToFrequency(rawValue) <= DEFAULT_EQ.hpfFreq;
+}
+
+function shouldKeepCachedLpfFreq(rawValue: number | undefined) {
+  if (rawValue === undefined || rawValue === 0) return true;
+
+  return valueToFrequency(rawValue) >= DEFAULT_EQ.lpfFreq;
 }
 
 function meterByteToDb(byte: number) {
@@ -1214,7 +1281,13 @@ function App() {
     const getValue = (param: number, fallback: number) =>
       values.get(param) ?? fallback;
 
-    updateProcessorState(channelNumber, () => ({
+    updateProcessorState(channelNumber, (current) => {
+      const rawHpfFreq = getValue(params.hpfFreq, 0);
+      const rawLpfFreq = getValue(params.lpfFreq, 0);
+      const nextHpfEnabled = inferHpfEnabledFromRaw(rawHpfFreq, current.eq.hpfEnabled);
+      const nextLpfEnabled = inferLpfEnabledFromRaw(rawLpfFreq, current.eq.lpfEnabled);
+
+      return ({
       gate: {
         enabled: valueToBoolean(getValue(params.gateEnabled, 0)),
         threshold: valueToGateThreshold(getValue(params.gateThreshold, 50)),
@@ -1232,7 +1305,7 @@ function App() {
       },
       eq: {
         enabled: valueToBoolean(getValue(params.eqEnabled, 0)),
-        hpfEnabled: inferHpfEnabledFromRaw(getValue(params.hpfFreq, 0)),
+        hpfEnabled: nextHpfEnabled,
         hpfType: valueToHpfTypeSlope(
           getValue(params.hpfTypeSlope, 8)
         ).type,
@@ -1240,10 +1313,10 @@ function App() {
           getValue(params.hpfTypeSlope, 8)
         ).slope,
         hpfFreq:
-          getValue(params.hpfFreq, 0) === 0
-            ? DEFAULT_EQ.hpfFreq
-            : valueToFrequency(getValue(params.hpfFreq, 63)),
-        lpfEnabled: inferLpfEnabledFromRaw(getValue(params.lpfFreq, 0)),
+          shouldKeepCachedHpfFreq(rawHpfFreq)
+            ? current.eq.hpfFreq
+            : valueToFrequency(rawHpfFreq),
+        lpfEnabled: nextLpfEnabled,
         lpfType: valueToLpfTypeSlope(
           getValue(params.lpfTypeSlope, 13)
         ).type,
@@ -1251,9 +1324,9 @@ function App() {
           getValue(params.lpfTypeSlope, 13)
         ).slope,
         lpfFreq:
-          getValue(params.lpfFreq, 0) === 0
-            ? DEFAULT_EQ.lpfFreq
-            : valueToFrequency(getValue(params.lpfFreq, 18000)),
+          shouldKeepCachedLpfFreq(rawLpfFreq)
+            ? current.eq.lpfFreq
+            : valueToFrequency(rawLpfFreq),
         bands: [
           {
             enabled: true,
@@ -1281,7 +1354,8 @@ function App() {
           },
         ],
       },
-    }));
+    })
+    });
   }
 
   async function syncAllChannels() {
@@ -1594,7 +1668,19 @@ function App() {
     const getValue = (param: number, fallback: number) =>
       values.get(param) ?? fallback;
 
-    updateAuxProcessorState(auxNumber, (current) => ({
+    updateAuxProcessorState(auxNumber, (current) => {
+      const rawHpfFreq = values.get(params.hpfFreq);
+      const rawLpfFreq = values.get(params.lpfFreq);
+      const nextHpfEnabled =
+        rawHpfFreq === undefined
+          ? current.eq.hpfEnabled
+          : inferHpfEnabledFromRaw(rawHpfFreq, current.eq.hpfEnabled);
+      const nextLpfEnabled =
+        rawLpfFreq === undefined
+          ? current.eq.lpfEnabled
+          : inferLpfEnabledFromRaw(rawLpfFreq, current.eq.lpfEnabled);
+
+      return ({
       ...current,
       comp: {
         enabled: valueToBoolean(getValue(params.compEnabled, 0)),
@@ -1607,20 +1693,32 @@ function App() {
       eq: {
         ...current.eq,
         enabled: valueToBoolean(getValue(params.eqEnabled, current.eq.enabled ? 1 : 0)),
-        hpfEnabled: inferHpfEnabledFromRaw(getValue(params.hpfFreq, 0)),
-        hpfType: valueToHpfTypeSlope(getValue(params.hpfTypeSlope, 8)).type,
-        hpfSlope: valueToHpfTypeSlope(getValue(params.hpfTypeSlope, 8)).slope,
+        hpfEnabled: nextHpfEnabled,
+        hpfType:
+          values.get(params.hpfTypeSlope) === undefined
+            ? current.eq.hpfType
+            : valueToHpfTypeSlope(values.get(params.hpfTypeSlope) as number).type,
+        hpfSlope:
+          values.get(params.hpfTypeSlope) === undefined
+            ? current.eq.hpfSlope
+            : valueToHpfTypeSlope(values.get(params.hpfTypeSlope) as number).slope,
         hpfFreq:
-          getValue(params.hpfFreq, 0) === 0
+          shouldKeepCachedHpfFreq(values.get(params.hpfFreq))
             ? current.eq.hpfFreq
-            : valueToFrequency(getValue(params.hpfFreq, 63)),
-        lpfEnabled: inferLpfEnabledFromRaw(getValue(params.lpfFreq, 0)),
-        lpfType: valueToLpfTypeSlope(getValue(params.lpfTypeSlope, 13)).type,
-        lpfSlope: valueToLpfTypeSlope(getValue(params.lpfTypeSlope, 13)).slope,
+            : valueToFrequency(values.get(params.hpfFreq) as number),
+        lpfEnabled: nextLpfEnabled,
+        lpfType:
+          values.get(params.lpfTypeSlope) === undefined
+            ? current.eq.lpfType
+            : valueToLpfTypeSlope(values.get(params.lpfTypeSlope) as number).type,
+        lpfSlope:
+          values.get(params.lpfTypeSlope) === undefined
+            ? current.eq.lpfSlope
+            : valueToLpfTypeSlope(values.get(params.lpfTypeSlope) as number).slope,
         lpfFreq:
-          getValue(params.lpfFreq, 0) === 0
+          shouldKeepCachedLpfFreq(values.get(params.lpfFreq))
             ? current.eq.lpfFreq
-            : valueToFrequency(getValue(params.lpfFreq, 18000)),
+            : valueToFrequency(values.get(params.lpfFreq) as number),
         bands: [
           {
             enabled: true,
@@ -1666,7 +1764,8 @@ function App() {
           },
         ],
       },
-    }));
+    })
+    });
   }
 
   async function syncAllAux() {
@@ -1775,6 +1874,19 @@ function App() {
         setProcessorStates((current) =>
           current.map((state, index) => {
             if (index !== channel - 1) return state;
+            const rawHpfFreq = values.get(p.hpfFreq);
+            const rawLpfFreq = values.get(p.lpfFreq);
+            const rawHpfTypeSlope = values.get(p.hpfTypeSlope);
+            const rawLpfTypeSlope = values.get(p.lpfTypeSlope);
+            const nextHpfEnabled =
+              rawHpfFreq === undefined
+                ? state.eq.hpfEnabled
+                : inferHpfEnabledFromRaw(rawHpfFreq, state.eq.hpfEnabled);
+            const nextLpfEnabled =
+              rawLpfFreq === undefined
+                ? state.eq.lpfEnabled
+                : inferLpfEnabledFromRaw(rawLpfFreq, state.eq.lpfEnabled);
+
             return {
               ...state,
               gate: {
@@ -1799,20 +1911,32 @@ function App() {
               },
               eq: {
                 ...state.eq,
-                hpfEnabled: inferHpfEnabledFromRaw(values.get(p.hpfFreq) ?? 0),
-                hpfType: valueToHpfTypeSlope(values.get(p.hpfTypeSlope) ?? 8).type,
-                hpfSlope: valueToHpfTypeSlope(values.get(p.hpfTypeSlope) ?? 8).slope,
+                hpfEnabled: nextHpfEnabled,
+                hpfType:
+                  rawHpfTypeSlope === undefined
+                    ? state.eq.hpfType
+                    : valueToHpfTypeSlope(rawHpfTypeSlope).type,
+                hpfSlope:
+                  rawHpfTypeSlope === undefined
+                    ? state.eq.hpfSlope
+                    : valueToHpfTypeSlope(rawHpfTypeSlope).slope,
                 hpfFreq:
-                  (values.get(p.hpfFreq) ?? 0) === 0
+                  shouldKeepCachedHpfFreq(rawHpfFreq)
                     ? state.eq.hpfFreq
-                    : valueToFrequency(values.get(p.hpfFreq) ?? state.eq.hpfFreq),
-                lpfEnabled: inferLpfEnabledFromRaw(values.get(p.lpfFreq) ?? 0),
-                lpfType: valueToLpfTypeSlope(values.get(p.lpfTypeSlope) ?? 13).type,
-                lpfSlope: valueToLpfTypeSlope(values.get(p.lpfTypeSlope) ?? 13).slope,
+                    : valueToFrequency(rawHpfFreq as number),
+                lpfEnabled: nextLpfEnabled,
+                lpfType:
+                  rawLpfTypeSlope === undefined
+                    ? state.eq.lpfType
+                    : valueToLpfTypeSlope(rawLpfTypeSlope).type,
+                lpfSlope:
+                  rawLpfTypeSlope === undefined
+                    ? state.eq.lpfSlope
+                    : valueToLpfTypeSlope(rawLpfTypeSlope).slope,
                 lpfFreq:
-                  (values.get(p.lpfFreq) ?? 0) === 0
+                  shouldKeepCachedLpfFreq(rawLpfFreq)
                     ? state.eq.lpfFreq
-                    : valueToFrequency(values.get(p.lpfFreq) ?? state.eq.lpfFreq),
+                    : valueToFrequency(rawLpfFreq as number),
               },
             };
           })
@@ -1848,6 +1972,19 @@ function App() {
       setAuxProcessorStates((current) =>
         current.map((state, index) => {
           if (index !== aux - 1) return state;
+          const rawHpfFreq = values.get(p.hpfFreq);
+          const rawLpfFreq = values.get(p.lpfFreq);
+          const rawHpfTypeSlope = values.get(p.hpfTypeSlope);
+          const rawLpfTypeSlope = values.get(p.lpfTypeSlope);
+          const nextHpfEnabled =
+            rawHpfFreq === undefined
+              ? state.eq.hpfEnabled
+              : inferHpfEnabledFromRaw(rawHpfFreq, state.eq.hpfEnabled);
+          const nextLpfEnabled =
+            rawLpfFreq === undefined
+              ? state.eq.lpfEnabled
+              : inferLpfEnabledFromRaw(rawLpfFreq, state.eq.lpfEnabled);
+
           return {
             ...state,
             comp: {
@@ -1864,20 +2001,32 @@ function App() {
             },
             eq: {
               ...state.eq,
-              hpfEnabled: inferHpfEnabledFromRaw(values.get(p.hpfFreq) ?? 0),
-              hpfType: valueToHpfTypeSlope(values.get(p.hpfTypeSlope) ?? 8).type,
-              hpfSlope: valueToHpfTypeSlope(values.get(p.hpfTypeSlope) ?? 8).slope,
+              hpfEnabled: nextHpfEnabled,
+              hpfType:
+                rawHpfTypeSlope === undefined
+                  ? state.eq.hpfType
+                  : valueToHpfTypeSlope(rawHpfTypeSlope).type,
+              hpfSlope:
+                rawHpfTypeSlope === undefined
+                  ? state.eq.hpfSlope
+                  : valueToHpfTypeSlope(rawHpfTypeSlope).slope,
               hpfFreq:
-                (values.get(p.hpfFreq) ?? 0) === 0
+                shouldKeepCachedHpfFreq(rawHpfFreq)
                   ? state.eq.hpfFreq
-                  : valueToFrequency(values.get(p.hpfFreq) ?? state.eq.hpfFreq),
-              lpfEnabled: inferLpfEnabledFromRaw(values.get(p.lpfFreq) ?? 0),
-              lpfType: valueToLpfTypeSlope(values.get(p.lpfTypeSlope) ?? 13).type,
-              lpfSlope: valueToLpfTypeSlope(values.get(p.lpfTypeSlope) ?? 13).slope,
+                  : valueToFrequency(rawHpfFreq as number),
+              lpfEnabled: nextLpfEnabled,
+              lpfType:
+                rawLpfTypeSlope === undefined
+                  ? state.eq.lpfType
+                  : valueToLpfTypeSlope(rawLpfTypeSlope).type,
+              lpfSlope:
+                rawLpfTypeSlope === undefined
+                  ? state.eq.lpfSlope
+                  : valueToLpfTypeSlope(rawLpfTypeSlope).slope,
               lpfFreq:
-                (values.get(p.lpfFreq) ?? 0) === 0
+                shouldKeepCachedLpfFreq(rawLpfFreq)
                   ? state.eq.lpfFreq
-                  : valueToFrequency(values.get(p.lpfFreq) ?? state.eq.lpfFreq),
+                  : valueToFrequency(rawLpfFreq as number),
             },
           };
         })
@@ -2169,6 +2318,15 @@ function App() {
 
       const client = new Axios16Client(ip);
       await client.connect();
+
+      client.setOnDisconnect(() => {
+        // Keep UI/client state consistent when the socket drops unexpectedly.
+        if (clientRef.current !== client) return;
+        stopMeterPolling();
+        clientRef.current = null;
+        setIsConnected(false);
+        setStatus("Conexao com a mesa foi encerrada.");
+      });
 
       clientRef.current = client;
       setIsConnected(true);
@@ -2806,11 +2964,16 @@ function App() {
 
   function handleEqChange(channelNumber: number, patch: Partial<EqState>) {
     const targets = getLinkedChannelTargets(channelNumber);
+    const nextEqByTarget = new Map<number, EqState>();
 
     targets.forEach((target) => {
+      const currentEq = processorStates[target - 1].eq;
+      const nextEq = mergeEqPatch(currentEq, patch);
+      nextEqByTarget.set(target, nextEq);
+
       updateProcessorState(target, (current) => ({
         ...current,
-        eq: { ...current.eq, ...patch },
+        eq: nextEq,
       }));
     });
 
@@ -2818,37 +2981,40 @@ function App() {
     if (!client) return;
 
     targets.forEach((target) => {
+      const nextEq = nextEqByTarget.get(target);
+      if (!nextEq) return;
+
       if (patch.enabled !== undefined) {
-        client.setEqEnabled(target, patch.enabled);
+        client.setEqEnabled(target, nextEq.enabled);
       }
-      if (patch.hpfFreq !== undefined) {
-        client.setHpfFreq(target, patch.hpfEnabled === false ? 0 : patch.hpfFreq);
+      if (patch.hpfEnabled !== undefined) {
+        client.setHpfFreq(
+          target,
+          nextEq.hpfEnabled ? nextEq.hpfFreq : DEFAULT_EQ.hpfFreq
+        );
+      } else if (patch.hpfFreq !== undefined && nextEq.hpfEnabled) {
+        client.setHpfFreq(target, nextEq.hpfFreq);
       }
-      if (patch.lpfFreq !== undefined) {
-        client.setLpfFreq(target, patch.lpfEnabled === false ? 0 : patch.lpfFreq);
-      }
-      if (patch.hpfEnabled !== undefined && patch.hpfFreq === undefined) {
-        const current = processorStates[target - 1].eq;
-        client.setHpfFreq(target, patch.hpfEnabled ? current.hpfFreq : 0);
-      }
-      if (patch.lpfEnabled !== undefined && patch.lpfFreq === undefined) {
-        const current = processorStates[target - 1].eq;
-        client.setLpfFreq(target, patch.lpfEnabled ? current.lpfFreq : 0);
+      if (patch.lpfEnabled !== undefined) {
+        client.setLpfFreq(
+          target,
+          nextEq.lpfEnabled ? nextEq.lpfFreq : DEFAULT_EQ.lpfFreq
+        );
+      } else if (patch.lpfFreq !== undefined && nextEq.lpfEnabled) {
+        client.setLpfFreq(target, nextEq.lpfFreq);
       }
       if (patch.hpfType !== undefined || patch.hpfSlope !== undefined) {
-        const current = processorStates[target - 1].eq;
         client.setHpfTypeSlope(
           target,
-          (patch.hpfType ?? current.hpfType) as FilterType,
-          (patch.hpfSlope ?? current.hpfSlope) as FilterSlope
+          nextEq.hpfType as FilterType,
+          nextEq.hpfSlope as FilterSlope
         );
       }
       if (patch.lpfType !== undefined || patch.lpfSlope !== undefined) {
-        const current = processorStates[target - 1].eq;
         client.setLpfTypeSlope(
           target,
-          (patch.lpfType ?? current.lpfType) as FilterType,
-          (patch.lpfSlope ?? current.lpfSlope) as FilterSlope
+          nextEq.lpfType as FilterType,
+          nextEq.lpfSlope as FilterSlope
         );
       }
     });
@@ -2905,28 +3071,41 @@ function App() {
   }
 
   function resetGate(channelNumber: number) {
-    handleGateChange(channelNumber, { ...DEFAULT_GATE });
+    const current = processorStates[channelNumber - 1].gate;
+    handleGateChange(channelNumber, {
+      ...DEFAULT_GATE,
+      enabled: current.enabled,
+    });
   }
 
   function resetComp(channelNumber: number) {
-    handleCompChange(channelNumber, { ...DEFAULT_COMP });
+    const current = processorStates[channelNumber - 1].comp;
+    handleCompChange(channelNumber, {
+      ...DEFAULT_COMP,
+      enabled: current.enabled,
+    });
   }
 
   function resetEq(channelNumber: number) {
+    const currentEq = processorStates[channelNumber - 1].eq;
+
     handleEqChange(channelNumber, {
-      enabled: DEFAULT_EQ.enabled,
-      hpfEnabled: DEFAULT_EQ.hpfEnabled,
+      enabled: currentEq.enabled,
+      hpfEnabled: currentEq.hpfEnabled,
       hpfType: DEFAULT_EQ.hpfType,
       hpfSlope: DEFAULT_EQ.hpfSlope,
       hpfFreq: DEFAULT_EQ.hpfFreq,
-      lpfEnabled: DEFAULT_EQ.lpfEnabled,
+      lpfEnabled: currentEq.lpfEnabled,
       lpfType: DEFAULT_EQ.lpfType,
       lpfSlope: DEFAULT_EQ.lpfSlope,
       lpfFreq: DEFAULT_EQ.lpfFreq,
     });
 
     DEFAULT_EQ.bands.forEach((band, index) => {
-      handleEqBandChange(channelNumber, index + 1, { ...band });
+      handleEqBandChange(channelNumber, index + 1, {
+        ...band,
+        enabled: currentEq.bands[index]?.enabled ?? band.enabled,
+      });
     });
   }
 
@@ -2955,6 +3134,8 @@ function App() {
       updateChannelState(target, { hiZOn: nextValue });
     });
   }
+
+  void toggleHiZ;
 
   function toggleMainMasterMute() {
     const current = master.leftMuted;
@@ -3095,10 +3276,10 @@ function App() {
     const channelNumber = detailView.channel;
     const channelState = channels[channelNumber - 1];
     const processorState = processorStates[channelNumber - 1];
-    const canUseHiZ = channelNumber === 1 || channelNumber === 2;
     const [pairOdd, pairEven] = getChannelPair(channelNumber);
     const linkKey = pairKey(pairOdd, pairEven);
     const isLinked = Boolean(channelLinks[linkKey]);
+    const detailChannelName =
       isLinked && channelState.channelName.trim().length > 0
         ? `${stripLinkedNameSuffix(channelState.channelName)} ${
             channelNumber === pairOdd ? "L" : "R"
@@ -3111,170 +3292,150 @@ function App() {
         style={{
           width: "100%",
           height: "100%",
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr)",
+          gridTemplateRows: "auto minmax(0, 1fr)",
+          gap: 4,
         }}
       >
         <section
           className="detail-panel"
           style={{
-            padding: 8,
-            borderRadius: 8,
-            border: "1px solid #1a2a37",
-            background: "linear-gradient(180deg, #08131b 0%, #050c13 100%)",
-            display: "grid",
-            gridTemplateRows: "auto 1fr",
-            gap: 6,
-            minHeight: 0,
-            overflow: "hidden",
+            padding: 0,
+            borderRadius: 4,
+            border: "none",
+            background: "transparent",
+            minWidth: 0,
+            position: "relative",
+            zIndex: 3,
           }}
         >
           <div
             style={{
+              minHeight: 48,
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              gap: 8,
+              gap: 16,
               minWidth: 0,
+              padding: "8px 16px",
+              borderRadius: 4,
+              background: "var(--surface-overlay-strong)",
             }}
           >
             <div
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 4,
-                padding: 4,
-                borderRadius: 999,
-                border: "1px solid #2a3a47",
-                background: "linear-gradient(180deg, #0b1722 0%, #08121b 100%)",
+                gap: 8,
+                width: 113,
+                flexShrink: 0,
               }}
             >
               <button
                 type="button"
                 onClick={() => setDetailView(null)}
                 style={{
-                  width: 26,
-                  height: 26,
-                  borderRadius: 999,
-                  border: "1px solid #22d3ee",
-                  background: "#082232",
-                  color: "#a5f3fc",
+                  height: 32,
+                  padding: "4px 8px",
+                  borderRadius: 8,
+                  border: "1px solid var(--button-default-border)",
+                  background: "var(--button-default-bg)",
+                  color: "var(--button-default-text)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
                   fontWeight: 900,
-                  fontSize: 13,
+                  fontSize: 10,
+                  letterSpacing: "1.2px",
                   cursor: "pointer",
+                  whiteSpace: "nowrap",
                 }}
                 aria-label="Voltar"
                 title="Voltar"
               >
-                ←
-              </button>
-
-              <button
-                type="button"
-                disabled={channelNumber === 1}
-                onClick={() => goToDetailChannel(channelNumber - 1)}
-                style={{
-                  width: 26,
-                  height: 26,
-                  borderRadius: 999,
-                  border: "1px solid #334155",
-                  background: "#0b1220",
-                  color: "#fff",
-                  fontWeight: 900,
-                  fontSize: 13,
-                  cursor: channelNumber === 1 ? "not-allowed" : "pointer",
-                  opacity: channelNumber === 1 ? 0.4 : 1,
-                }}
-              >
-                ‹
-              </button>
-              <span
-                style={{
-                  minWidth: 74,
-                  textAlign: "center",
-                  fontSize: 11,
-                  fontWeight: 900,
-                  color: "#e5eef5",
-                  letterSpacing: "0.05em",
-                }}
-              >
-                CH {channelNumber} / 16
-              </span>
-              <button
-                type="button"
-                disabled={channelNumber === 16}
-                onClick={() => goToDetailChannel(channelNumber + 1)}
-                style={{
-                  width: 26,
-                  height: 26,
-                  borderRadius: 999,
-                  border: "1px solid #334155",
-                  background: "#0b1220",
-                  color: "#fff",
-                  fontWeight: 900,
-                  fontSize: 13,
-                  cursor: channelNumber === 16 ? "not-allowed" : "pointer",
-                  opacity: channelNumber === 16 ? 0.4 : 1,
-                }}
-              >
-                ›
+                <span style={{ fontSize: 14, lineHeight: 1 }}>←</span>
+                <span>VOLTAR</span>
               </button>
             </div>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-              <button
-                type="button"
-                disabled={!isConnected}
-                onClick={() => togglePhase(channelNumber)}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                minWidth: 0,
+                flex: "1 1 auto",
+              }}
+            >
+              <div
                 style={{
-                  padding: "5px 10px",
-                  borderRadius: 6,
-                  border: channelState.phasePositive
-                    ? "1px solid #22d3ee"
-                    : "1px solid #f59e0b",
-                  background: channelState.phasePositive
-                    ? "linear-gradient(180deg, #0b2a36 0%, #082232 100%)"
-                    : "linear-gradient(180deg, #92400e 0%, #7c2d12 100%)",
-                  color: channelState.phasePositive ? "#a5f3fc" : "#fef3c7",
-                  fontWeight: 900,
-                  fontSize: 12,
-                  letterSpacing: "0.06em",
-                  cursor: !isConnected ? "not-allowed" : "pointer",
-                  opacity: !isConnected ? 0.5 : 1,
-                  boxShadow: channelState.phasePositive
-                    ? "0 0 8px rgba(34,211,238,0.35)"
-                    : "0 0 8px rgba(245,158,11,0.4)",
-                  transition: "all 120ms ease-out",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  minWidth: 0,
                 }}
               >
-                {channelState.phasePositive ? "PHASE +" : "Ø PHASE"}
-              </button>
-
-              {canUseHiZ && (
+                <div
+                  style={{
+                    fontFamily: "Inter, system-ui, sans-serif",
+                    fontSize: 22,
+                    lineHeight: "30px",
+                    fontWeight: 700,
+                    color: "#ffffff",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    maxWidth: 320,
+                  }}
+                >
+                  {detailChannelName.trim().length > 0 ? detailChannelName : `Canal ${channelNumber}`}
+                </div>
+                <div
+                  style={{
+                    minWidth: 45,
+                    padding: "4px 8px",
+                    borderRadius: 4,
+                    background: `var(--channel-${String(channelState.colorId).padStart(2, "0")}, #c96626)`,
+                    color: "var(--text-inverse)",
+                    fontSize: 12,
+                    lineHeight: "12px",
+                    fontWeight: 600,
+                    letterSpacing: "0.6px",
+                    textAlign: "center",
+                  }}
+                >
+                  {`CH ${channelNumber}`}
+                </div>
                 <button
                   type="button"
                   disabled={!isConnected}
-                  onClick={() => toggleHiZ(channelNumber)}
+                  onClick={() => setCustomizationView({ section: "inputs", index: channelNumber })}
+                  aria-label="Editar canal"
+                  title="Editar canal"
                   style={{
-                    padding: "5px 10px",
-                    borderRadius: 6,
-                    border: channelState.hiZOn
-                      ? "1px solid #4ade80"
-                      : "1px solid #334155",
-                    background: channelState.hiZOn ? "#14532d" : "#0f172a",
-                    color: channelState.hiZOn ? "#f0fdf4" : "#64748b",
-                    fontWeight: 900,
-                    fontSize: 12,
-                    letterSpacing: "0.06em",
+                    width: 24,
+                    height: 24,
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--text-secondary)",
+                    display: "grid",
+                    placeItems: "center",
+                    padding: 0,
                     cursor: !isConnected ? "not-allowed" : "pointer",
                     opacity: !isConnected ? 0.5 : 1,
-                    boxShadow: channelState.hiZOn
-                      ? "0 0 8px rgba(74,222,128,0.35)"
-                      : "none",
                   }}
                 >
-                  HI-Z
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M11.98 1.793a1.5 1.5 0 0 1 2.122 2.121l-7.19 7.191-2.93.808.808-2.93 7.19-7.19Z" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M9.98 3.793 12.102 5.915" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
                 </button>
-              )}
+              </div>
+            </div>
 
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
               <button
                 type="button"
                 disabled={!isConnected}
@@ -3303,12 +3464,83 @@ function App() {
                     : "none",
                 }}
               >
-                {isLinked
-                  ? `LINKED CH ${pairOdd}-${pairEven}`
-                  : `LINK CH ${pairOdd}-${pairEven}`}
+                {isLinked ? `LINKED CH${pairOdd}-CH${pairEven}` : `LINK CH${pairOdd}-CH${pairEven}`}
               </button>
             </div>
           </div>
+
+        </section>
+
+        <section
+          style={{
+            minHeight: 0,
+            display: "grid",
+            gridTemplateColumns: "110px minmax(0, 1fr)",
+            gap: 4,
+            padding: "0 4px",
+            overflow: "hidden",
+            position: "relative",
+          }}
+        >
+          <aside
+            style={{
+              minWidth: 0,
+              minHeight: 0,
+              width: 110,
+              display: "flex",
+              justifyContent: "stretch",
+              justifySelf: "start",
+              overflow: "hidden",
+              position: "relative",
+              zIndex: 3,
+            }}
+          >
+            <ChannelStrip
+              channel={channelNumber}
+              channelName={channelState.channelName}
+              section="inputs"
+              variant="detail"
+              isPairLinked={isLinked}
+              muted={channelState.muted}
+              soloOn={channelState.soloOn}
+              phantomOn={channelState.phantomOn}
+              phasePositive={channelState.phasePositive}
+              colorId={channelState.colorId}
+              eqState={processorState.eq}
+              faderDb={channelState.faderDb}
+              faderPosition={channelState.faderPosition}
+              pan={channelState.pan}
+              gain={channelState.gain}
+              meterDb={channelState.meterDb}
+              peakDb={channelState.peakDb}
+              clipped={channelState.clipUntil > Date.now()}
+              disabled={!isConnected}
+              onToggleMute={() => toggleMute(channelNumber)}
+              onToggleSolo={() => toggleChannelSolo(channelNumber)}
+              onTogglePhantom={() => togglePhantom(channelNumber)}
+              onTogglePhase={() => togglePhase(channelNumber)}
+              onFaderChange={(position) =>
+                handleFaderChange(channelNumber, position)
+              }
+              onPanChange={(value) => handlePanChange(channelNumber, value)}
+              onGainChange={(value) => handleGainChange(channelNumber, value)}
+              onOpenDetail={goToDetailChannel}
+            />
+          </aside>
+
+          <section
+            className="detail-panel"
+            style={{
+              padding: 0,
+              borderRadius: 4,
+              border: "none",
+              background: "transparent",
+              minHeight: 0,
+              overflow: "hidden",
+              position: "relative",
+              zIndex: 1,
+            }}
+          >
 
           <ChannelProcessors
             activeModule={activeProcessorModule}
@@ -3325,50 +3557,8 @@ function App() {
             onResetComp={() => resetComp(channelNumber)}
             onResetEq={() => resetEq(channelNumber)}
           />
+          </section>
         </section>
-
-        <aside
-          style={{
-            minWidth: 0,
-            minHeight: 0,
-            width: 140,
-            display: "flex",
-            justifyContent: "flex-end",
-            justifySelf: "end",
-            overflow: "hidden",
-          }}
-        >
-          <ChannelStrip
-            channel={channelNumber}
-            channelName={channelState.channelName}
-            section="inputs"
-            isPairLinked={isLinked}
-            muted={channelState.muted}
-            soloOn={channelState.soloOn}
-            phantomOn={channelState.phantomOn}
-            phasePositive={channelState.phasePositive}
-            colorId={channelState.colorId}
-            eqState={processorState.eq}
-            faderDb={channelState.faderDb}
-            faderPosition={channelState.faderPosition}
-            pan={channelState.pan}
-            gain={channelState.gain}
-            meterDb={channelState.meterDb}
-            peakDb={channelState.peakDb}
-            clipped={channelState.clipUntil > Date.now()}
-            disabled={!isConnected}
-            onToggleMute={() => toggleMute(channelNumber)}
-            onToggleSolo={() => toggleChannelSolo(channelNumber)}
-            onTogglePhantom={() => togglePhantom(channelNumber)}
-            onTogglePhase={() => togglePhase(channelNumber)}
-            onFaderChange={(position) =>
-              handleFaderChange(channelNumber, position)
-            }
-            onPanChange={(value) => handlePanChange(channelNumber, value)}
-            onGainChange={(value) => handleGainChange(channelNumber, value)}
-            onOpenDetail={goToDetailChannel}
-          />
-        </aside>
       </div>
     );
   }
@@ -3565,51 +3755,60 @@ function App() {
             onEqChange={(patch) => {
               const client = clientRef.current;
               const targets = getLinkedAuxTargets(auxNumber);
+              const nextEqByTarget = new Map<number, EqState>();
+
               targets.forEach((target) => {
+                const currentEq = auxProcessorStates[target - 1].eq;
+                const nextEq = mergeEqPatch(currentEq, patch);
+                nextEqByTarget.set(target, nextEq);
+
                 updateAuxProcessorState(target, (current) => ({
                   ...current,
-                  eq: { ...current.eq, ...patch },
+                  eq: nextEq,
                 }));
 
                 if (!client) return;
 
+                const eqToSend = nextEqByTarget.get(target);
+                if (!eqToSend) return;
+
                 if (patch.enabled !== undefined) {
-                  client.setAuxEqEnabled(target, patch.enabled);
+                  client.setAuxEqEnabled(target, eqToSend.enabled);
                 }
 
-                if (patch.hpfFreq !== undefined) {
-                  client.setAuxHpfFreq(target, patch.hpfEnabled === false ? 0 : patch.hpfFreq);
+                if (patch.hpfEnabled !== undefined) {
+                  client.setAuxHpfFreq(
+                    target,
+                    eqToSend.hpfEnabled ? eqToSend.hpfFreq : DEFAULT_AUX_EQ.hpfFreq
+                  );
+                } else if (patch.hpfFreq !== undefined && eqToSend.hpfEnabled) {
+                  client.setAuxHpfFreq(target, eqToSend.hpfFreq);
                 }
-                if (patch.lpfFreq !== undefined) {
-                  client.setAuxLpfFreq(target, patch.lpfEnabled === false ? 0 : patch.lpfFreq);
-                }
-                if (patch.hpfEnabled !== undefined && patch.hpfFreq === undefined) {
-                  const currentEq = auxProcessorStates[target - 1].eq;
-                  client.setAuxHpfFreq(target, patch.hpfEnabled ? currentEq.hpfFreq : 0);
-                }
-                if (patch.lpfEnabled !== undefined && patch.lpfFreq === undefined) {
-                  const currentEq = auxProcessorStates[target - 1].eq;
-                  client.setAuxLpfFreq(target, patch.lpfEnabled ? currentEq.lpfFreq : 0);
+                if (patch.lpfEnabled !== undefined) {
+                  client.setAuxLpfFreq(
+                    target,
+                    eqToSend.lpfEnabled ? eqToSend.lpfFreq : DEFAULT_AUX_EQ.lpfFreq
+                  );
+                } else if (patch.lpfFreq !== undefined && eqToSend.lpfEnabled) {
+                  client.setAuxLpfFreq(target, eqToSend.lpfFreq);
                 }
                 if (patch.hpfType !== undefined || patch.hpfSlope !== undefined) {
-                  const currentEq = auxProcessorStates[target - 1].eq;
                   client.setAuxHpfTypeSlope(
                     target,
                     filterTypeSlopeToRaw(
                       "hpf",
-                      (patch.hpfType ?? currentEq.hpfType) as FilterType,
-                      (patch.hpfSlope ?? currentEq.hpfSlope) as FilterSlope
+                      eqToSend.hpfType as FilterType,
+                      eqToSend.hpfSlope as FilterSlope
                     )
                   );
                 }
                 if (patch.lpfType !== undefined || patch.lpfSlope !== undefined) {
-                  const currentEq = auxProcessorStates[target - 1].eq;
                   client.setAuxLpfTypeSlope(
                     target,
                     filterTypeSlopeToRaw(
                       "lpf",
-                      (patch.lpfType ?? currentEq.lpfType) as FilterType,
-                      (patch.lpfSlope ?? currentEq.lpfSlope) as FilterSlope
+                      eqToSend.lpfType as FilterType,
+                      eqToSend.lpfSlope as FilterSlope
                     )
                   );
                 }
@@ -3664,14 +3863,29 @@ function App() {
               targets.forEach((target) => {
                 updateAuxProcessorState(target, (current) => ({
                   ...current,
-                  comp: { ...DEFAULT_COMP },
+                  comp: {
+                    ...DEFAULT_COMP,
+                    enabled: current.comp.enabled,
+                  },
                 }));
               });
             }}
             onResetEq={() => {
               const targets = getLinkedAuxTargets(auxNumber);
               targets.forEach((target) => {
-                updateAuxProcessorState(target, () => createDefaultAuxProcessorState());
+                updateAuxProcessorState(target, (current) => ({
+                  ...current,
+                  eq: {
+                    ...DEFAULT_AUX_EQ,
+                    enabled: current.eq.enabled,
+                    hpfEnabled: current.eq.hpfEnabled,
+                    lpfEnabled: current.eq.lpfEnabled,
+                    bands: DEFAULT_AUX_EQ.bands.map((band, index) => ({
+                      ...band,
+                      enabled: current.eq.bands[index]?.enabled ?? band.enabled,
+                    })),
+                  },
+                }));
               });
             }}
           />

@@ -9,6 +9,8 @@ type KnobProps = {
   variant?: "gain" | "pan";
   size?: number;
   pixelsPerStep?: number;
+  accentColor?: string;
+  glowColor?: string;
   disabled?: boolean;
   onChange: (value: number) => void;
 };
@@ -49,6 +51,8 @@ export function Knob({
   variant = "gain",
   size = 44,
   pixelsPerStep = 6,
+  accentColor,
+  glowColor,
   disabled = false,
   onChange,
 }: KnobProps) {
@@ -72,7 +76,8 @@ export function Knob({
   const bgArcPath = describeArc(cx, cy, arcR, MIN_DEG, MAX_DEG);
 
   let activeArcPath = "";
-  const ARC_COLOR = "var(--knob-arc-active)";
+  const arcColor = accentColor ?? "var(--knob-arc-active)";
+  const knobGlowColor = glowColor ?? accentColor ?? "#38bdf8";
 
   if (variant === "gain") {
     if (angleDeg > MIN_DEG) {
@@ -210,7 +215,7 @@ export function Knob({
             <stop offset="100%" stopColor="var(--knob-body-dark)" />
           </radialGradient>
           <filter id={`kglow-${id}`} x="-120%" y="-120%" width="340%" height="340%">
-            <feDropShadow dx="0" dy="0" stdDeviation="6" floodColor="#38bdf8" floodOpacity="0.45" />
+            <feDropShadow dx="0" dy="0" stdDeviation="6" floodColor={knobGlowColor} floodOpacity="0.45" />
           </filter>
         </defs>
 
@@ -226,7 +231,7 @@ export function Knob({
           <path
             d={activeArcPath}
             fill="none"
-            stroke={ARC_COLOR}
+            stroke={arcColor}
             strokeWidth={strokeW}
             strokeLinecap="round"
             filter={`url(#kglow-${id})`}

@@ -69,12 +69,6 @@ type ChannelProcessorsProps = {
 };
 
 
-const MODULES: { id: ProcessorModule; label: string }[] = [
-  { id: "eq", label: "EQ" },
-  { id: "comp", label: "COMP" },
-  { id: "gate", label: "GATE" },
-];
-
 function GateMiniPreview({ gate }: { gate: GateState }) {
   const W = 84, H = 56;
   const pad = 4;
@@ -1634,219 +1628,269 @@ function EqEditor({
         : "#94a3b8";
 
   return (
-    <ProcessorShell
-      title="Equalizador parametrico"
-    >
-      <div style={{ minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) 260px", gap: 10 }}>
-        <div style={{ position: "relative", minHeight: 0 }}>
-          <ModuleHeaderActions
-            enabled={eq.enabled}
-            disabled={disabled}
-            accentColor={MODULE_ACCENTS.eq.color}
-            accentGlow={MODULE_ACCENTS.eq.glow}
-            onLabel="EQ ON"
-            offLabel="EQ OFF"
-            onToggle={() => onChange({ enabled: !eq.enabled })}
-            onReset={onReset}
-          />
-          <EqGraph
-            eq={eq}
-            selected={selectedNode}
-            disabled={disabled}
-            onSelect={(selection) => {
-              setSelectedNode(selection);
-              if (typeof selection === "number") setSelectedBand(selection);
-            }}
-            onEqChange={onChange}
-            onBandChange={onBandChange}
-          />
-        </div>
-        <div style={{ display: "grid", gap: 12, alignContent: "start" }}>
+    <ProcessorShell title="QuadCurve EQ">
+      <div style={{ minHeight: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr) auto", gap: 6 }}>
+        <div
+          style={{
+            minHeight: 0,
+            borderRadius: 6,
+            border: "1px solid #2a3a47",
+            background: "linear-gradient(180deg, #1b2a40 0%, #18283d 100%)",
+            overflow: "hidden",
+            display: "grid",
+            gridTemplateRows: "44px minmax(0, 1fr)",
+          }}
+        >
           <div
             style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(6, minmax(0, 1fr))",
-              gap: 7,
-              padding: 9,
-              borderRadius: 10,
-              border: "1px solid #263746",
-              background: "linear-gradient(180deg, #0a141f 0%, #070f18 100%)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "0 12px",
+              borderBottom: "1px solid rgba(148,163,184,0.2)",
+              background: "rgba(15,23,42,0.35)",
             }}
           >
-            {nodeButtons.map((node) => (
+            <div style={{ color: "#dbe5ef", fontWeight: 800, letterSpacing: "0.06em", fontSize: 12 }}>QuadCurve EQ</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <button
-                key={String(node.id)}
                 type="button"
-                onClick={() => {
-                  setSelectedNode(node.id);
-                  if (typeof node.id === "number") setSelectedBand(node.id);
-                }}
+                disabled={disabled}
+                onClick={() => onChange({ enabled: !eq.enabled })}
                 style={{
-                  position: "relative",
-                  padding: "7px 0 9px",
-                  borderRadius: 6,
-                  border: `1px solid ${node.color}`,
-                  background: selectedNode === node.id ? "#182635" : "#0b121a",
-                  color: node.color,
-                  fontWeight: 950,
-                  cursor: "pointer",
-                  boxShadow:
-                    selectedNode === node.id ? `0 0 12px ${node.color}33` : "none",
+                  height: 24,
+                  minWidth: 56,
+                  padding: "0 10px",
+                  borderRadius: 999,
+                  border: eq.enabled ? "1px solid #22c55e" : "1px solid #334155",
+                  background: eq.enabled ? "#16a34a" : "#111827",
+                  color: "#f8fafc",
+                  fontSize: 10,
+                  fontWeight: 900,
+                  letterSpacing: "1.2px",
+                  cursor: disabled ? "not-allowed" : "pointer",
                 }}
               >
-                {node.label}
-                <span
-                  style={{
-                    position: "absolute",
-                    left: 6,
-                    right: 6,
-                    bottom: 2,
-                    height: 2,
-                    borderRadius: 999,
-                    background: node.color,
-                    opacity: selectedNode === node.id ? 1 : 0.28,
-                  }}
-                />
+                {eq.enabled ? "ON" : "OFF"}
               </button>
-            ))}
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={onReset}
+                style={{
+                  height: 24,
+                  padding: "0 12px",
+                  borderRadius: 6,
+                  border: "1px solid #334155",
+                  background: "#1f2937",
+                  color: "#f8fafc",
+                  fontSize: 10,
+                  fontWeight: 900,
+                  letterSpacing: "1px",
+                  cursor: disabled ? "not-allowed" : "pointer",
+                }}
+              >
+                RESET
+              </button>
+            </div>
           </div>
 
-          {selectedFilter ? (
-            <div
+          <div style={{ minHeight: 0 }}>
+            <EqGraph
+              eq={eq}
+              selected={selectedNode}
+              disabled={disabled}
+              onSelect={(selection) => {
+                setSelectedNode(selection);
+                if (typeof selection === "number") setSelectedBand(selection);
+              }}
+              onEqChange={onChange}
+              onBandChange={onBandChange}
+            />
+          </div>
+        </div>
+
+        <div
+          style={{
+            minHeight: 0,
+            display: "grid",
+            gridTemplateColumns: "104px minmax(0, 1fr)",
+            gap: 0,
+            borderRadius: 6,
+            border: "1px solid #2a3a47",
+            overflow: "hidden",
+            background: "linear-gradient(180deg, #1d2c43 0%, #19283d 100%)",
+          }}
+        >
+          <div
+            style={{
+              padding: 10,
+              borderRight: "1px solid #2f4155",
+              borderLeft: `2px solid ${selectedFilter ? selectedFilterColor : getEqBandColor(selectedBand - 1)}`,
+              display: "grid",
+              alignContent: "center",
+              gap: 8,
+            }}
+          >
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              {nodeButtons.map((node) => (
+                <button
+                  key={String(node.id)}
+                  type="button"
+                  onClick={() => {
+                    setSelectedNode(node.id);
+                    if (typeof node.id === "number") setSelectedBand(node.id);
+                  }}
+                  style={{
+                    height: 22,
+                    borderRadius: 5,
+                    border: `1px solid ${node.color}`,
+                    background: selectedNode === node.id ? node.color : "#18283a",
+                    color: selectedNode === node.id ? "#020617" : node.color,
+                    fontSize: 12,
+                    fontWeight: 900,
+                    cursor: "pointer",
+                    lineHeight: "12px",
+                  }}
+                >
+                  {node.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ padding: 10, display: "grid", gridTemplateRows: "34px minmax(0, 1fr)", gap: 8 }}>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => {
+                if (selectedFilter) {
+                  onChange(selectedFilter === "hpf" ? { hpfEnabled: !eq.hpfEnabled } : { lpfEnabled: !eq.lpfEnabled });
+                  return;
+                }
+                onBandChange(selectedBand, { enabled: !band.enabled });
+              }}
               style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 12,
-                borderTop: `2px solid ${selectedFilterColor}`,
-                paddingTop: 12,
+                justifySelf: "start",
+                minWidth: 72,
+                height: 28,
+                padding: "0 14px",
+                borderRadius: 999,
+                border: `1px solid ${selectedFilter ? selectedFilterColor : getEqBandColor(selectedBand - 1)}`,
+                background:
+                  selectedFilter
+                    ? (selectedFilter === "hpf" ? (eq.hpfEnabled ? "#2a0d13" : "#111827") : (eq.lpfEnabled ? "#0b1733" : "#111827"))
+                    : band.enabled
+                      ? "#16a34a"
+                      : "#111827",
+                color: "#f8fafc",
+                fontWeight: 900,
+                fontSize: 12,
+                cursor: disabled ? "not-allowed" : "pointer",
               }}
             >
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() =>
-                  onChange(
-                    selectedFilter === "hpf"
-                      ? { hpfEnabled: !eq.hpfEnabled }
-                      : { lpfEnabled: !eq.lpfEnabled }
-                  )
-                }
-                style={{
-                  gridColumn: "1 / -1",
-                  padding: "9px 0",
-                  borderRadius: 7,
-                  border:
-                    selectedFilter === "hpf"
-                      ? eq.hpfEnabled
-                        ? `1px solid ${EQ_COLORS.hpf}`
-                        : "1px solid #334155"
-                      : eq.lpfEnabled
-                        ? `1px solid ${EQ_COLORS.lpf}`
-                        : "1px solid #334155",
-                  background:
+              {selectedFilter
+                ? (selectedFilter === "hpf" ? (eq.hpfEnabled ? "HPF ON" : "HPF OFF") : (eq.lpfEnabled ? "LPF ON" : "LPF OFF"))
+                : band.enabled
+                  ? "ON"
+                  : "OFF"}
+            </button>
+
+            {selectedFilter ? (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
+                <EditableKnob
+                  label="FREQ"
+                  value={snapEqFrequency(selectedFilter === "hpf" ? eq.hpfFreq : eq.lpfFreq)}
+                  min={20}
+                  max={20000}
+                  knobPixelsPerStep={0.5}
+                  displayValue={
                     selectedFilter === "hpf"
                       ? eq.hpfEnabled
-                        ? "#2a0d13"
-                        : "#111827"
+                        ? formatFreq(eq.hpfFreq)
+                        : "OFF"
                       : eq.lpfEnabled
-                        ? "#0b1733"
-                        : "#111827",
-                  color: "#f8fafc",
-                  fontWeight: 950,
-                  cursor: disabled ? "not-allowed" : "pointer",
-                }}
-              >
-                {selectedFilter === "hpf"
-                  ? eq.hpfEnabled
-                    ? "HPF ON"
-                    : "HPF OFF"
-                  : eq.lpfEnabled
-                    ? "LPF ON"
-                    : "LPF OFF"}
-              </button>
-              <EditableKnob
-                label="FREQ"
-                value={snapEqFrequency(selectedFilter === "hpf" ? eq.hpfFreq : eq.lpfFreq)}
-                min={20}
-                max={20000}
-                knobPixelsPerStep={0.5}
-                displayValue={
-                  selectedFilter === "hpf"
-                    ? eq.hpfEnabled
-                      ? formatFreq(eq.hpfFreq)
-                      : "OFF"
-                    : eq.lpfEnabled
-                      ? formatFreq(eq.lpfFreq)
-                      : "OFF"
-                }
-                suffix="Hz"
-                disabled={disabled}
-                onChange={(freq) =>
-                  onChange(
-                    selectedFilter === "hpf"
-                      ? { hpfEnabled: true, hpfFreq: snapEqFrequency(Math.min(freq, eq.lpfFreq - 10)) }
-                      : { lpfEnabled: true, lpfFreq: snapEqFrequency(Math.max(freq, eq.hpfFreq + 10)) }
-                  )
-                }
-              />
-              <SelectField<FilterType>
-                label="Tipo"
-                value={selectedFilter === "hpf" ? eq.hpfType : eq.lpfType}
-                disabled={disabled}
-                options={[
-                  { label: "Butterworth", value: "butterworth" },
-                  { label: "Bessel", value: "bessel" },
-                  { label: "Linkwitz", value: "linkwitz" },
-                ]}
-                onChange={(type) =>
-                  onChange(selectedFilter === "hpf" ? { hpfType: type } : { lpfType: type })
-                }
-              />
-              <SelectField<FilterSlope>
-                label="Slope"
-                value={selectedFilter === "hpf" ? eq.hpfSlope : eq.lpfSlope}
-                disabled={disabled}
-                options={[
-                  { label: "12 dB/oct", value: 12 },
-                  { label: "24 dB/oct", value: 24 },
-                ]}
-                onChange={(slope) =>
-                  onChange(selectedFilter === "hpf" ? { hpfSlope: slope } : { lpfSlope: slope })
-                }
-              />
-            </div>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, borderTop: `2px solid ${getEqBandColor(selectedBand - 1)}`, paddingTop: 12 }}>
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() => onBandChange(selectedBand, { enabled: !band.enabled })}
-                style={{
-                  gridColumn: "1 / -1",
-                  padding: "9px 0",
-                  borderRadius: 7,
-                  border: band.enabled ? `1px solid ${getEqBandColor(selectedBand - 1)}` : "1px solid #334155",
-                  background: band.enabled ? "#101923" : "#111827",
-                  color: "#f8fafc",
-                  fontWeight: 950,
-                  cursor: disabled ? "not-allowed" : "pointer",
-                  boxShadow: band.enabled ? `0 0 12px ${getEqBandColor(selectedBand - 1)}22` : "none",
-                }}
-              >
-                {band.enabled ? `F${selectedBand} ON` : `F${selectedBand} OFF`}
-              </button>
-              <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-                <EditableKnob label="FREQ" value={snapEqFrequency(band.freq)} min={20} max={20000} knobPixelsPerStep={0.5} displayValue={formatFreq(band.freq)} suffix="Hz" disabled={disabled} onChange={(freq) => onBandChange(selectedBand, { freq: snapEqFrequency(freq) })} />
-                <EditableKnob label="GAIN" value={Math.round(band.gain)} min={-12} max={12} displayValue={formatDb(band.gain)} suffix="dB" disabled={disabled} onChange={(gain) => onBandChange(selectedBand, { gain })} />
-                <EditableKnob label="Q CURVE" value={Math.round(band.q * 10)} min={6} max={281} step={1} displayValue={Number(band.q.toFixed(2)).toString()} disabled={disabled} onChange={(q) => onBandChange(selectedBand, { q: q / 10 })} />
+                        ? formatFreq(eq.lpfFreq)
+                        : "OFF"
+                  }
+                  suffix="Hz"
+                  disabled={disabled}
+                  onChange={(freq) =>
+                    onChange(
+                      selectedFilter === "hpf"
+                        ? { hpfFreq: snapEqFrequency(Math.min(freq, eq.lpfFreq - 10)) }
+                        : { lpfFreq: snapEqFrequency(Math.max(freq, eq.hpfFreq + 10)) }
+                    )
+                  }
+                />
+                <SelectField<FilterType>
+                  label="Tipo"
+                  value={selectedFilter === "hpf" ? eq.hpfType : eq.lpfType}
+                  disabled={disabled}
+                  options={[
+                    { label: "Butterworth", value: "butterworth" },
+                    { label: "Bessel", value: "bessel" },
+                    { label: "Linkwitz", value: "linkwitz" },
+                  ]}
+                  onChange={(type) => onChange(selectedFilter === "hpf" ? { hpfType: type } : { lpfType: type })}
+                />
+                <SelectField<FilterSlope>
+                  label="Slope"
+                  value={selectedFilter === "hpf" ? eq.hpfSlope : eq.lpfSlope}
+                  disabled={disabled}
+                  options={[
+                    { label: "12 dB/oct", value: 12 },
+                    { label: "24 dB/oct", value: 24 },
+                  ]}
+                  onChange={(slope) => onChange(selectedFilter === "hpf" ? { hpfSlope: slope } : { lpfSlope: slope })}
+                />
               </div>
-            </div>
-          )}
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
+                <EditableKnob
+                  label="FREQ"
+                  value={snapEqFrequency(band.freq)}
+                  min={20}
+                  max={20000}
+                  knobPixelsPerStep={0.5}
+                  displayValue={formatFreq(band.freq)}
+                  suffix="Hz"
+                  disabled={disabled}
+                  onChange={(freq) => onBandChange(selectedBand, { freq: snapEqFrequency(freq) })}
+                />
+                <EditableKnob
+                  label="GAIN"
+                  value={Math.round(band.gain)}
+                  min={-12}
+                  max={12}
+                  displayValue={formatDb(band.gain)}
+                  suffix="dB"
+                  disabled={disabled}
+                  onChange={(gain) => onBandChange(selectedBand, { gain })}
+                />
+                <EditableKnob
+                  label="Q CURVE"
+                  value={Math.round(band.q * 10)}
+                  min={6}
+                  max={281}
+                  step={1}
+                  displayValue={Number(band.q.toFixed(2)).toString()}
+                  disabled={disabled}
+                  onChange={(q) => onBandChange(selectedBand, { q: q / 10 })}
+                />
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </ProcessorShell>
   );
 }
+
+void GateMiniPreview;
+void CompMiniPreview;
+void EqMiniPreview;
+void ControlButton;
 
 export function ChannelProcessors({
   activeModule,
@@ -1862,7 +1906,16 @@ export function ChannelProcessors({
   onResetComp,
   onResetEq,
 }: ChannelProcessorsProps) {
-  const availableModules = hideGate ? MODULES.filter((m) => m.id !== "gate") : MODULES;
+  const navItems: Array<
+    | { id: ProcessorModule; label: string; disabled?: false }
+    | { id: "fx-sends" | "aux-sends"; label: string; disabled: true }
+  > = [
+    { id: "eq", label: "EQ" },
+    { id: "comp", label: "COMP" },
+    ...(!hideGate ? [{ id: "gate", label: "GATE" } as const] : []),
+    { id: "fx-sends", label: "FX SENDS", disabled: true },
+    { id: "aux-sends", label: "AUX SENDS", disabled: true },
+  ];
 
   return (
     <div
@@ -1870,50 +1923,71 @@ export function ChannelProcessors({
         minHeight: 0,
         height: "100%",
         display: "grid",
-        gridTemplateColumns: "120px minmax(0, 1fr)",
-        gap: 12,
+        gridTemplateRows: "32px minmax(0, 1fr)",
+        gap: 2,
       }}
     >
-      <aside
+      <div
         style={{
-          minHeight: 0,
           display: "grid",
-          alignContent: "start",
-          gap: 10,
-          padding: 8,
-          borderRadius: 10,
-          border: "1px solid #1a2a37",
-          background: "linear-gradient(180deg, #07111a 0%, #040a11 100%)",
+          gridTemplateColumns: `repeat(${navItems.length}, minmax(0, 1fr))`,
+          borderRadius: 4,
+          border: "none",
+          background: "transparent",
+          overflow: "hidden",
+          minWidth: 0,
         }}
       >
-        {availableModules.map((module) => (
-          <ControlButton
-            key={module.id}
-            active={activeModule === module.id}
-            disabled={disabled}
-            icon={
-              module.id === "gate" ? <GateMiniPreview gate={state.gate} /> :
-              module.id === "comp" ? <CompMiniPreview comp={state.comp} /> :
-              <EqMiniPreview eq={state.eq} />
-            }
-            label={module.label}
-            accentColor={MODULE_ACCENTS[module.id].color}
-            accentGlow={MODULE_ACCENTS[module.id].glow}
-            onClick={() => onModuleChange(module.id)}
-          />
+        {navItems.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            disabled={disabled || item.disabled}
+            onClick={() => {
+              if (item.disabled) return;
+              onModuleChange(item.id);
+            }}
+            style={{
+              height: 32,
+              padding: "0 16px",
+              borderRadius: 0,
+              border: "none",
+              borderBottom:
+                !item.disabled && activeModule === item.id
+                  ? "2px solid var(--border-focus)"
+                  : "2px solid transparent",
+              background: "transparent",
+              color:
+                item.disabled
+                  ? "var(--text-tertiary)"
+                  : !item.disabled && activeModule === item.id
+                    ? "var(--text-primary)"
+                    : "var(--text-secondary)",
+              fontSize: 10,
+              lineHeight: "12px",
+              fontWeight: 700,
+              letterSpacing: "1.2px",
+              cursor: disabled || item.disabled ? "not-allowed" : "pointer",
+              opacity: item.disabled ? 0.6 : 1,
+              whiteSpace: "nowrap",
+              width: "100%",
+              justifySelf: "stretch",
+            }}
+          >
+            {item.label}
+          </button>
         ))}
-      </aside>
+      </div>
 
       <div
         style={{
           minWidth: 0,
           minHeight: 0,
-          padding: 16,
-          borderRadius: 12,
-          border: "1px solid #1a2a37",
-          background: "linear-gradient(180deg, #0a141f 0%, #040a11 100%)",
+          padding: 0,
+          borderRadius: 0,
+          border: "none",
+          background: "transparent",
           overflow: "hidden",
-          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
         }}
       >
         {activeModule === "gate" && (
