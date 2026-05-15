@@ -587,62 +587,6 @@ function EditableKnob({
   );
 }
 
-function SelectField<T extends string | number>({
-  label,
-  value,
-  disabled = false,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: T;
-  disabled?: boolean;
-  options: { label: string; value: T }[];
-  onChange: (value: T) => void;
-}) {
-  return (
-    <label
-      style={{
-        display: "grid",
-        gap: 5,
-        color: "#cbd5e1",
-        fontSize: 11,
-        fontWeight: 800,
-        textTransform: "uppercase",
-      }}
-    >
-      {label}
-      <select
-        value={String(value)}
-        disabled={disabled}
-        onChange={(event) => {
-          const option = options.find(
-            (candidate) => String(candidate.value) === event.target.value
-          );
-
-          if (option) onChange(option.value);
-        }}
-        style={{
-          width: "100%",
-          padding: "8px 9px",
-          borderRadius: 7,
-          border: "1px solid #263746",
-          outline: "none",
-          background: "#07111a",
-          color: "#e5eef5",
-          fontWeight: 850,
-        }}
-      >
-        {options.map((option) => (
-          <option key={String(option.value)} value={String(option.value)}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
 function ProcessorShell({
   title,
   children,
@@ -1310,19 +1254,24 @@ function EqGraph({
   onBandChange: (band: number, patch: Partial<EqBandState>) => void;
   onSelect: (selection: EqSelection) => void;
 }) {
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const [responsiveWidth, setResponsiveWidth] = useState(846);
+  const graphFrameRef = useRef<HTMLDivElement | null>(null);
+  const [responsiveSize, setResponsiveSize] = useState({ width: 846, height: 236 });
 
   useEffect(() => {
-    const node = svgRef.current;
+    const node = graphFrameRef.current;
     if (!node) return;
 
-    const updateWidth = () => {
-      const nextWidth = Math.round(node.getBoundingClientRect().width);
-      if (nextWidth > 0) setResponsiveWidth(nextWidth);
+    const updateSize = () => {
+      const rect = node.getBoundingClientRect();
+      const nextWidth = Math.round(rect.width);
+      const nextHeight = Math.round(rect.height);
+
+      if (nextWidth > 0 && nextHeight > 0) {
+        setResponsiveSize({ width: nextWidth, height: nextHeight });
+      }
     };
 
-    updateWidth();
+    updateSize();
 
     if (typeof ResizeObserver === "undefined") return;
 
@@ -1330,15 +1279,19 @@ function EqGraph({
       const entry = entries[0];
       if (!entry) return;
       const nextWidth = Math.round(entry.contentRect.width);
-      if (nextWidth > 0) setResponsiveWidth(nextWidth);
+      const nextHeight = Math.round(entry.contentRect.height);
+
+      if (nextWidth > 0 && nextHeight > 0) {
+        setResponsiveSize({ width: nextWidth, height: nextHeight });
+      }
     });
 
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
 
-  const width = Math.max(360, responsiveWidth);
-  const height = 236;
+  const width = Math.max(360, responsiveSize.width);
+  const height = Math.max(180, responsiveSize.height);
   const graphX = 48;
   const graphY = 32;
   const graphWidth = Math.max(220, width - graphX * 2);
@@ -1435,31 +1388,38 @@ function EqGraph({
   }
 
   return (
-    <svg
-      ref={svgRef}
-      viewBox={`0 0 ${width} ${height}`}
-      preserveAspectRatio="xMidYMid meet"
+    <div
+      ref={graphFrameRef}
       style={{
         width: "100%",
-        height: `${height}px`,
-        display: "block",
+        height: "100%",
         minHeight: 0,
-        borderRadius: 4,
-        background: "var(--surface-panel-raised)",
-        border: `1px solid ${CHART_THEME.graphBorder}`,
-        touchAction: "none",
-        userSelect: "none",
       }}
     >
-      <defs>
-        <linearGradient id="eq-fill-base" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--alpha-cyan-40)" />
-          <stop offset="100%" stopColor="var(--alpha-cyan-12)" />
-        </linearGradient>
-        <filter id="eq-handle-glow" x="-120%" y="-120%" width="340%" height="340%">
-          <feDropShadow dx="0" dy="0" stdDeviation="3" floodColor="rgba(241,245,249,0.42)" floodOpacity="0.8" />
-        </filter>
-      </defs>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "block",
+          minHeight: 0,
+          borderRadius: 4,
+          background: "var(--surface-panel-raised)",
+          border: `1px solid ${CHART_THEME.graphBorder}`,
+          touchAction: "none",
+          userSelect: "none",
+        }}
+      >
+        <defs>
+          <linearGradient id="eq-fill-base" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--alpha-cyan-40)" />
+            <stop offset="100%" stopColor="var(--alpha-cyan-12)" />
+          </linearGradient>
+          <filter id="eq-handle-glow" x="-120%" y="-120%" width="340%" height="340%">
+            <feDropShadow dx="0" dy="0" stdDeviation="3" floodColor="rgba(241,245,249,0.42)" floodOpacity="0.8" />
+          </filter>
+        </defs>
 
       <rect x={graphX} y={graphY} width={graphWidth} height={graphHeight} rx={4} fill="rgba(255,255,255,0.01)" />
       <rect
@@ -1650,7 +1610,8 @@ function EqGraph({
           </g>
         );
       })}
-    </svg>
+      </svg>
+    </div>
   );
 }
 
@@ -1819,7 +1780,7 @@ function EqEditor({
           minHeight: 0,
           height: "100%",
           display: "grid",
-          gridTemplateRows: "auto minmax(0, 1fr)",
+          gridTemplateRows: "minmax(0, 1fr) 216px",
           gap: 4,
           overflow: "hidden",
         }}
@@ -1828,7 +1789,7 @@ function EqEditor({
           style={{
             minHeight: 0,
             display: "grid",
-            gridTemplateRows: "44px auto",
+            gridTemplateRows: "44px minmax(0, 1fr)",
             gap: 4,
           }}
         >
@@ -1879,10 +1840,12 @@ function EqEditor({
 
           <div
             style={{
+              minHeight: 0,
+              height: "100%",
               padding: 32,
               boxSizing: "border-box",
               display: "grid",
-              alignContent: "start",
+              alignContent: "stretch",
               borderRadius: 4,
               border: "none",
               background: "var(--surface-panel-raised)",
