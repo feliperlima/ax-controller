@@ -3091,11 +3091,11 @@ function App() {
 
     handleEqChange(channelNumber, {
       enabled: currentEq.enabled,
-      hpfEnabled: currentEq.hpfEnabled,
+      hpfEnabled: DEFAULT_EQ.hpfEnabled,
       hpfType: DEFAULT_EQ.hpfType,
       hpfSlope: DEFAULT_EQ.hpfSlope,
       hpfFreq: DEFAULT_EQ.hpfFreq,
-      lpfEnabled: currentEq.lpfEnabled,
+      lpfEnabled: DEFAULT_EQ.lpfEnabled,
       lpfType: DEFAULT_EQ.lpfType,
       lpfSlope: DEFAULT_EQ.lpfSlope,
       lpfFreq: DEFAULT_EQ.lpfFreq,
@@ -3296,6 +3296,7 @@ function App() {
           gridTemplateColumns: "minmax(0, 1fr)",
           gridTemplateRows: "auto minmax(0, 1fr)",
           gap: 4,
+          padding: 8,
         }}
       >
         <section
@@ -3477,8 +3478,8 @@ function App() {
             display: "grid",
             gridTemplateColumns: "110px minmax(0, 1fr)",
             gap: 4,
-            padding: "0 4px",
-            overflow: "hidden",
+            padding: 0,
+            overflow: "visible",
             position: "relative",
           }}
         >
@@ -3531,7 +3532,7 @@ function App() {
           <section
             className="detail-panel"
             style={{
-              padding: 0,
+              padding: "0 24px",
               borderRadius: 4,
               border: "none",
               background: "transparent",
