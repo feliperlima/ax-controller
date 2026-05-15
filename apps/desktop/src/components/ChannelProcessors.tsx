@@ -160,6 +160,16 @@ const CHART_THEME = {
   curveFill: "#e2e8f0",
   handleText: "#ffffff",
 };
+const PROCESSOR_GRAPH_RECT = {
+  left: 48,
+  top: 32,
+  right: 48,
+  bottom: 32,
+};
+const PROCESSOR_AXIS_LABEL_OFFSETS = {
+  side: 14,
+  bottom: 8,
+};
 const HANDLE_THEME = {
   threshold: "#d946ef",
   ratio: "#94a3b8",
@@ -790,10 +800,10 @@ function GateGraph({
 }) {
   const width = 560;
   const height = 270;
-  const graphX = 42;
-  const graphY = 18;
-  const graphWidth = 486;
-  const graphHeight = 210;
+  const graphX = PROCESSOR_GRAPH_RECT.left;
+  const graphY = PROCESSOR_GRAPH_RECT.top;
+  const graphWidth = width - PROCESSOR_GRAPH_RECT.left - PROCESSOR_GRAPH_RECT.right;
+  const graphHeight = height - PROCESSOR_GRAPH_RECT.top - PROCESSOR_GRAPH_RECT.bottom;
   const dbToY = (db: number) => graphY + ((0 - clamp(db, -80, 0)) / 80) * graphHeight;
   const thresholdY = dbToY(gate.threshold);
   const bottomY = graphY + graphHeight;
@@ -871,7 +881,7 @@ function GateGraph({
             strokeWidth={index % 2 === 0 ? "1" : "0.9"}
             strokeDasharray={index % 2 === 0 ? undefined : "4 4"}
           />
-          <text x={graphX - 14} y={graphY + (graphHeight / 8) * index + 4} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="end" fontWeight="500">
+          <text x={graphX - PROCESSOR_AXIS_LABEL_OFFSETS.side} y={graphY + (graphHeight / 8) * index + 4} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="end" fontWeight="500">
             {-index * 10}
           </text>
         </g>
@@ -948,6 +958,7 @@ function CompressorGraph({
 }) {
   const graphFrameRef = useRef<HTMLDivElement | null>(null);
   const [responsiveSize, setResponsiveSize] = useState({ width: 560, height: 270 });
+  const [selectedHandle, setSelectedHandle] = useState<"threshold" | "ratio" | null>(null);
 
   useEffect(() => {
     const node = graphFrameRef.current;
@@ -984,12 +995,10 @@ function CompressorGraph({
 
   const width = Math.max(360, responsiveSize.width);
   const height = Math.max(180, responsiveSize.height);
-  const graphX = 42;
-  const graphY = 18;
-  const graphRightPadding = 20;
-  const graphBottomPadding = 32;
-  const graphWidth = Math.max(220, width - graphX - graphRightPadding);
-  const graphHeight = Math.max(120, height - graphY - graphBottomPadding);
+  const graphX = PROCESSOR_GRAPH_RECT.left;
+  const graphY = PROCESSOR_GRAPH_RECT.top;
+  const graphWidth = Math.max(220, width - PROCESSOR_GRAPH_RECT.left - PROCESSOR_GRAPH_RECT.right);
+  const graphHeight = Math.max(120, height - PROCESSOR_GRAPH_RECT.top - PROCESSOR_GRAPH_RECT.bottom);
   const snappedThreshold = snapCompressorThreshold(comp.threshold);
   const snappedRatio = snapCompressorRatio(comp.ratio);
   const curveRatio = snappedRatio >= 40 ? Number.POSITIVE_INFINITY : snappedRatio;
@@ -1002,7 +1011,10 @@ function CompressorGraph({
   const thresholdX = xForDb(snappedThreshold);
   const thresholdY = yForDb(snappedThreshold);
   const endY = yForDb(snappedThreshold + Math.abs(snappedThreshold) / Math.max(1, curveRatio));
+  const isRatioSelected = selectedHandle === "ratio";
+  const isThresholdSelected = selectedHandle === "threshold";
   const path = `M ${graphX} ${graphY + graphHeight} L ${thresholdX} ${thresholdY} L ${graphX + graphWidth} ${endY}`;
+  const fillPath = `${path} L ${graphX + graphWidth} ${graphY + graphHeight} L ${graphX} ${graphY + graphHeight} Z`;
 
   function updateThresholdFromEvent(clientX: number, svg: SVGSVGElement) {
     const point = getSvgPoint(svg, clientX, 0);
@@ -1091,7 +1103,10 @@ function CompressorGraph({
             stroke={db === 0 ? CHART_THEME.gridAccent : CHART_THEME.gridMajor}
             strokeWidth="1"
           />
-          <text x={graphX - 14} y={yForDb(db) + 4} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="end" fontWeight="500">
+          <text x={graphX - PROCESSOR_AXIS_LABEL_OFFSETS.side} y={yForDb(db) + 4} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="end" fontWeight="500">
+            {db}
+          </text>
+          <text x={graphX + graphWidth + PROCESSOR_AXIS_LABEL_OFFSETS.side} y={yForDb(db) + 4} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="start" fontWeight="500">
             {db}
           </text>
         </g>
@@ -1120,7 +1135,7 @@ function CompressorGraph({
           />
           <text
             x={xForDb(db)}
-            y={graphY + graphHeight + 8}
+            y={graphY + graphHeight + PROCESSOR_AXIS_LABEL_OFFSETS.bottom}
             fill={CHART_THEME.axisLabel}
             fontSize="9"
             textAnchor="middle"
@@ -1131,45 +1146,15 @@ function CompressorGraph({
           </text>
         </g>
       ))}
+      <path d={fillPath} fill={HANDLE_THEME.threshold} opacity={comp.enabled ? 0.16 : 0.06} />
       <path d={path} fill="none" stroke={CHART_THEME.curveStroke} strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" opacity={comp.enabled ? 0.92 : 0.35} />
-
-      {/* T handle — controls Threshold (horizontal) */}
-      <g
-        style={{ cursor: disabled ? "not-allowed" : "ew-resize" }}
-        onPointerDown={(event) => {
-          if (disabled) return;
-          event.preventDefault();
-          event.stopPropagation();
-          event.currentTarget.setPointerCapture(event.pointerId);
-          updateThresholdFromEvent(event.clientX, event.currentTarget.ownerSVGElement as SVGSVGElement);
-        }}
-        onPointerMove={(event) => {
-          if (disabled || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
-          event.preventDefault();
-          event.stopPropagation();
-          updateThresholdFromEvent(event.clientX, event.currentTarget.ownerSVGElement as SVGSVGElement);
-        }}
-        onPointerUp={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-        }}
-        onPointerCancel={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-        }}
-      >
-        <circle cx={thresholdX} cy={thresholdY} r={17} fill="none" stroke={HANDLE_THEME.threshold} strokeWidth="2" opacity={comp.enabled ? 0.45 : 0.18} />
-        <circle cx={thresholdX} cy={thresholdY} r={12} fill={HANDLE_THEME.threshold} stroke={comp.enabled ? "#f8fafc" : HANDLE_THEME.idleStroke} strokeWidth="2" opacity={comp.enabled ? 0.95 : 0.4} filter="url(#comp-threshold-glow)" />
-        <text x={thresholdX} y={thresholdY} fill={CHART_THEME.handleText} fontSize="12" fontWeight="900" textAnchor="middle" dominantBaseline="middle">
-          T
-        </text>
-      </g>
 
       {/* R handle — controls Ratio (vertical, pinned to right edge) */}
       <g
         style={{ cursor: disabled ? "not-allowed" : "ns-resize" }}
         onPointerDown={(event) => {
           if (disabled) return;
+          setSelectedHandle("ratio");
           event.preventDefault();
           event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -1190,10 +1175,77 @@ function CompressorGraph({
           if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
         }}
       >
-        <circle cx={graphX + graphWidth} cy={endY} r={17} fill="none" stroke={HANDLE_THEME.ratio} strokeWidth="2" opacity={comp.enabled ? 0.42 : 0.16} />
-        <circle cx={graphX + graphWidth} cy={endY} r={12} fill={HANDLE_THEME.ratio} stroke={comp.enabled ? "#f8fafc" : HANDLE_THEME.idleStroke} strokeWidth="2" opacity={comp.enabled ? 0.9 : 0.38} filter="url(#comp-ratio-glow)" />
+        <circle
+          cx={graphX + graphWidth}
+          cy={endY}
+          r={isRatioSelected ? 18 : 12}
+          fill="none"
+          stroke={HANDLE_THEME.ratio}
+          strokeWidth="1.8"
+          opacity={isRatioSelected ? 0.68 : 0.5}
+        />
+        <circle
+          cx={graphX + graphWidth}
+          cy={endY}
+          r={isRatioSelected ? 16 : 10}
+          fill={HANDLE_THEME.ratio}
+          stroke={isRatioSelected ? "#f8fafc" : HANDLE_THEME.idleStroke}
+          strokeWidth="1.6"
+          opacity={comp.enabled ? 0.95 : 0.32}
+          filter="url(#comp-ratio-glow)"
+        />
         <text x={graphX + graphWidth} y={endY} fill={CHART_THEME.handleText} fontSize="12" fontWeight="900" textAnchor="middle" dominantBaseline="middle">
           R
+        </text>
+      </g>
+
+      {/* T handle — controls Threshold (horizontal). Drawn last so overlap prioritizes Threshold drag. */}
+      <g
+        style={{ cursor: disabled ? "not-allowed" : "ew-resize" }}
+        onPointerDown={(event) => {
+          if (disabled) return;
+          setSelectedHandle("threshold");
+          event.preventDefault();
+          event.stopPropagation();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          updateThresholdFromEvent(event.clientX, event.currentTarget.ownerSVGElement as SVGSVGElement);
+        }}
+        onPointerMove={(event) => {
+          if (disabled || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          updateThresholdFromEvent(event.clientX, event.currentTarget.ownerSVGElement as SVGSVGElement);
+        }}
+        onPointerUp={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+      >
+        <circle
+          cx={thresholdX}
+          cy={thresholdY}
+          r={isThresholdSelected ? 18 : 12}
+          fill="none"
+          stroke={HANDLE_THEME.threshold}
+          strokeWidth="1.8"
+          opacity={isThresholdSelected ? 0.68 : 0.5}
+        />
+        <circle
+          cx={thresholdX}
+          cy={thresholdY}
+          r={isThresholdSelected ? 16 : 10}
+          fill={HANDLE_THEME.threshold}
+          stroke={isThresholdSelected ? "#f8fafc" : HANDLE_THEME.idleStroke}
+          strokeWidth="1.6"
+          opacity={comp.enabled ? 0.95 : 0.32}
+          filter="url(#comp-threshold-glow)"
+        />
+        <text x={thresholdX} y={thresholdY} fill={CHART_THEME.handleText} fontSize="12" fontWeight="900" textAnchor="middle" dominantBaseline="middle">
+          T
         </text>
       </g>
     </svg>
@@ -1348,10 +1400,10 @@ function EqGraph({
 
   const width = Math.max(360, responsiveSize.width);
   const height = Math.max(180, responsiveSize.height);
-  const graphX = 48;
-  const graphY = 32;
-  const graphWidth = Math.max(220, width - graphX * 2);
-  const graphHeight = height - 64;
+  const graphX = PROCESSOR_GRAPH_RECT.left;
+  const graphY = PROCESSOR_GRAPH_RECT.top;
+  const graphWidth = Math.max(220, width - PROCESSOR_GRAPH_RECT.left - PROCESSOR_GRAPH_RECT.right);
+  const graphHeight = Math.max(120, height - PROCESSOR_GRAPH_RECT.top - PROCESSOR_GRAPH_RECT.bottom);
   const majorFreqs = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
   const gridFreqs = generateLogGridFrequencies();
   const horizontalMajorDb = [12, 6, 0, -6, -12];
@@ -1507,10 +1559,10 @@ function EqGraph({
             stroke={gain === 0 ? "rgba(241,245,249,0.82)" : "rgba(52,83,108,0.42)"}
             strokeWidth={gain === 0 ? "1.5" : "1"}
           />
-          <text x={graphX - 8} y={yForGainLabel(gain)} fill={CHART_THEME.axisLabel} fontSize="12" textAnchor="end" fontWeight="600">
+          <text x={graphX - PROCESSOR_AXIS_LABEL_OFFSETS.side} y={yForGainLabel(gain)} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="end" fontWeight="500">
             {gain > 0 ? `+${gain}` : gain}
           </text>
-          <text x={graphX + graphWidth + 8} y={yForGainLabel(gain)} fill={CHART_THEME.axisLabel} fontSize="12" textAnchor="start" fontWeight="600">
+          <text x={graphX + graphWidth + PROCESSOR_AXIS_LABEL_OFFSETS.side} y={yForGainLabel(gain)} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="start" fontWeight="500">
             {gain > 0 ? `+${gain}` : gain}
           </text>
         </g>
@@ -1540,11 +1592,11 @@ function EqGraph({
           />
           <text
             x={graphX + freqToX(freq, graphWidth)}
-            y={graphY + graphHeight + 6}
+            y={graphY + graphHeight + PROCESSOR_AXIS_LABEL_OFFSETS.bottom}
             fill={CHART_THEME.axisLabel}
-            fontSize="12"
+            fontSize="9"
             textAnchor="middle"
-            fontWeight="600"
+            fontWeight="500"
             dominantBaseline="hanging"
           >
             {formatEqAxisFreq(freq)}
@@ -1731,6 +1783,8 @@ function CompressorEditor({
   onChange: (patch: Partial<CompressorState>) => void;
   onReset: () => void;
 }) {
+  const controllersDisabled = disabled || !comp.enabled;
+
   return (
     <ProcessorShell title="">
       <div
@@ -1821,88 +1875,106 @@ function CompressorEditor({
             display: "grid",
             gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
             gap: 4,
-            padding: "16px 12px",
+            padding: "10px 12px",
             borderRadius: 4,
             border: "none",
             overflow: "visible",
             background: "var(--surface-panel-raised)",
+            justifyItems: "center",
           }}
         >
-          <EditableKnob
-            label="THRESHOLD"
-            value={Math.round(snapCompressorThreshold(comp.threshold) * 2)}
-            min={-160}
-            max={0}
-            step={1}
-            displayValue={formatDb(snapCompressorThreshold(comp.threshold))}
-            suffix="dB"
-            disabled={disabled}
-            accentColor={MODULE_ACCENTS.comp.color}
-            glowColor={MODULE_ACCENTS.comp.glow}
-            knobSize={68}
-            onChange={(thresholdHalfSteps) => {
-              const threshold = snapCompressorThreshold(thresholdHalfSteps / 2);
+          <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
+            <EditableKnob
+              label="THRESHOLD"
+              value={Math.round(snapCompressorThreshold(comp.threshold) * 2)}
+              min={-160}
+              max={0}
+              step={1}
+              knobSize={68}
+              compact
+              displayValue={comp.enabled ? formatDb(snapCompressorThreshold(comp.threshold)) : "—"}
+              suffix="dB"
+              disabled={controllersDisabled}
+              accentColor={MODULE_ACCENTS.comp.color}
+              glowColor={MODULE_ACCENTS.comp.glow}
+              onChange={(thresholdHalfSteps) => {
+                const threshold = snapCompressorThreshold(thresholdHalfSteps / 2);
 
-              if (snapCompressorRatio(comp.ratio) >= 40) {
-                onChange({ threshold, ratio: 40 });
-                return;
-              }
+                if (snapCompressorRatio(comp.ratio) >= 40) {
+                  onChange({ threshold, ratio: 40 });
+                  return;
+                }
 
-              onChange({ threshold });
-            }}
-          />
-          <EditableKnob
-            label="RATIO"
-            value={compressorRatioToStepIndex(comp.ratio)}
-            min={0}
-            max={COMP_RATIO_STEPS.length - 1}
-            step={1}
-            displayValue={formatCompressorRatio(snapCompressorRatio(comp.ratio))}
-            disabled={disabled}
-            accentColor={MODULE_ACCENTS.comp.color}
-            glowColor={MODULE_ACCENTS.comp.glow}
-            knobSize={68}
-            onChange={(ratioIndex) => onChange({ ratio: compressorRatioFromStepIndex(ratioIndex) })}
-          />
-          <EditableKnob
-            label="ATTACK"
-            value={Math.round(comp.attack)}
-            min={1}
-            max={200}
-            displayValue={formatMs(comp.attack)}
-            suffix="ms"
-            disabled={disabled}
-            accentColor={MODULE_ACCENTS.comp.color}
-            glowColor={MODULE_ACCENTS.comp.glow}
-            knobSize={68}
-            onChange={(attack) => onChange({ attack })}
-          />
-          <EditableKnob
-            label="RELEASE"
-            value={Math.round(comp.release)}
-            min={10}
-            max={1000}
-            displayValue={formatMs(comp.release)}
-            suffix="ms"
-            disabled={disabled}
-            accentColor={MODULE_ACCENTS.comp.color}
-            glowColor={MODULE_ACCENTS.comp.glow}
-            knobSize={68}
-            onChange={(release) => onChange({ release })}
-          />
-          <EditableKnob
-            label="GAIN"
-            value={Math.round(comp.gain)}
-            min={0}
-            max={20}
-            displayValue={formatDb(comp.gain)}
-            suffix="dB"
-            disabled={disabled}
-            accentColor={MODULE_ACCENTS.comp.color}
-            glowColor={MODULE_ACCENTS.comp.glow}
-            knobSize={68}
-            onChange={(gain) => onChange({ gain })}
-          />
+                onChange({ threshold });
+              }}
+            />
+          </div>
+          <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
+            <EditableKnob
+              label="RATIO"
+              value={compressorRatioToStepIndex(comp.ratio)}
+              min={0}
+              max={COMP_RATIO_STEPS.length - 1}
+              step={1}
+              knobPixelsPerStep={26}
+              knobSize={68}
+              compact
+              displayValue={comp.enabled ? formatCompressorRatio(snapCompressorRatio(comp.ratio)) : "—"}
+              disabled={controllersDisabled}
+              allowTextEdit={false}
+              accentColor={MODULE_ACCENTS.comp.color}
+              glowColor={MODULE_ACCENTS.comp.glow}
+              onChange={(ratioIndex) => onChange({ ratio: compressorRatioFromStepIndex(ratioIndex) })}
+            />
+          </div>
+          <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
+            <EditableKnob
+              label="ATTACK"
+              value={Math.round(comp.attack)}
+              min={1}
+              max={200}
+              knobSize={68}
+              compact
+              displayValue={comp.enabled ? formatMs(comp.attack) : "—"}
+              suffix="ms"
+              disabled={controllersDisabled}
+              accentColor={MODULE_ACCENTS.comp.color}
+              glowColor={MODULE_ACCENTS.comp.glow}
+              onChange={(attack) => onChange({ attack })}
+            />
+          </div>
+          <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
+            <EditableKnob
+              label="RELEASE"
+              value={Math.round(comp.release)}
+              min={10}
+              max={1000}
+              knobSize={68}
+              compact
+              displayValue={comp.enabled ? formatMs(comp.release) : "—"}
+              suffix="ms"
+              disabled={controllersDisabled}
+              accentColor={MODULE_ACCENTS.comp.color}
+              glowColor={MODULE_ACCENTS.comp.glow}
+              onChange={(release) => onChange({ release })}
+            />
+          </div>
+          <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
+            <EditableKnob
+              label="GAIN"
+              value={Math.round(comp.gain)}
+              min={0}
+              max={20}
+              knobSize={68}
+              compact
+              displayValue={comp.enabled ? formatDb(comp.gain) : "—"}
+              suffix="dB"
+              disabled={controllersDisabled}
+              accentColor={MODULE_ACCENTS.comp.color}
+              glowColor={MODULE_ACCENTS.comp.glow}
+              onChange={(gain) => onChange({ gain })}
+            />
+          </div>
         </div>
       </div>
     </ProcessorShell>
