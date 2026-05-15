@@ -161,7 +161,7 @@ const CHART_THEME = {
   handleText: "#ffffff",
 };
 const HANDLE_THEME = {
-  threshold: "#fbbf24",
+  threshold: "#d946ef",
   ratio: "#94a3b8",
   idleStroke: "#020617",
 };
@@ -172,7 +172,7 @@ const GATE_THEME = {
 };
 const MODULE_ACCENTS: Record<ProcessorModule, { color: string; glow: string }> = {
   gate: { color: "#22c55e", glow: "rgba(34,197,94,0.35)" },
-  comp: { color: "#f59e0b", glow: "rgba(245,158,11,0.35)" },
+  comp: { color: "#a855f7", glow: "rgba(168,85,247,0.35)" },
   eq: { color: "#22d3ee", glow: "rgba(34,211,238,0.35)" },
 };
 const EQ_ACTIVE_MIN_FREQ = 20;
@@ -946,8 +946,8 @@ function CompressorGraph({
   disabled?: boolean;
   onChange: (patch: Partial<CompressorState>) => void;
 }) {
-  const width = 560;
-  const height = 270;
+  const baseWidth = 560;
+  const baseHeight = 270;
   const graphX = 42;
   const graphY = 18;
   const graphWidth = 486;
@@ -992,7 +992,8 @@ function CompressorGraph({
 
   return (
     <svg
-      viewBox={`0 0 ${width} ${height}`}
+      viewBox={`0 0 ${baseWidth} ${baseHeight}`}
+      preserveAspectRatio="none"
       style={{
         width: "100%",
         height: "100%",
@@ -1075,7 +1076,7 @@ function CompressorGraph({
           </text>
         </g>
       ))}
-      <path d={`${path} L ${graphX + graphWidth} ${graphY + graphHeight} Z`} fill="#b45309" opacity={comp.enabled ? 0.14 : 0.05} />
+      <path d={`${path} L ${graphX + graphWidth} ${graphY + graphHeight} Z`} fill="#7c3aed" opacity={comp.enabled ? 0.14 : 0.05} />
       <path d={path} fill="none" stroke={CHART_THEME.curveStroke} strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" opacity={comp.enabled ? 0.92 : 0.35} />
 
       {/* T handle — controls Threshold (horizontal) */}
@@ -1676,26 +1677,104 @@ function CompressorEditor({
   onReset: () => void;
 }) {
   return (
-    <ProcessorShell
-      title="Compressor"
-    >
-      <div style={{ minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) 260px", gap: 10 }}>
-        <div style={{ position: "relative", minHeight: 0 }}>
-          <ModuleHeaderActions
-            enabled={comp.enabled}
-            disabled={disabled}
-            accentColor={MODULE_ACCENTS.comp.color}
-            accentGlow={MODULE_ACCENTS.comp.glow}
-            onLabel="COMP ON"
-            offLabel="COMP OFF"
-            onToggle={() => onChange({ enabled: !comp.enabled })}
-            onReset={onReset}
-          />
-          <CompressorGraph comp={comp} disabled={disabled} onChange={onChange} />
+    <ProcessorShell title="">
+      <div
+        style={{
+          minHeight: 0,
+          height: "100%",
+          display: "grid",
+          gridTemplateRows: "minmax(0, 1fr) 216px",
+          gap: 4,
+          overflow: "hidden",
+        }}
+      >
+        {/* Graph section */}
+        <div
+          style={{
+            minHeight: 0,
+            display: "grid",
+            gridTemplateRows: "44px minmax(0, 1fr)",
+            gap: 4,
+          }}
+        >
+          {/* Header */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "0 12px",
+              borderRadius: 4,
+              border: "none",
+              background: "var(--surface-panel-raised)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ color: "var(--text-primary)", fontWeight: 700, letterSpacing: "1.2px", fontSize: 10 }}>COMPRESSOR</div>
+              <ToggleSwitch
+                enabled={comp.enabled}
+                disabled={disabled}
+                onChange={(value) => onChange({ enabled: value })}
+              />
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={onReset}
+                style={{
+                  height: 32,
+                  padding: "0 12px",
+                  borderRadius: 8,
+                  border: "1px solid var(--button-default-border)",
+                  background: "transparent",
+                  color: "var(--button-default-text)",
+                  fontSize: 10,
+                  fontWeight: 700,
+                  letterSpacing: "1.2px",
+                  cursor: disabled ? "not-allowed" : "pointer",
+                }}
+              >
+                RESET
+              </button>
+            </div>
+          </div>
+
+          {/* Graph area */}
+          <div
+            style={{
+              minHeight: 0,
+              height: "100%",
+              padding: 32,
+              boxSizing: "border-box",
+              display: "grid",
+              alignContent: "stretch",
+              borderRadius: 4,
+              border: "none",
+              background: "var(--surface-panel-raised)",
+            }}
+          >
+            <CompressorGraph comp={comp} disabled={disabled} onChange={onChange} />
+          </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignContent: "start" }}>
+
+        {/* Controllers area */}
+        <div
+          style={{
+            minHeight: 0,
+            height: "100%",
+            display: "grid",
+            gridTemplateColumns: "repeat(5, 1fr)",
+            gap: 4,
+            padding: "16px 12px",
+            borderRadius: 4,
+            border: "none",
+            overflow: "visible",
+            background: "var(--surface-panel)",
+          }}
+        >
           <EditableKnob
-            label="Threshold"
+            label="THRESHOLD"
             value={Math.round(snapCompressorThreshold(comp.threshold) * 2)}
             min={-160}
             max={0}
@@ -1703,6 +1782,9 @@ function CompressorEditor({
             displayValue={formatDb(snapCompressorThreshold(comp.threshold))}
             suffix="dB"
             disabled={disabled}
+            accentColor={MODULE_ACCENTS.comp.color}
+            glowColor={MODULE_ACCENTS.comp.glow}
+            knobSize={68}
             onChange={(thresholdHalfSteps) => {
               const threshold = snapCompressorThreshold(thresholdHalfSteps / 2);
 
@@ -1715,18 +1797,57 @@ function CompressorEditor({
             }}
           />
           <EditableKnob
-            label="Ratio"
+            label="RATIO"
             value={compressorRatioToStepIndex(comp.ratio)}
             min={0}
             max={COMP_RATIO_STEPS.length - 1}
             step={1}
             displayValue={formatCompressorRatio(snapCompressorRatio(comp.ratio))}
             disabled={disabled}
+            accentColor={MODULE_ACCENTS.comp.color}
+            glowColor={MODULE_ACCENTS.comp.glow}
+            knobSize={68}
             onChange={(ratioIndex) => onChange({ ratio: compressorRatioFromStepIndex(ratioIndex) })}
           />
-          <EditableKnob label="Attack" value={Math.round(comp.attack)} min={1} max={200} displayValue={formatMs(comp.attack)} suffix="ms" disabled={disabled} onChange={(attack) => onChange({ attack })} />
-          <EditableKnob label="Release" value={Math.round(comp.release)} min={10} max={1000} displayValue={formatMs(comp.release)} suffix="ms" disabled={disabled} onChange={(release) => onChange({ release })} />
-          <EditableKnob label="Gain" value={Math.round(comp.gain)} min={0} max={20} displayValue={formatDb(comp.gain)} suffix="dB" disabled={disabled} onChange={(gain) => onChange({ gain })} />
+          <EditableKnob
+            label="ATTACK"
+            value={Math.round(comp.attack)}
+            min={1}
+            max={200}
+            displayValue={formatMs(comp.attack)}
+            suffix="ms"
+            disabled={disabled}
+            accentColor={MODULE_ACCENTS.comp.color}
+            glowColor={MODULE_ACCENTS.comp.glow}
+            knobSize={68}
+            onChange={(attack) => onChange({ attack })}
+          />
+          <EditableKnob
+            label="RELEASE"
+            value={Math.round(comp.release)}
+            min={10}
+            max={1000}
+            displayValue={formatMs(comp.release)}
+            suffix="ms"
+            disabled={disabled}
+            accentColor={MODULE_ACCENTS.comp.color}
+            glowColor={MODULE_ACCENTS.comp.glow}
+            knobSize={68}
+            onChange={(release) => onChange({ release })}
+          />
+          <EditableKnob
+            label="GAIN"
+            value={Math.round(comp.gain)}
+            min={0}
+            max={20}
+            displayValue={formatDb(comp.gain)}
+            suffix="dB"
+            disabled={disabled}
+            accentColor={MODULE_ACCENTS.comp.color}
+            glowColor={MODULE_ACCENTS.comp.glow}
+            knobSize={68}
+            onChange={(gain) => onChange({ gain })}
+          />
         </div>
       </div>
     </ProcessorShell>
