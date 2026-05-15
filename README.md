@@ -60,6 +60,16 @@ npm run build
 - Link estereo por pares em canais e auxiliares, com espelhamento de ajustes.
 - Master com dois faders (L/R), mute independente e opcao de link.
 
+## Atualizacoes recentes (maio/2026)
+
+- EQ refatorado para o novo layout modular com grafico responsivo, controles discretos por passos e padrao visual consolidado.
+- Selecao de banda no EQ estabilizada para evitar estado nulo e manter interacao consistente em desktop e iPad.
+- HPF/LPF ajustados para dominio visual expandido no grafico e resposta correta no range ativo.
+- Compressor migrado para o novo layout (cabecalho + grafico + fileira de 5 knobs) preservando funcionalidade existente.
+- Compressor com tema visual proprio (accent roxo/magenta), grafico interativo de threshold/ratio e ajuste de responsividade no container.
+- Area do grafico do compressor atualizada para ocupar 100% do espaco util, com escala inferior sem corte de labels/linhas.
+- Limpeza de codigo aplicada com remocao de componentes nao utilizados apos consolidacao dos knobs discretos.
+
 ## iOS/macOS
 
 - ✅ **App AX Controller compilado e pronto para iPad**

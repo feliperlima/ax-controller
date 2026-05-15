@@ -946,12 +946,50 @@ function CompressorGraph({
   disabled?: boolean;
   onChange: (patch: Partial<CompressorState>) => void;
 }) {
-  const baseWidth = 560;
-  const baseHeight = 270;
+  const graphFrameRef = useRef<HTMLDivElement | null>(null);
+  const [responsiveSize, setResponsiveSize] = useState({ width: 560, height: 270 });
+
+  useEffect(() => {
+    const node = graphFrameRef.current;
+    if (!node) return;
+
+    const updateSize = () => {
+      const rect = node.getBoundingClientRect();
+      const nextWidth = Math.round(rect.width);
+      const nextHeight = Math.round(rect.height);
+
+      if (nextWidth > 0 && nextHeight > 0) {
+        setResponsiveSize({ width: nextWidth, height: nextHeight });
+      }
+    };
+
+    updateSize();
+
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const nextWidth = Math.round(entry.contentRect.width);
+      const nextHeight = Math.round(entry.contentRect.height);
+
+      if (nextWidth > 0 && nextHeight > 0) {
+        setResponsiveSize({ width: nextWidth, height: nextHeight });
+      }
+    });
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  const width = Math.max(360, responsiveSize.width);
+  const height = Math.max(180, responsiveSize.height);
   const graphX = 42;
   const graphY = 18;
-  const graphWidth = 486;
-  const graphHeight = 210;
+  const graphRightPadding = 20;
+  const graphBottomPadding = 32;
+  const graphWidth = Math.max(220, width - graphX - graphRightPadding);
+  const graphHeight = Math.max(120, height - graphY - graphBottomPadding);
   const snappedThreshold = snapCompressorThreshold(comp.threshold);
   const snappedRatio = snapCompressorRatio(comp.ratio);
   const curveRatio = snappedRatio >= 40 ? Number.POSITIVE_INFINITY : snappedRatio;
@@ -991,20 +1029,29 @@ function CompressorGraph({
   }
 
   return (
-    <svg
-      viewBox={`0 0 ${baseWidth} ${baseHeight}`}
-      preserveAspectRatio="none"
+    <div
+      ref={graphFrameRef}
       style={{
         width: "100%",
         height: "100%",
         minHeight: 0,
-        borderRadius: 10,
-        background: CHART_THEME.graphBackground,
-        border: `1px solid ${CHART_THEME.graphBorder}`,
-        touchAction: "none",
-        userSelect: "none",
       }}
     >
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "block",
+          minHeight: 0,
+          borderRadius: 10,
+          background: "var(--surface-panel-raised)",
+          border: `1px solid ${CHART_THEME.graphBorder}`,
+          touchAction: "none",
+          userSelect: "none",
+        }}
+      >
       <defs>
         <filter id="comp-threshold-glow" x="-70%" y="-70%" width="240%" height="240%">
           <feGaussianBlur stdDeviation="2.8" result="blur" />
@@ -1021,7 +1068,7 @@ function CompressorGraph({
           </feMerge>
         </filter>
       </defs>
-      <rect x={graphX} y={graphY} width={graphWidth} height={graphHeight} fill={CHART_THEME.graphPanel} />
+      <rect x={graphX} y={graphY} width={graphWidth} height={graphHeight} fill="rgba(255,255,255,0.01)" />
       {horizontalMinorDb.map((db) => (
         <line
           key={`comp-h-minor-${db}`}
@@ -1071,12 +1118,19 @@ function CompressorGraph({
             stroke={CHART_THEME.gridMajor}
             strokeWidth="1"
           />
-          <text x={xForDb(db)} y={graphY + graphHeight + 22} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="middle" fontWeight="500">
+          <text
+            x={xForDb(db)}
+            y={graphY + graphHeight + 8}
+            fill={CHART_THEME.axisLabel}
+            fontSize="9"
+            textAnchor="middle"
+            fontWeight="500"
+            dominantBaseline="hanging"
+          >
             {db}
           </text>
         </g>
       ))}
-      <path d={`${path} L ${graphX + graphWidth} ${graphY + graphHeight} Z`} fill="#7c3aed" opacity={comp.enabled ? 0.14 : 0.05} />
       <path d={path} fill="none" stroke={CHART_THEME.curveStroke} strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" opacity={comp.enabled ? 0.92 : 0.35} />
 
       {/* T handle — controls Threshold (horizontal) */}
@@ -1143,6 +1197,7 @@ function CompressorGraph({
         </text>
       </g>
     </svg>
+    </div>
   );
 }
 
@@ -1764,13 +1819,13 @@ function CompressorEditor({
             minHeight: 0,
             height: "100%",
             display: "grid",
-            gridTemplateColumns: "repeat(5, 1fr)",
+            gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
             gap: 4,
             padding: "16px 12px",
             borderRadius: 4,
             border: "none",
             overflow: "visible",
-            background: "var(--surface-panel)",
+            background: "var(--surface-panel-raised)",
           }}
         >
           <EditableKnob
