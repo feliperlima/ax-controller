@@ -885,78 +885,6 @@ function ToggleSwitch({
   );
 }
 
-function ModuleHeaderActions({
-  enabled,
-  disabled,
-  accentColor,
-  accentGlow,
-  onLabel,
-  offLabel,
-  onToggle,
-  onReset,
-}: {
-  enabled: boolean;
-  disabled?: boolean;
-  accentColor: string;
-  accentGlow: string;
-  onLabel: string;
-  offLabel: string;
-  onToggle: () => void;
-  onReset: () => void;
-}) {
-  return (
-    <div
-      style={{
-        position: "absolute",
-        top: 10,
-        right: 10,
-        display: "flex",
-        gap: 6,
-        zIndex: 4,
-      }}
-    >
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={onToggle}
-        style={{
-          minWidth: 76,
-          padding: "5px 10px",
-          borderRadius: 999,
-          border: enabled ? `1px solid ${accentColor}` : "1px solid #334155",
-          background: enabled ? "#0b1f17" : "#111827",
-          color: enabled ? "#f8fafc" : "#cbd5e1",
-          fontWeight: 950,
-          fontSize: 11,
-          cursor: disabled ? "not-allowed" : "pointer",
-          boxShadow: enabled ? `0 0 10px ${accentGlow}` : "none",
-        }}
-      >
-        {enabled ? onLabel : offLabel}
-      </button>
-
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={onReset}
-        style={{
-          minWidth: 64,
-          padding: "5px 10px",
-          borderRadius: 999,
-          border: "1px solid #334155",
-          background: "linear-gradient(180deg, #111b27 0%, #0d1621 100%)",
-          color: "#e5eef5",
-          fontWeight: 950,
-          fontSize: 11,
-          cursor: disabled ? "not-allowed" : "pointer",
-        }}
-      >
-        RESET
-      </button>
-    </div>
-  );
-}
-
 function GateGraph({
   gate,
   disabled,
@@ -966,12 +894,50 @@ function GateGraph({
   disabled?: boolean;
   onThresholdChange: (value: number) => void;
 }) {
-  const width = 560;
-  const height = 270;
+  const graphFrameRef = useRef<HTMLDivElement | null>(null);
+  const [responsiveSize, setResponsiveSize] = useState({ width: 560, height: 270 });
+
+  useEffect(() => {
+    const node = graphFrameRef.current;
+    if (!node) return;
+
+    const updateSize = () => {
+      const rect = node.getBoundingClientRect();
+      const nextWidth = Math.round(rect.width);
+      const nextHeight = Math.round(rect.height);
+
+      if (nextWidth > 0 && nextHeight > 0) {
+        setResponsiveSize({ width: nextWidth, height: nextHeight });
+      }
+    };
+
+    updateSize();
+
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+
+      const nextWidth = Math.round(entry.contentRect.width);
+      const nextHeight = Math.round(entry.contentRect.height);
+
+      if (nextWidth > 0 && nextHeight > 0) {
+        setResponsiveSize({ width: nextWidth, height: nextHeight });
+      }
+    });
+
+    observer.observe(node);
+
+    return () => observer.disconnect();
+  }, []);
+
+  const width = Math.max(360, responsiveSize.width);
+  const height = Math.max(180, responsiveSize.height);
   const graphX = PROCESSOR_GRAPH_RECT.left;
   const graphY = PROCESSOR_GRAPH_RECT.top;
-  const graphWidth = width - PROCESSOR_GRAPH_RECT.left - PROCESSOR_GRAPH_RECT.right;
-  const graphHeight = height - PROCESSOR_GRAPH_RECT.top - PROCESSOR_GRAPH_RECT.bottom;
+  const graphWidth = Math.max(220, width - PROCESSOR_GRAPH_RECT.left - PROCESSOR_GRAPH_RECT.right);
+  const graphHeight = Math.max(120, height - PROCESSOR_GRAPH_RECT.top - PROCESSOR_GRAPH_RECT.bottom);
   const dbToY = (db: number) => graphY + ((0 - clamp(db, -80, 0)) / 80) * graphHeight;
   const thresholdY = dbToY(gate.threshold);
   const bottomY = graphY + graphHeight;
@@ -987,6 +953,8 @@ function GateGraph({
   const attackEndX = clamp(envelopeStartX + attackWidth, graphX + 32, rightX - 32);
   const holdEndX = clamp(attackEndX + holdWidth, attackEndX + 8, rightX - Math.max(16, decayWidth));
   const decayEndX = clamp(holdEndX + decayWidth, holdEndX + 8, rightX);
+  const decayHandleX = attackEndX;
+  const thresholdHandleX = holdEndX;
   const envelopePath = [
     `M ${graphX} ${bottomY}`,
     `L ${envelopeStartX} ${bottomY}`,
@@ -1014,14 +982,24 @@ function GateGraph({
   }
 
   return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
+    <div
+      ref={graphFrameRef}
       style={{
         width: "100%",
         height: "100%",
         minHeight: 0,
+      }}
+    >
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      style={{
+        width: "100%",
+        height: "100%",
+        display: "block",
+        minHeight: 0,
         borderRadius: 10,
-        background: CHART_THEME.graphBackground,
+        background: "var(--surface-panel-raised)",
         border: `1px solid ${CHART_THEME.graphBorder}`,
         touchAction: "none",
         userSelect: "none",
@@ -1035,40 +1013,65 @@ function GateGraph({
             <feMergeNode in="SourceGraphic" />
           </feMerge>
         </filter>
+        <filter id="gate-decay-glow" x="-80%" y="-80%" width="260%" height="260%">
+          <feGaussianBlur stdDeviation="2.6" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
       </defs>
 
-      <rect x={graphX} y={graphY} width={graphWidth} height={graphHeight} fill={CHART_THEME.graphPanel} />
-      {Array.from({ length: 9 }, (_, index) => (
-        <g key={index}>
+      <rect x={graphX} y={graphY} width={graphWidth} height={graphHeight} fill="rgba(255,255,255,0.01)" />
+      {[-10, -30, -50, -70].map((db) => (
+        <line
+          key={`gate-h-minor-${db}`}
+          x1={graphX}
+          x2={graphX + graphWidth}
+          y1={dbToY(db)}
+          y2={dbToY(db)}
+          stroke={CHART_THEME.gridMinor}
+          strokeWidth="0.9"
+          strokeDasharray="4 4"
+        />
+      ))}
+      {[0, -20, -40, -60, -80].map((db) => (
+        <g key={`gate-h-major-${db}`}>
           <line
             x1={graphX}
             x2={graphX + graphWidth}
-            y1={graphY + (graphHeight / 8) * index}
-            y2={graphY + (graphHeight / 8) * index}
-            stroke={index % 2 === 0 ? CHART_THEME.gridMajor : CHART_THEME.gridMinor}
-            strokeWidth={index % 2 === 0 ? "1" : "0.9"}
-            strokeDasharray={index % 2 === 0 ? undefined : "4 4"}
+            y1={dbToY(db)}
+            y2={dbToY(db)}
+            stroke={db === 0 ? CHART_THEME.gridAccent : CHART_THEME.gridMajor}
+            strokeWidth="1"
           />
-          <text x={graphX - PROCESSOR_AXIS_LABEL_OFFSETS.side} y={graphY + (graphHeight / 8) * index + 4} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="end" fontWeight="500">
-            {-index * 10}
+          <text x={graphX - PROCESSOR_AXIS_LABEL_OFFSETS.side} y={dbToY(db) + 4} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="end" fontWeight="500">
+            {db}
+          </text>
+          <text x={graphX + graphWidth + PROCESSOR_AXIS_LABEL_OFFSETS.side} y={dbToY(db) + 4} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="start" fontWeight="500">
+            {db}
           </text>
         </g>
       ))}
-      {Array.from({ length: 8 }, (_, index) => (
+      {Array.from({ length: 7 }, (_, index) => {
+        const x = graphX + (graphWidth / 7) * index;
+
+        return (
         <line
-          key={index}
-          x1={graphX + (graphWidth / 7) * index}
-          x2={graphX + (graphWidth / 7) * index}
+          key={`gate-v-${index}`}
+          x1={x}
+          x2={x}
           y1={graphY}
           y2={graphY + graphHeight}
           stroke={index % 2 === 0 ? CHART_THEME.gridMajor : CHART_THEME.gridMinor}
           strokeWidth={index % 2 === 0 ? "1" : "0.9"}
           strokeDasharray={index % 2 === 0 ? undefined : "4 4"}
         />
-      ))}
+        );
+      })}
 
-      <path d={envelopePath} fill={GATE_THEME.fill} opacity={gate.enabled ? 0.28 : 0.1} />
-      <path d={envelopeOutline} fill="none" stroke={GATE_THEME.primarySoft} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" opacity={gate.enabled ? 0.9 : 0.3} />
+      <path d={envelopePath} fill={GATE_THEME.primary} opacity={gate.enabled ? 0.16 : 0.06} />
+      <path d={envelopeOutline} fill="none" stroke={CHART_THEME.curveStroke} strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round" opacity={gate.enabled ? 0.92 : 0.35} />
 
       <line
         x1={graphX}
@@ -1080,6 +1083,14 @@ function GateGraph({
         strokeDasharray="4 4"
         opacity={gate.enabled ? 0.9 : 0.35}
       />
+
+      <g style={{ pointerEvents: "none" }}>
+        <circle cx={decayHandleX} cy={thresholdY} r={12} fill="none" stroke={HANDLE_THEME.ratio} strokeWidth="1.8" opacity={0.5} />
+        <circle cx={decayHandleX} cy={thresholdY} r={10} fill={HANDLE_THEME.ratio} stroke={HANDLE_THEME.idleStroke} strokeWidth="1.6" opacity={gate.enabled ? 0.7 : 0.32} filter="url(#gate-decay-glow)" />
+        <text x={decayHandleX} y={thresholdY} fill={CHART_THEME.handleText} fontSize="12" fontWeight="900" textAnchor="middle" dominantBaseline="middle">
+          D
+        </text>
+      </g>
 
       <g
         style={{ cursor: disabled ? "not-allowed" : "ns-resize" }}
@@ -1105,13 +1116,14 @@ function GateGraph({
           if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
         }}
       >
-        <circle cx={graphX + 18} cy={thresholdY} r={17} fill="none" stroke={GATE_THEME.primarySoft} strokeWidth="2" opacity={gate.enabled ? 0.45 : 0.15} />
-        <circle cx={graphX + 18} cy={thresholdY} r={12} fill={GATE_THEME.primary} stroke={gate.enabled ? "#f8fafc" : HANDLE_THEME.idleStroke} strokeWidth="2" opacity={gate.enabled ? 0.95 : 0.35} filter="url(#gate-threshold-glow)" />
-        <text x={graphX + 18} y={thresholdY} fill={CHART_THEME.handleText} fontSize="12" fontWeight="900" textAnchor="middle" dominantBaseline="middle">
+        <circle cx={thresholdHandleX} cy={thresholdY} r={17} fill="none" stroke={GATE_THEME.primarySoft} strokeWidth="2" opacity={gate.enabled ? 0.45 : 0.15} />
+        <circle cx={thresholdHandleX} cy={thresholdY} r={12} fill={GATE_THEME.primary} stroke={gate.enabled ? "#f8fafc" : HANDLE_THEME.idleStroke} strokeWidth="2" opacity={gate.enabled ? 0.95 : 0.35} filter="url(#gate-threshold-glow)" />
+        <text x={thresholdHandleX} y={thresholdY} fill={CHART_THEME.handleText} fontSize="12" fontWeight="900" textAnchor="middle" dominantBaseline="middle">
           T
         </text>
       </g>
     </svg>
+    </div>
   );
 }
 
@@ -1902,38 +1914,169 @@ function GateEditor({
   onChange: (patch: Partial<GateState>) => void;
   onReset: () => void;
 }) {
+  const controllersDisabled = disabled || !gate.enabled;
+
   return (
-    <ProcessorShell
-      title="Gate"
-    >
-      <div style={{ minHeight: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) 260px", gap: 10 }}>
-        <div style={{ position: "relative", minHeight: 0 }}>
-          <ModuleHeaderActions
-            enabled={gate.enabled}
-            disabled={disabled}
-            accentColor={MODULE_ACCENTS.gate.color}
-            accentGlow={MODULE_ACCENTS.gate.glow}
-            onLabel="GATE ON"
-            offLabel="GATE OFF"
-            onToggle={() => onChange({ enabled: !gate.enabled })}
-            onReset={onReset}
-          />
-          <GateGraph gate={gate} disabled={disabled} onThresholdChange={(threshold) => onChange({ threshold })} />
+    <ProcessorShell title="">
+      <div
+        style={{
+          minHeight: 0,
+          height: "100%",
+          display: "grid",
+          gridTemplateRows: "minmax(0, 1fr) 216px",
+          gap: 4,
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            minHeight: 0,
+            display: "grid",
+            gridTemplateRows: "44px minmax(0, 1fr)",
+            gap: 4,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "0 12px",
+              borderRadius: 4,
+              border: "none",
+              background: "var(--surface-panel-raised)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ color: "var(--text-primary)", fontWeight: 700, letterSpacing: "1.2px", fontSize: 10 }}>GATE</div>
+              <ToggleSwitch
+                enabled={gate.enabled}
+                disabled={disabled}
+                onChange={(value) => onChange({ enabled: value })}
+              />
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={onReset}
+                style={{
+                  height: 32,
+                  padding: "0 12px",
+                  borderRadius: 8,
+                  border: "1px solid var(--button-default-border)",
+                  background: "transparent",
+                  color: "var(--button-default-text)",
+                  fontSize: 10,
+                  fontWeight: 700,
+                  letterSpacing: "1.2px",
+                  cursor: disabled ? "not-allowed" : "pointer",
+                }}
+              >
+                RESET
+              </button>
+            </div>
+          </div>
+
+          <div
+            style={{
+              minHeight: 0,
+              height: "100%",
+              padding: 32,
+              boxSizing: "border-box",
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 1fr)",
+              alignItems: "stretch",
+              gap: 12,
+              borderRadius: 4,
+              border: "none",
+              background: "var(--surface-panel-raised)",
+            }}
+          >
+            <GateGraph gate={gate} disabled={disabled} onThresholdChange={(threshold) => onChange({ threshold })} />
+          </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignContent: "start" }}>
-          <EditableKnob label="Threshold" value={gate.threshold} min={-80} max={0} displayValue={formatDb(gate.threshold)} suffix="dB" disabled={disabled} onChange={(threshold) => onChange({ threshold })} />
-          <EditableKnob label="Attack" value={Math.round(gate.attack)} min={3} max={200} displayValue={formatMs(gate.attack)} suffix="ms" disabled={disabled} onChange={(attack) => onChange({ attack })} />
-          <EditableKnob
-            label="Decay"
-            value={snapGateDecay(gate.decay)}
-            min={2}
-            max={32}
-            step={1}
-            displayValue={`x${snapGateDecay(gate.decay)}`}
-            disabled={disabled}
-            onChange={(decay) => onChange({ decay: snapGateDecay(decay) })}
-          />
-          <EditableKnob label="Hold" value={Math.round(gate.hold)} min={0} max={530} displayValue={formatMs(gate.hold)} suffix="ms" disabled={disabled} onChange={(hold) => onChange({ hold })} />
+
+        <div
+          style={{
+            minHeight: 0,
+            height: "100%",
+            display: "grid",
+            gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+            gap: 4,
+            padding: "10px 12px",
+            borderRadius: 4,
+            border: "none",
+            overflow: "visible",
+            background: "var(--surface-panel-raised)",
+            justifyItems: "center",
+          }}
+        >
+          <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
+            <EditableKnob
+              label="THRESHOLD"
+              value={Math.round(gate.threshold * 2)}
+              min={-160}
+              max={0}
+              step={1}
+              knobSize={68}
+              compact
+              displayValue={gate.enabled ? formatDb(gate.threshold) : "—"}
+              suffix="dB"
+              disabled={controllersDisabled}
+              accentColor={MODULE_ACCENTS.gate.color}
+              glowColor={MODULE_ACCENTS.gate.glow}
+              onChange={(thresholdHalfSteps) => onChange({ threshold: clamp(thresholdHalfSteps / 2, -80, 0) })}
+            />
+          </div>
+          <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
+            <EditableKnob
+              label="ATTACK"
+              value={Math.round(gate.attack)}
+              min={3}
+              max={200}
+              knobSize={68}
+              compact
+              displayValue={gate.enabled ? formatMs(gate.attack) : "—"}
+              suffix="ms"
+              disabled={controllersDisabled}
+              accentColor={MODULE_ACCENTS.gate.color}
+              glowColor={MODULE_ACCENTS.gate.glow}
+              onChange={(attack) => onChange({ attack })}
+            />
+          </div>
+          <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
+            <EditableKnob
+              label="HOLD"
+              value={Math.round(gate.hold)}
+              min={0}
+              max={530}
+              knobSize={68}
+              compact
+              displayValue={gate.enabled ? formatMs(gate.hold) : "—"}
+              suffix="ms"
+              disabled={controllersDisabled}
+              accentColor={MODULE_ACCENTS.gate.color}
+              glowColor={MODULE_ACCENTS.gate.glow}
+              onChange={(hold) => onChange({ hold })}
+            />
+          </div>
+          <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
+            <EditableKnob
+              label="DECAY"
+              value={snapGateDecay(gate.decay)}
+              min={2}
+              max={32}
+              step={1}
+              knobSize={68}
+              compact
+              displayValue={gate.enabled ? `x${snapGateDecay(gate.decay)}` : "—"}
+              disabled={controllersDisabled}
+              accentColor={MODULE_ACCENTS.gate.color}
+              glowColor={MODULE_ACCENTS.gate.glow}
+              onChange={(decay) => onChange({ decay: snapGateDecay(decay) })}
+            />
+          </div>
         </div>
       </div>
     </ProcessorShell>
