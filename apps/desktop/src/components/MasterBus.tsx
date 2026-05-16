@@ -1,8 +1,11 @@
 import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
+import { stripColorFromId } from "./stripColor";
 
 type MasterBusProps = {
   name?: string;
+  leftColorId?: number;
+  rightColorId?: number;
   muted: boolean;
   soloOn: boolean;
   linked: boolean;
@@ -52,6 +55,8 @@ const FADER_SNAP_POINTS_DB = [-50, -40, -30, -20, -10, -5, 0, 5, 10];
 const FADER_SNAP_POINTS = FADER_SNAP_POINTS_DB.map(dbToFaderScalePosition);
 
 export function MasterBus({
+  leftColorId = 0,
+  rightColorId = 0,
   muted,
   soloOn,
   linked,
@@ -75,6 +80,12 @@ export function MasterBus({
   const footerName = "Master Bus";
   const isLinked = linked;
   const faderDbLabel = (db: number) => (db <= -120 ? "-∞" : `${db} dB`);
+  const leftColor = stripColorFromId(leftColorId, 0, "var(--module-master-primary)");
+  const rightColor = stripColorFromId(rightColorId, 0, "var(--module-master-primary)");
+  const footerBackground =
+    leftColor === rightColor
+      ? leftColor
+      : `linear-gradient(90deg, ${leftColor} 0%, ${leftColor} 50%, ${rightColor} 50%, ${rightColor} 100%)`;
 
   return (
     <div
@@ -307,7 +318,7 @@ export function MasterBus({
           alignItems: "flex-start",
           textAlign: "left",
           gap: 3,
-          backgroundColor: "var(--module-master-primary)",
+          background: footerBackground,
           border: "none",
           cursor: disabled ? "default" : "pointer",
           boxSizing: "border-box",

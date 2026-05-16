@@ -40,6 +40,9 @@ import {
   type GateState,
   type ProcessorModule,
   type ProcessorState,
+  type SendStripId,
+  type SendStripView,
+  type SendTapPoint,
 } from "./components/ChannelProcessors";
 
 type ChannelState = {
@@ -67,6 +70,8 @@ type ChannelState = {
 type MasterState = {
   leftMuted: boolean;
   rightMuted: boolean;
+  leftColorId: number;
+  rightColorId: number;
   soloOn: boolean;
   leftFaderDb: number;
   rightFaderDb: number;
@@ -188,6 +193,8 @@ function createDefaultMasterState(): MasterState {
   return {
     leftMuted: false,
     rightMuted: false,
+    leftColorId: 0,
+    rightColorId: 0,
     soloOn: false,
     leftFaderDb: 0,
     rightFaderDb: 0,
@@ -239,7 +246,13 @@ function channelColorParam(channel: number) {
 }
 
 function valueToColorId(value: number) {
-  return Math.max(1, Math.min(12, Math.round(value)));
+  return Math.max(0, Math.min(12, Math.round(value)));
+}
+
+function channelColorBadgeBackground(colorId: number) {
+  const normalized = Math.max(0, Math.min(12, Math.round(colorId)));
+  if (normalized === 0) return "#7B7B7B";
+  return `var(--channel-${String(normalized).padStart(2, "0")}, #c96626)`;
 }
 
 const MASTER_PARAMS = {
@@ -247,7 +260,20 @@ const MASTER_PARAMS = {
   leftMute: 2550,
   rightFader: 2657,
   rightMute: 2659,
+  leftColor: 3146,
+  rightColor: 3147,
 };
+
+const FX_COLOR_PARAMS = {
+  1: 3136,
+  2: 3137,
+} as const;
+
+const AUX_COLOR_BASE = 3138;
+
+function auxColorParam(aux: number) {
+  return AUX_COLOR_BASE + aux - 1;
+}
 
 type DetailView =
   | { type: "channel"; channel: number }
@@ -256,6 +282,8 @@ type DetailView =
 type StripSection = "inputs" | "aux" | "fx";
 type CustomizationView = { section: StripSection; index: number } | null;
 type PairLinkState = Record<string, boolean>;
+type SendValueState = Record<SendStripId, number>;
+type SendTapPointState = Record<SendStripId, SendTapPoint>;
 
 type DragScrollState = {
   pointerId: number | null;
@@ -333,6 +361,59 @@ const AUX_MASTER_FADER_PARAMS: Record<number, number> = {
 
 const AUX_BLOCK_STARTS = AUX_MASTER_FADER_PARAMS;
 const AUX_BLOCK_SIZE = 109;
+const DEFAULT_AUX_COLOR_ID = 8;
+const DEFAULT_FX_COLOR_ID = 7;
+const MASTER_FIXED_COLOR_ID = 10;
+
+type ColorScope = "input" | "aux" | "fx" | "master";
+
+const COLOR_SCOPE_DEFAULTS: Record<ColorScope, number> = {
+  input: 0,
+  aux: DEFAULT_AUX_COLOR_ID,
+  fx: DEFAULT_FX_COLOR_ID,
+  master: 0,
+};
+
+const COLOR_SCOPE_ZERO_WRITEBACK: Record<ColorScope, boolean> = {
+  input: false,
+  aux: true,
+  fx: true,
+  master: false,
+};
+
+function clampColorId(colorId: number) {
+  return Math.max(0, Math.min(12, Math.round(colorId)));
+}
+
+function normalizeColorByScope(scope: ColorScope, colorId: number) {
+  const clamped = clampColorId(colorId);
+  if (clamped === 0) return COLOR_SCOPE_DEFAULTS[scope];
+  return clamped;
+}
+
+function resolveMesaColorByScope(
+  scope: ColorScope,
+  rawColor: number | undefined,
+  onWriteBack?: () => void
+) {
+  if (rawColor === undefined) return undefined;
+
+  const clamped = clampColorId(rawColor);
+
+  if (clamped === 0 && COLOR_SCOPE_ZERO_WRITEBACK[scope]) {
+    onWriteBack?.();
+  }
+
+  return normalizeColorByScope(scope, clamped);
+}
+
+function normalizeAuxColorId(colorId: number) {
+  return normalizeColorByScope("aux", colorId);
+}
+
+function normalizeFxColorId(colorId: number) {
+  return normalizeColorByScope("fx", colorId);
+}
 
 function getChannelPair(channel: number): [number, number] {
   const odd = channel % 2 === 0 ? channel - 1 : channel;
@@ -366,6 +447,91 @@ const AUX_LINK_BITS: Record<number, number> = {
   7: 8,
 };
 
+const SEND_IDS: SendStripId[] = [
+  "fx1",
+  "fx2",
+  "aux1",
+  "aux2",
+  "aux3",
+  "aux4",
+  "aux5",
+  "aux6",
+  "aux7",
+  "aux8",
+];
+
+const AUX_SEND_BASES: Record<number, number> = {
+  1: 77,
+  2: 78,
+  3: 79,
+  4: 80,
+  5: 81,
+  6: 82,
+  7: 83,
+  8: 84,
+};
+
+const FX_SEND_BASES: Record<number, number> = {
+  1: 89,
+  2: 90,
+};
+
+const SEND_WRITE_THROTTLE_MS = 80;
+
+// Channel sends use the same fader scale as channel faders. AUX sends are params 77–84 + channel offset; FX sends are 89–90 + channel offset.
+function sendDbToValue(db: number | "-inf") {
+  if (db === "-inf") return 0;
+  const clamped = Math.max(-120, Math.min(10, db));
+  if (clamped <= -120) return 0;
+  return Math.round(1200 + clamped * 10);
+}
+
+function sendValueToDb(value: number) {
+  if (value <= 0) return -120;
+  return (value - 1200) / 10;
+}
+
+function createDefaultSendValues(): SendValueState {
+  return {
+    fx1: 1200,
+    fx2: 1200,
+    aux1: 1200,
+    aux2: 1200,
+    aux3: 1200,
+    aux4: 1200,
+    aux5: 1200,
+    aux6: 1200,
+    aux7: 1200,
+    aux8: 1200,
+  };
+}
+
+// Pre/Post UI is ready. Only write tap point changes when a confirmed protocol mapping exists. Do not invent send tap-point params.
+function createDefaultSendTapPoints(): SendTapPointState {
+  return {
+    fx1: "post",
+    fx2: "post",
+    aux1: "post",
+    aux2: "post",
+    aux3: "post",
+    aux4: "post",
+    aux5: "post",
+    aux6: "post",
+    aux7: "post",
+    aux8: "post",
+  };
+}
+
+function sendIdToParam(channel: number, id: SendStripId) {
+  const channelOffset = (channel - 1) * 62;
+
+  if (id === "fx1") return FX_SEND_BASES[1] + channelOffset;
+  if (id === "fx2") return FX_SEND_BASES[2] + channelOffset;
+
+  const auxNumber = Number(id.replace("aux", ""));
+  return (AUX_SEND_BASES[auxNumber] ?? AUX_SEND_BASES[1]) + channelOffset;
+}
+
 const MASTER_LINK_BIT = 16;
 
 function isAuxLinked(value3056: number, aux: number) {
@@ -380,6 +546,8 @@ function isAuxLinked(value3056: number, aux: number) {
 function isMasterLinked(value3056: number) {
   return Boolean(value3056 & MASTER_LINK_BIT);
 }
+
+// AUX link state comes from param 3056 bitmask. Linked AUX pairs should mirror values and show the same linked visual treatment used in Mixer.
 
 function normalizeMixerName(name: string) {
   return name.trim().toUpperCase().replace(/\s+/g, "");
@@ -429,10 +597,10 @@ function isLocalDefaultDisplayName(target: NameTarget, displayName: string) {
   return normalized === defaultDisplayNormalized || isDefaultMixerName(target, displayName);
 }
 
-function createVirtualStripsState(count: number) {
+function createVirtualStripsState(count: number, defaultColorId?: number) {
   return Array.from({ length: count }, (_, index) => ({
     ...createDefaultChannelState(),
-    colorId: ((index + 2) % 12) + 1,
+    colorId: defaultColorId ?? ((index + 2) % 12) + 1,
     iconId: index % DUONN_CHANNEL_ICONS.length,
     faderDb: -5,
     faderPosition: dbToFaderPosition(-5),
@@ -909,10 +1077,10 @@ function App() {
     createInitialChannelsState
   );
   const [auxStrips, setAuxStrips] = useState<ChannelState[]>(() =>
-    createVirtualStripsState(8)
+    createVirtualStripsState(8, DEFAULT_AUX_COLOR_ID)
   );
   const [fxStrips, setFxStrips] = useState<ChannelState[]>(() =>
-    createVirtualStripsState(2)
+    createVirtualStripsState(2, DEFAULT_FX_COLOR_ID)
   );
   const [auxProcessorStates, setAuxProcessorStates] = useState<ProcessorState[]>(() =>
     Array.from({ length: 8 }, () => createDefaultAuxProcessorState())
@@ -925,6 +1093,10 @@ function App() {
   const [masterLinked, setMasterLinked] = useState(true);
   const [activeProcessorModule, setActiveProcessorModule] =
     useState<ProcessorModule>("eq");
+  const [channelSendValues, setChannelSendValues] =
+    useState<SendValueState>(createDefaultSendValues);
+  const [sendTapPoints, setSendTapPoints] =
+    useState<SendTapPointState>(createDefaultSendTapPoints);
   const [master, setMaster] = useState<MasterState>(createDefaultMasterState);
   const [mainMasterMeter, setMainMasterMeter] = useState<MainMasterMeterState>(
     createDefaultMainMasterMeterState
@@ -941,6 +1113,9 @@ function App() {
   const isChannelsDraggingRef = useRef(false);
   const dragScrollRafRef = useRef<number | null>(null);
   const pendingDragScrollLeftRef = useRef<number | null>(null);
+  const sendWriteTimersRef = useRef<Map<number, number>>(new Map());
+  const sendWriteLastAtRef = useRef<Map<number, number>>(new Map());
+  const sendWritePendingRef = useRef<Map<number, number>>(new Map());
   const dragScrollStateRef = useRef<DragScrollState>({
     pointerId: null,
     pointerType: "",
@@ -957,6 +1132,12 @@ function App() {
   useEffect(() => {
     isChannelsDraggingRef.current = isChannelsDragging;
   }, [isChannelsDragging]);
+
+  useEffect(() => {
+    return () => {
+      clearScheduledSendWrites();
+    };
+  }, []);
 
   function scheduleDragScrollLeft(scrollerElement: HTMLElement, scrollLeft: number) {
     pendingDragScrollLeftRef.current = scrollLeft;
@@ -1100,17 +1281,27 @@ function App() {
   }
 
   function updateAuxStripState(index: number, patch: Partial<ChannelState>) {
+    const normalizedPatch =
+      patch.colorId === undefined
+        ? patch
+        : { ...patch, colorId: normalizeAuxColorId(patch.colorId) };
+
     setAuxStrips((current) =>
       current.map((strip, currentIndex) =>
-        currentIndex === index - 1 ? { ...strip, ...patch } : strip
+        currentIndex === index - 1 ? { ...strip, ...normalizedPatch } : strip
       )
     );
   }
 
   function updateFxStripState(index: number, patch: Partial<ChannelState>) {
+    const normalizedPatch =
+      patch.colorId === undefined
+        ? patch
+        : { ...patch, colorId: normalizeFxColorId(patch.colorId) };
+
     setFxStrips((current) =>
       current.map((strip, currentIndex) =>
-        currentIndex === index - 1 ? { ...strip, ...patch } : strip
+        currentIndex === index - 1 ? { ...strip, ...normalizedPatch } : strip
       )
     );
   }
@@ -1189,8 +1380,14 @@ function App() {
     const oddMasterRSend = values.get(channelParam(odd, 86)) ?? 1200;
     const evenMasterLSend = values.get(channelParam(even, 85)) ?? 1200;
     const evenMasterRSend = values.get(channelParam(even, 86)) ?? 1200;
-    const oddColor = valueToColorId(values.get(channelColorParam(odd)) ?? 1);
-    const evenColor = valueToColorId(values.get(channelColorParam(even)) ?? 1);
+    const oddColor = normalizeColorByScope(
+      "input",
+      valueToColorId(values.get(channelColorParam(odd)) ?? 1)
+    );
+    const evenColor = normalizeColorByScope(
+      "input",
+      valueToColorId(values.get(channelColorParam(even)) ?? 1)
+    );
     const linked = Boolean(channelLinks[key]);
 
     setChannelLinks((current) => ({
@@ -1262,7 +1459,10 @@ function App() {
       phantomOn: valueToBoolean(values.get(params.phantom) ?? 0),
       gain: valueToGain(values.get(params.gain) ?? 0),
       phasePositive: valueToBoolean(values.get(params.phase) ?? 1),
-      colorId: valueToColorId(values.get(params.color) ?? 1),
+      colorId: normalizeColorByScope(
+        "input",
+        valueToColorId(values.get(params.color) ?? 1)
+      ),
       muted: valueToMute(values.get(params.mute) ?? 1),
       pan: valueToPan(values.get(params.pan) ?? 100),
       faderDb,
@@ -1369,6 +1569,7 @@ function App() {
       }
 
       await syncChannelPairVisualState();
+      await syncFxColors();
       await syncMasterState();
       await syncLinkStates();
       await syncAllAux();
@@ -1537,8 +1738,14 @@ function App() {
         const key = pairKey(odd, even);
         const oddPan = valueToPan(values.get(channelParam(odd, 75)) ?? 100);
         const evenPan = valueToPan(values.get(channelParam(even, 75)) ?? 100);
-        const oddColor = valueToColorId(values.get(channelColorParam(odd)) ?? 1);
-        const evenColor = valueToColorId(values.get(channelColorParam(even)) ?? 1);
+        const oddColor = normalizeColorByScope(
+          "input",
+          valueToColorId(values.get(channelColorParam(odd)) ?? 1)
+        );
+        const evenColor = normalizeColorByScope(
+          "input",
+          valueToColorId(values.get(channelColorParam(even)) ?? 1)
+        );
         const linked = Boolean(linksFromMesa[key]);
 
         next[odd - 1] = {
@@ -1571,14 +1778,59 @@ function App() {
       values.get(MASTER_PARAMS.rightFader) ?? 1200
     );
 
+    const rawLeftColor = values.get(MASTER_PARAMS.leftColor);
+    const rawRightColor = values.get(MASTER_PARAMS.rightColor);
+
+    if (rawLeftColor !== undefined && Math.round(rawLeftColor) !== MASTER_FIXED_COLOR_ID) {
+      client.setMasterColor("left", MASTER_FIXED_COLOR_ID);
+    }
+
+    if (rawRightColor !== undefined && Math.round(rawRightColor) !== MASTER_FIXED_COLOR_ID) {
+      client.setMasterColor("right", MASTER_FIXED_COLOR_ID);
+    }
+
     updateMasterState({
       leftMuted: valueToMute(values.get(MASTER_PARAMS.leftMute) ?? 1),
       rightMuted: valueToMute(values.get(MASTER_PARAMS.rightMute) ?? 1),
+      leftColorId: MASTER_FIXED_COLOR_ID,
+      rightColorId: MASTER_FIXED_COLOR_ID,
       leftFaderDb,
       rightFaderDb,
       leftFaderPosition: dbToFaderPosition(leftFaderDb),
       rightFaderPosition: dbToFaderPosition(rightFaderDb),
     });
+  }
+
+  async function syncFxColors() {
+    const client = clientRef.current;
+    if (!client) return;
+
+    const response = await client.readParams([
+      FX_COLOR_PARAMS[1],
+      FX_COLOR_PARAMS[2],
+    ]);
+    const values = new Map(response.map((item) => [item.param, item.value]));
+
+    setFxStrips((current) =>
+      current.map((strip, index) => {
+        const fx = (index + 1) as 1 | 2;
+        const raw = values.get(FX_COLOR_PARAMS[fx]);
+        if (raw === undefined) return strip;
+
+        const nextColorId = resolveMesaColorByScope(
+          "fx",
+          raw,
+          () => client.setFxColor(fx, DEFAULT_FX_COLOR_ID)
+        );
+
+        if (nextColorId === undefined) return strip;
+
+        return {
+          ...strip,
+          colorId: nextColorId,
+        };
+      })
+    );
   }
 
   async function syncLinkStates() {
@@ -1591,6 +1843,121 @@ function App() {
     applyLinkStateFrom3056(value3056);
   }
 
+  function clearScheduledSendWrites() {
+    sendWriteTimersRef.current.forEach((timer) => {
+      window.clearTimeout(timer);
+    });
+    sendWriteTimersRef.current.clear();
+    sendWriteLastAtRef.current.clear();
+    sendWritePendingRef.current.clear();
+  }
+
+  function writeSendParamNow(param: number, value: number) {
+    const client = clientRef.current;
+    if (!client) return;
+
+    client.sendParam(param, value);
+    sendWriteLastAtRef.current.set(param, Date.now());
+    sendWritePendingRef.current.delete(param);
+  }
+
+  function scheduleSendParamWrite(param: number, value: number, flush = false) {
+    if (flush) {
+      const existingTimer = sendWriteTimersRef.current.get(param);
+      if (existingTimer !== undefined) {
+        window.clearTimeout(existingTimer);
+        sendWriteTimersRef.current.delete(param);
+      }
+      writeSendParamNow(param, value);
+      return;
+    }
+
+    const now = Date.now();
+    const lastAt = sendWriteLastAtRef.current.get(param) ?? 0;
+    const elapsed = now - lastAt;
+
+    if (elapsed >= SEND_WRITE_THROTTLE_MS) {
+      writeSendParamNow(param, value);
+      return;
+    }
+
+    sendWritePendingRef.current.set(param, value);
+
+    const existingTimer = sendWriteTimersRef.current.get(param);
+    if (existingTimer !== undefined) return;
+
+    const waitMs = SEND_WRITE_THROTTLE_MS - elapsed;
+    const timer = window.setTimeout(() => {
+      sendWriteTimersRef.current.delete(param);
+      const pendingValue = sendWritePendingRef.current.get(param);
+      if (pendingValue === undefined) return;
+      writeSendParamNow(param, pendingValue);
+    }, waitMs);
+
+    sendWriteTimersRef.current.set(param, timer);
+  }
+
+  function getLinkedAuxSendTargets(sendId: SendStripId) {
+    if (!sendId.startsWith("aux")) return [sendId];
+
+    const auxNumber = Number(sendId.replace("aux", ""));
+    const [odd, even] = getAuxPair(auxNumber);
+    const key = pairKey(odd, even);
+
+    if (!auxLinks[key]) return [sendId];
+
+    return [`aux${odd}` as SendStripId, `aux${even}` as SendStripId];
+  }
+
+  async function syncChannelSendsState(channelNumber: number) {
+    const client = clientRef.current;
+    if (!client) return;
+
+    const sendParams = SEND_IDS.map((id) => sendIdToParam(channelNumber, id));
+    const response = await client.readParams([...sendParams, 3056], 2200);
+    const values = new Map(response.map((item) => [item.param, item.value]));
+
+    setChannelSendValues(() => {
+      const next = createDefaultSendValues();
+
+      SEND_IDS.forEach((id) => {
+        const param = sendIdToParam(channelNumber, id);
+        const value = values.get(param);
+        next[id] = value === undefined ? 1200 : value;
+      });
+
+      return next;
+    });
+
+    const value3056 = values.get(3056) ?? 0;
+    applyLinkStateFrom3056(value3056);
+  }
+
+  function handleSendValueChange(channelNumber: number, sendId: SendStripId, nextValue: number) {
+    const clampedValue = Math.max(0, Math.min(1300, Math.round(nextValue)));
+    const targets = getLinkedAuxSendTargets(sendId);
+
+    setChannelSendValues((current) => {
+      const next = { ...current };
+      targets.forEach((target) => {
+        next[target] = clampedValue;
+      });
+      return next;
+    });
+
+    targets.forEach((target) => {
+      const param = sendIdToParam(channelNumber, target);
+      scheduleSendParamWrite(param, clampedValue);
+    });
+  }
+
+  function handleSendTapPointToggle(sendId: SendStripId) {
+    setSendTapPoints((current) => ({
+      ...current,
+      [sendId]: current[sendId] === "post" ? "pre" : "post",
+    }));
+  }
+
   async function syncAuxState(auxNumber: number) {
     const client = clientRef.current;
     if (!client) return;
@@ -1600,10 +1967,27 @@ function App() {
     const values = new Map(response.map((item) => [item.param, item.value]));
     const faderDb = valueToFaderDb(values.get(params.fader) ?? 1200);
 
+    let nextColorId: number | undefined;
+    const colorParam = auxColorParam(auxNumber);
+
+    try {
+      const colorResponse = await client.readParams([colorParam], 2200);
+      const rawColor = colorResponse[0]?.value;
+
+      nextColorId = resolveMesaColorByScope(
+        "aux",
+        rawColor,
+        () => client.sendParam(colorParam, DEFAULT_AUX_COLOR_ID)
+      );
+    } catch {
+      // Some firmwares may not expose AUX color params; keep local color in that case.
+    }
+
     updateAuxStripState(auxNumber, {
       faderDb,
       faderPosition: dbToFaderPosition(faderDb),
       phasePositive: valueToBoolean(values.get(params.phase) ?? 1),
+      ...(nextColorId === undefined ? {} : { colorId: nextColorId }),
     });
   }
 
@@ -2051,6 +2435,15 @@ function App() {
   }, [isConnected, isSyncing, detailView]);
 
   useEffect(() => {
+    if (!isConnected || !detailView || detailView.type !== "channel") return;
+    if (activeProcessorModule !== "sends") return;
+
+    syncChannelSendsState(detailView.channel).catch(() => {
+      // Keep the existing values when send sync fails transiently.
+    });
+  }, [activeProcessorModule, detailView, isConnected]);
+
+  useEffect(() => {
     if (!isConnected) return;
 
     // Poll solo state from the hardware every 2.5 s so that changes made
@@ -2323,6 +2716,7 @@ function App() {
         // Keep UI/client state consistent when the socket drops unexpectedly.
         if (clientRef.current !== client) return;
         stopMeterPolling();
+        clearScheduledSendWrites();
         clientRef.current = null;
         setIsConnected(false);
         setStatus("Conexao com a mesa foi encerrada.");
@@ -2363,6 +2757,7 @@ function App() {
 
   function handleDisconnect() {
     stopMeterPolling();
+    clearScheduledSendWrites();
 
     clientRef.current?.disconnect();
     clientRef.current = null;
@@ -2449,11 +2844,12 @@ function App() {
   }
 
   function handleColorChange(channelNumber: number, colorId: number) {
+    const normalizedColorId = normalizeColorByScope("input", colorId);
     const targets = getLinkedChannelTargets(channelNumber);
 
     targets.forEach((target) => {
-      clientRef.current?.setChannelColor(target, colorId);
-      updateChannelState(target, { colorId });
+      clientRef.current?.setChannelColor(target, normalizedColorId);
+      updateChannelState(target, { colorId: normalizedColorId });
     });
   }
 
@@ -2885,11 +3281,20 @@ function App() {
     }
 
     if (section === "aux") {
-      updateAuxStripState(index, { colorId });
+      const normalizedColorId = normalizeColorByScope("aux", colorId);
+      clientRef.current?.sendParam(auxColorParam(index), normalizedColorId);
+      updateAuxStripState(index, { colorId: normalizedColorId });
       return;
     }
 
-    updateFxStripState(index, { colorId });
+    if (index === 1 || index === 2) {
+      const normalizedColorId = normalizeColorByScope("fx", colorId);
+      clientRef.current?.setFxColor(index, normalizedColorId);
+      updateFxStripState(index, { colorId: normalizedColorId });
+      return;
+    }
+
+    updateFxStripState(index, { colorId: normalizeColorByScope("fx", colorId) });
   }
 
   function handleGateChange(channelNumber: number, patch: Partial<GateState>) {
@@ -3227,11 +3632,14 @@ function App() {
   function goToDetailChannel(channelNumber: number) {
     const nextChannel = Math.max(1, Math.min(16, channelNumber));
 
+    clearScheduledSendWrites();
+    setActiveProcessorModule("sends");
     setDetailView({ type: "channel", channel: nextChannel });
     Promise.all([
       syncLinkStates(),
       syncChannelPairVisualState(),
       syncChannelProcessorState(nextChannel),
+      syncChannelSendsState(nextChannel),
       syncChannelPairContext(nextChannel),
     ]).catch((error) => {
       setStatus(
@@ -3285,6 +3693,108 @@ function App() {
             channelNumber === pairOdd ? "L" : "R"
           }`
         : channelState.channelName;
+    const sendsView: SendStripView[] = [
+      {
+        id: "fx1",
+        type: "fx",
+        colorId: fxStrips[0]?.colorId ?? 7,
+        label: "FX 1",
+        name: fxStrips[0]?.channelName?.trim() || "Reverb",
+        value: sendDbToValue(sendValueToDb(channelSendValues.fx1)),
+        tapPoint: sendTapPoints.fx1,
+        isLinked: false,
+      },
+      {
+        id: "fx2",
+        type: "fx",
+        colorId: fxStrips[1]?.colorId ?? 7,
+        label: "FX 2",
+        name: fxStrips[1]?.channelName?.trim() || "Delay",
+        value: sendDbToValue(sendValueToDb(channelSendValues.fx2)),
+        tapPoint: sendTapPoints.fx2,
+        isLinked: false,
+      },
+      {
+        id: "aux1",
+        type: "aux",
+        colorId: auxStrips[0]?.colorId ?? 8,
+        label: "AUX 1",
+        name: auxStrips[0]?.channelName?.trim() || "AUX 1",
+        value: sendDbToValue(sendValueToDb(channelSendValues.aux1)),
+        tapPoint: sendTapPoints.aux1,
+        isLinked: Boolean(auxLinks["1-2"]),
+      },
+      {
+        id: "aux2",
+        type: "aux",
+        colorId: auxStrips[1]?.colorId ?? 8,
+        label: "AUX 2",
+        name: auxStrips[1]?.channelName?.trim() || "AUX 2",
+        value: sendDbToValue(sendValueToDb(channelSendValues.aux2)),
+        tapPoint: sendTapPoints.aux2,
+        isLinked: Boolean(auxLinks["1-2"]),
+      },
+      {
+        id: "aux3",
+        type: "aux",
+        colorId: auxStrips[2]?.colorId ?? 8,
+        label: "AUX 3",
+        name: auxStrips[2]?.channelName?.trim() || "AUX 3",
+        value: sendDbToValue(sendValueToDb(channelSendValues.aux3)),
+        tapPoint: sendTapPoints.aux3,
+        isLinked: Boolean(auxLinks["3-4"]),
+      },
+      {
+        id: "aux4",
+        type: "aux",
+        colorId: auxStrips[3]?.colorId ?? 8,
+        label: "AUX 4",
+        name: auxStrips[3]?.channelName?.trim() || "AUX 4",
+        value: sendDbToValue(sendValueToDb(channelSendValues.aux4)),
+        tapPoint: sendTapPoints.aux4,
+        isLinked: Boolean(auxLinks["3-4"]),
+      },
+      {
+        id: "aux5",
+        type: "aux",
+        colorId: auxStrips[4]?.colorId ?? 8,
+        label: "AUX 5",
+        name: auxStrips[4]?.channelName?.trim() || "AUX 5",
+        value: sendDbToValue(sendValueToDb(channelSendValues.aux5)),
+        tapPoint: sendTapPoints.aux5,
+        isLinked: Boolean(auxLinks["5-6"]),
+      },
+      {
+        id: "aux6",
+        type: "aux",
+        colorId: auxStrips[5]?.colorId ?? 8,
+        label: "AUX 6",
+        name: auxStrips[5]?.channelName?.trim() || "AUX 6",
+        value: sendDbToValue(sendValueToDb(channelSendValues.aux6)),
+        tapPoint: sendTapPoints.aux6,
+        isLinked: Boolean(auxLinks["5-6"]),
+      },
+      {
+        id: "aux7",
+        type: "aux",
+        colorId: auxStrips[6]?.colorId ?? 8,
+        label: "AUX 7",
+        name: auxStrips[6]?.channelName?.trim() || "AUX 7",
+        value: sendDbToValue(sendValueToDb(channelSendValues.aux7)),
+        tapPoint: sendTapPoints.aux7,
+        isLinked: Boolean(auxLinks["7-8"]),
+      },
+      {
+        id: "aux8",
+        type: "aux",
+        colorId: auxStrips[7]?.colorId ?? 8,
+        label: "AUX 8",
+        name: auxStrips[7]?.channelName?.trim() || "AUX 8",
+        value: sendDbToValue(sendValueToDb(channelSendValues.aux8)),
+        tapPoint: sendTapPoints.aux8,
+        isLinked: Boolean(auxLinks["7-8"]),
+      },
+    ];
 
     return (
       <div
@@ -3398,7 +3908,7 @@ function App() {
                     minWidth: 45,
                     padding: "4px 8px",
                     borderRadius: 4,
-                    background: `var(--channel-${String(channelState.colorId).padStart(2, "0")}, #c96626)`,
+                    background: channelColorBadgeBackground(channelState.colorId),
                     color: "var(--text-inverse)",
                     fontSize: 12,
                     lineHeight: "12px",
@@ -3548,6 +4058,7 @@ function App() {
             state={processorState}
             disabled={!isConnected}
             channelInputDb={channelState.meterDb}
+            sends={sendsView}
             onModuleChange={setActiveProcessorModule}
             onGateChange={(patch) => handleGateChange(channelNumber, patch)}
             onCompChange={(patch) => handleCompChange(channelNumber, patch)}
@@ -3555,6 +4066,10 @@ function App() {
             onEqBandChange={(band, patch) =>
               handleEqBandChange(channelNumber, band, patch)
             }
+            onSendValueChange={(id, value) =>
+              handleSendValueChange(channelNumber, id, value)
+            }
+            onSendTapPointToggle={handleSendTapPointToggle}
             onResetGate={() => resetGate(channelNumber)}
             onResetComp={() => resetComp(channelNumber)}
             onResetEq={() => resetEq(channelNumber)}
@@ -3721,6 +4236,7 @@ function App() {
             state={processorState}
             disabled={!isConnected}
             hideGate={true}
+            hideSends={true}
             onModuleChange={setActiveProcessorModule}
             onGateChange={() => {}}
             onCompChange={(patch) => {
@@ -4128,6 +4644,7 @@ function App() {
                 >
                   <FxStrip
                     fxNumber={fxNumber}
+                    colorId={fxState.colorId}
                     channelName={fxState.channelName}
                     muted={fxState.muted}
                     soloOn={fxState.soloOn}
@@ -4174,10 +4691,30 @@ function App() {
                     flex: "0 0 auto",
                     position: "relative",
                     overflow: "visible",
+                    zIndex: isLinked && auxNumber === odd ? 3 : 1,
                   }}
                 >
+                  {isLinked && auxNumber === odd && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: 0,
+                        bottom: 40,
+                        transform: "translateY(2px)",
+                        width: 224,
+                        height: 4,
+                        borderRadius: "1px",
+                        background: "#fb923c",
+                        boxShadow: "0 0 8px rgba(251,146,60,0.5)",
+                        pointerEvents: "none",
+                        zIndex: 8,
+                      }}
+                    />
+                  )}
+
                   <AuxStrip
                     auxNumber={auxNumber}
+                    colorId={auxState.colorId}
                     channelName={auxState.channelName}
                     muted={auxState.muted}
                     soloOn={auxState.soloOn}
@@ -4217,6 +4754,8 @@ function App() {
               const masterClipR = rFader > -6 && mainMasterMeter.rightClipUntil > now;
               return (
             <MasterBus
+              leftColorId={master.leftColorId}
+              rightColorId={master.rightColorId}
               muted={master.leftMuted}
               soloOn={master.soloOn}
               linked={masterLinked}

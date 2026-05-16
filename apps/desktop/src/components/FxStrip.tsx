@@ -2,9 +2,11 @@ import { useMemo } from "react";
 import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
 import { eqMagnitudeDb, type EqState } from "./ChannelProcessors";
+import { stripColorFromId } from "./stripColor";
 
 type FxStripProps = {
   fxNumber: 1 | 2;
+  colorId?: number;
   channelName?: string;
   muted: boolean;
   soloOn: boolean;
@@ -18,8 +20,6 @@ type FxStripProps = {
   onToggleSolo: () => void;
   onFaderChange: (value: number) => void;
 };
-
-const FX_COLOR = "var(--module-fx-primary)";
 
 const EQ_PREVIEW_WIDTH = 78;
 const EQ_PREVIEW_HEIGHT = 48;
@@ -84,6 +84,7 @@ function buildFlatPreview(width: number, height: number, pointCount = 40) {
 
 export function FxStrip({
   fxNumber,
+  colorId = 7,
   channelName,
   muted,
   soloOn,
@@ -97,6 +98,7 @@ export function FxStrip({
   onToggleSolo,
   onFaderChange,
 }: FxStripProps) {
+  const stripColor = stripColorFromId(colorId, 7, "var(--module-fx-primary)");
   const label = `FX${fxNumber}`;
   const displayName = channelName?.trim().length
     ? channelName.trim()
@@ -159,7 +161,7 @@ export function FxStrip({
             y1={eqPreview.zeroY}
             x2={EQ_PREVIEW_WIDTH}
             y2={eqPreview.zeroY}
-            stroke={FX_COLOR}
+            stroke={stripColor}
             strokeWidth={0.9}
             opacity={0.3}
           />
@@ -336,7 +338,7 @@ export function FxStrip({
           alignItems: "flex-start",
           justifyContent: "center",
           gap: "3px",
-          backgroundColor: FX_COLOR,
+          backgroundColor: stripColor,
           borderRadius: "0 0 4px 4px",
           boxSizing: "border-box",
           minHeight: "40px",

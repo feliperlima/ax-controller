@@ -2,9 +2,11 @@ import { useMemo } from "react";
 import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
 import { eqMagnitudeDb, type EqState } from "./ChannelProcessors";
+import { stripColorFromId } from "./stripColor";
 
 type AuxStripProps = {
   auxNumber: number;
+  colorId?: number;
   channelName?: string;
   muted: boolean;
   soloOn: boolean;
@@ -22,7 +24,7 @@ type AuxStripProps = {
   onOpenDetail?: (auxNumber: number) => void;
 };
 
-const AUX_COLOR = "var(--brand-primary)";
+const AUX_LINK_ACCENT_COLOR = "#fb923c";
 
 const EQ_PREVIEW_WIDTH = 78;
 const EQ_PREVIEW_HEIGHT = 48;
@@ -82,6 +84,7 @@ function buildEqPreview(eq: EqState, width: number, height: number, pointCount =
 
 export function AuxStrip({
   auxNumber,
+  colorId = 8,
   channelName,
   muted,
   soloOn,
@@ -98,6 +101,7 @@ export function AuxStrip({
   onFaderChange,
   onOpenDetail,
 }: AuxStripProps) {
+  const stripColor = stripColorFromId(colorId, 8, "var(--brand-primary)");
   const label = `AUX${auxNumber}`;
   const displayName = channelName?.trim().length
     ? channelName.trim()
@@ -133,24 +137,6 @@ export function AuxStrip({
         position: "relative",
       }}
     >
-      {/* Linked indicator bar */}
-      {isLinked && (
-        <div
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            height: 3,
-            background: AUX_COLOR,
-            boxShadow: "0 0 6px var(--alpha-cyan-40)",
-            borderRadius: "4px 4px 0 0",
-            pointerEvents: "none",
-            zIndex: 5,
-          }}
-        />
-      )}
-
       {/* Header: EQ preview */}
       <div
         style={{
@@ -186,13 +172,13 @@ export function AuxStrip({
               y1={eqPreview.zeroY}
               x2={EQ_PREVIEW_WIDTH}
               y2={eqPreview.zeroY}
-              stroke={AUX_COLOR}
+              stroke={stripColor}
               strokeWidth={0.9}
               opacity={0.22}
             />
             <polygon
               points={`0,${eqPreview.zeroY.toFixed(2)} ${eqPreview.points} ${EQ_PREVIEW_WIDTH},${eqPreview.zeroY.toFixed(2)}`}
-              fill={AUX_COLOR}
+              fill={stripColor}
               opacity={(eqState?.enabled ?? false) ? 0.22 : 0.1}
             />
             <polyline
@@ -237,7 +223,7 @@ export function AuxStrip({
                 fontSize: "12px",
                 fontWeight: 800,
                 letterSpacing: "0.08em",
-                color: AUX_COLOR,
+                color: stripColor,
                 textTransform: "uppercase",
               }}
             >
@@ -363,7 +349,7 @@ export function AuxStrip({
             snapThreshold={1.8}
             zeroMarkerValue={dbToFaderScalePosition(0)}
             thumbVariant="default"
-            thumbIndicatorColor={isLinked ? AUX_COLOR : undefined}
+            thumbIndicatorColor={isLinked ? AUX_LINK_ACCENT_COLOR : undefined}
             onChange={onFaderChange}
           />
         </div>
@@ -414,7 +400,7 @@ export function AuxStrip({
           gap: "3px",
           textAlign: "left",
           color: "var(--text-inverse)",
-          backgroundColor: AUX_COLOR,
+          backgroundColor: stripColor,
           border: "none",
           borderRadius: "0 0 4px 4px",
           cursor: canOpenDetail ? "pointer" : "default",
