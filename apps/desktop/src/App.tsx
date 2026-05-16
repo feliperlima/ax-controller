@@ -281,6 +281,7 @@ type DetailView =
   | { type: "fx"; fx: 1 | 2 }
   | { type: "master" }
   | null;
+type MainView = "mixer" | "auxSends" | "fxSends" | "dcaGroups";
 type StripSection = "inputs" | "aux" | "fx";
 type CustomizationView = { section: StripSection; index: number } | null;
 type PairLinkState = Record<string, boolean>;
@@ -482,6 +483,10 @@ const FX_SEND_BASES: Record<number, number> = {
 
 const SEND_WRITE_THROTTLE_MS = 80;
 const SEND_PRE_FADER_FLAG = 32768;
+const FX_RETURN_MAPPING: Readonly<{ available: false; reason: string }> = {
+  available: false,
+  reason: "TODO(types): mapear parametros reais de retorno de FX (level/mute/pan) antes de habilitar controle.",
+};
 
 // Channel sends use the same fader scale as channel faders. AUX sends are params 77–84 + channel offset; FX sends are 89–90 + channel offset.
 function sendDbToValue(db: number | "-inf") {
@@ -1114,6 +1119,7 @@ function App() {
   const [status, setStatus] = useState("Desconectado");
   const [isConnected, setIsConnected] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [mainView, setMainView] = useState<MainView>("mixer");
   const [detailView, setDetailView] = useState<DetailView>(null);
   const [customizationView, setCustomizationView] = useState<CustomizationView>(null);
   const [channels, setChannels] = useState<ChannelState[]>(
@@ -1154,6 +1160,8 @@ function App() {
     useState<Record<number, ChannelInputSendValues>>({});
   const [fxInputSendTapPoints, setFxInputSendTapPoints] =
     useState<Record<number, ChannelInputSendTapPointState>>({});
+  const [selectedAuxSendsTarget, setSelectedAuxSendsTarget] = useState(1);
+  const [selectedFxSendsTarget, setSelectedFxSendsTarget] = useState<1 | 2>(1);
   const [master, setMaster] = useState<MasterState>(createDefaultMasterState);
   const [mainMasterMeter, setMainMasterMeter] = useState<MainMasterMeterState>(
     createDefaultMainMasterMeterState
@@ -2732,6 +2740,22 @@ function App() {
   }, [activeProcessorModule, detailView, isConnected]);
 
   useEffect(() => {
+    if (!isConnected || detailView) return;
+    if (mainView === "auxSends") {
+      syncBusInputSendsState("aux", selectedAuxSendsTarget).catch(() => {
+        // Keep existing values on transient read failures.
+      });
+      return;
+    }
+
+    if (mainView === "fxSends") {
+      syncBusInputSendsState("fx", selectedFxSendsTarget).catch(() => {
+        // Keep existing values on transient read failures.
+      });
+    }
+  }, [detailView, isConnected, mainView, selectedAuxSendsTarget, selectedFxSendsTarget]);
+
+  useEffect(() => {
     if (!isConnected) return;
 
     // Poll solo state from the hardware every 2.5 s so that changes made
@@ -3928,6 +3952,7 @@ function App() {
   function goToDetailChannel(channelNumber: number) {
     const nextChannel = Math.max(1, Math.min(16, channelNumber));
 
+    setMainView("mixer");
     clearScheduledSendWrites();
     setActiveProcessorModule("eq");
     setDetailView({ type: "channel", channel: nextChannel });
@@ -3950,6 +3975,7 @@ function App() {
   function goToDetailAux(auxNumber: number) {
     const nextAux = Math.max(1, Math.min(8, auxNumber));
     const [pairOdd, pairEven] = getAuxPair(nextAux);
+    setMainView("mixer");
     setActiveProcessorModule("comp");
     setDetailView({ type: "aux", aux: nextAux });
     Promise.allSettled([
@@ -3976,18 +4002,21 @@ function App() {
 
   function goToDetailFx(fxNumber: number) {
     const nextFx = fxNumber === 2 ? 2 : 1;
+    setMainView("mixer");
     setActiveProcessorModule("eq");
     setDetailView({ type: "fx", fx: nextFx });
   }
 
   function goToDetailMaster() {
+    setMainView("mixer");
     setActiveProcessorModule("eq");
     setDetailView({ type: "master" });
   }
 
   function buildChannelInputSendsView(
     values: ChannelInputSendValues = createDefaultChannelInputSendValues(),
-    tapPoints: ChannelInputSendTapPointState = createDefaultChannelInputSendTapPoints()
+    tapPoints: ChannelInputSendTapPointState = createDefaultChannelInputSendTapPoints(),
+    contextLabel?: string
   ): SendStripView[] {
     return channels.map((channelState, index) => {
       const channelNumber = index + 1;
@@ -4001,6 +4030,7 @@ function App() {
         colorId: channelState.colorId,
         label: `CH ${channelNumber}`,
         name: channelState.channelName?.trim() || `Channel ${channelNumber}`,
+        contextLabel,
         value: values[id] ?? 1200,
         tapPoint: tapPoints[id] ?? "post",
         isLinked: Boolean(channelLinks[linkKey]),
@@ -4481,7 +4511,8 @@ function App() {
     const isLinked = Boolean(auxLinks[linkKey]);
     const sendsView = buildChannelInputSendsView(
       auxInputSendValues[auxNumber],
-      auxInputSendTapPoints[auxNumber]
+      auxInputSendTapPoints[auxNumber],
+      `TO AUX ${auxNumber}`
     );
 
     return (
@@ -4764,7 +4795,7 @@ function App() {
               { id: "eq", label: "EQ" },
               { id: "comp", label: "COMP" },
               { id: "delay", label: "DELAY" },
-              { id: "sends", label: "SENDS" },
+              { id: "sends", label: "AUX MIX" },
             ]}
             customModuleContent={{
               delay: renderDetailPlaceholder(
@@ -4964,7 +4995,8 @@ function App() {
     const processorState = fxProcessorStates[fxNumber - 1];
     const sendsView = buildChannelInputSendsView(
       fxInputSendValues[fxNumber],
-      fxInputSendTapPoints[fxNumber]
+      fxInputSendTapPoints[fxNumber],
+      `TO FX ${fxNumber}`
     );
 
     return (
@@ -5093,7 +5125,7 @@ function App() {
               moduleItems={[
                 { id: "eq", label: "EQ" },
                 { id: "presets", label: "PRESETS" },
-                { id: "sends", label: "SENDS" },
+                { id: "sends", label: "SEND MIX" },
               ]}
               customModuleContent={{
                 presets: renderDetailPlaceholder(
@@ -5145,6 +5177,29 @@ function App() {
                 }));
               }}
             />
+            {activeProcessorModule === "sends" && (
+              <section
+                style={{
+                  marginTop: 8,
+                  borderRadius: 6,
+                  border: "1px solid var(--border-default)",
+                  background: "var(--surface-panel-raised)",
+                  padding: "10px 12px",
+                  display: "grid",
+                  gap: 4,
+                }}
+              >
+                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em", color: "var(--text-secondary)", textTransform: "uppercase" }}>
+                  RETURN
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)" }}>
+                  Retorno de FX
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: "14px" }}>
+                  {FX_RETURN_MAPPING.reason}
+                </div>
+              </section>
+            )}
           </section>
         </section>
       </div>
@@ -5154,7 +5209,7 @@ function App() {
   function renderMasterDetail() {
     if (!detailView || detailView.type !== "master") return null;
 
-    const sendsView = buildChannelInputSendsView();
+    const sendsView = buildChannelInputSendsView(undefined, undefined, "TO MASTER");
 
     return (
       <div
@@ -5297,6 +5352,147 @@ function App() {
     );
   }
 
+  function renderGlobalSendsView(kind: "aux" | "fx") {
+    const isAux = kind === "aux";
+    const selectedBus = isAux ? selectedAuxSendsTarget : selectedFxSendsTarget;
+    const destinationCount = isAux ? auxStrips.length : fxStrips.length;
+    const destinations = Array.from({ length: destinationCount }, (_, index) => index + 1);
+    const busLabel = `${isAux ? "AUX" : "FX"} ${selectedBus}`;
+    const values = isAux
+      ? auxInputSendValues[selectedBus]
+      : fxInputSendValues[selectedBus];
+    const tapPoints = isAux
+      ? auxInputSendTapPoints[selectedBus]
+      : fxInputSendTapPoints[selectedBus];
+    const sendsView = buildChannelInputSendsView(
+      values,
+      tapPoints,
+      `TO ${busLabel}`
+    );
+
+    const selectedBusProcessorState = isAux
+      ? auxProcessorStates[selectedBus - 1] ?? createDefaultAuxProcessorState()
+      : fxProcessorStates[selectedBus - 1] ?? createDefaultProcessorState();
+
+    return (
+      <div
+        className="detail-layout"
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr)",
+          gridTemplateRows: "auto minmax(0, 1fr)",
+          gap: 4,
+          padding: 8,
+        }}
+      >
+        <section
+          className="detail-panel"
+          style={{
+            padding: "10px 12px",
+            borderRadius: 4,
+            border: "1px solid var(--border-default)",
+            background: "var(--surface-overlay-strong)",
+            minWidth: 0,
+            position: "relative",
+            zIndex: 3,
+            display: "grid",
+            gap: 10,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, minWidth: 0 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: "0.12em", color: "var(--text-secondary)", textTransform: "uppercase" }}>
+                {`SENDS ON FADER · ${busLabel}`}
+              </div>
+              <div style={{ marginTop: 3, fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                {`Faders control channel sends to ${busLabel}`}
+              </div>
+            </div>
+            <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", color: "var(--text-secondary)", textTransform: "uppercase", whiteSpace: "nowrap" }}>
+              {isAux ? "Aux Mix" : "Send Mix"}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            {destinations.map((destination) => {
+              const active = destination === selectedBus;
+              return (
+                <button
+                  key={`${kind}-destination-${destination}`}
+                  type="button"
+                  onClick={() => {
+                    if (isAux) {
+                      setSelectedAuxSendsTarget(destination);
+                    } else {
+                      setSelectedFxSendsTarget(destination as 1 | 2);
+                    }
+                  }}
+                  style={{
+                    height: 28,
+                    padding: "0 10px",
+                    borderRadius: 7,
+                    border: active ? "1px solid #7dd3fc" : "1px solid #334155",
+                    background: active ? "#0e7490" : "#0f172a",
+                    color: active ? "#ecfeff" : "#94a3b8",
+                    fontSize: 10,
+                    fontWeight: 800,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    cursor: "pointer",
+                  }}
+                >
+                  {`${isAux ? "Aux" : "FX"} ${destination}`}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <section
+          className="detail-panel"
+          style={{
+            borderRadius: 4,
+            border: "none",
+            background: "transparent",
+            minHeight: 0,
+            overflow: "hidden",
+            position: "relative",
+            zIndex: 1,
+            padding: "0 12px 0 0",
+          }}
+        >
+          <ChannelProcessors
+            activeModule="sends"
+            state={selectedBusProcessorState}
+            disabled={!isConnected}
+            hideGate={true}
+            hideComp={true}
+            moduleItems={[
+              { id: "sends", label: isAux ? "AUX MIX" : "SEND MIX" },
+            ]}
+            sends={sendsView}
+            onModuleChange={() => {}}
+            onGateChange={() => {}}
+            onCompChange={() => {}}
+            onEqChange={() => {}}
+            onEqBandChange={() => {}}
+            onSendValueChange={(id, value) =>
+              handleBusInputSendValueChange(kind, selectedBus, id, value)
+            }
+            onSendTapPointToggle={(id) =>
+              handleBusInputSendTapPointToggle(kind, selectedBus, id)
+            }
+            onResetGate={() => {}}
+            onResetComp={() => {}}
+            onResetEq={() => {}}
+          />
+        </section>
+      </div>
+    );
+  }
+
   const customizerStrip = customizationView
     ? getSectionStrips(customizationView.section)[customizationView.index - 1]
     : null;
@@ -5331,19 +5527,46 @@ function App() {
         <div className="top-nav__tabs" data-node-id="73:575">
           <button
             type="button"
-            className={`top-nav__tab ${!detailView ? "active" : ""}`}
-            onClick={() => setDetailView(null)}
+            className={`top-nav__tab ${!detailView && mainView === "mixer" ? "active" : ""}`}
+            onClick={() => {
+              setMainView("mixer");
+              setDetailView(null);
+            }}
             data-node-id="73:517"
           >
             MIXER
           </button>
-          <button type="button" className="top-nav__tab" data-node-id="73:572">
+          <button
+            type="button"
+            className={`top-nav__tab ${!detailView && mainView === "auxSends" ? "active" : ""}`}
+            onClick={() => {
+              setMainView("auxSends");
+              setDetailView(null);
+            }}
+            data-node-id="73:572"
+          >
             AUX SENDS
           </button>
-          <button type="button" className="top-nav__tab" data-node-id="73:576">
+          <button
+            type="button"
+            className={`top-nav__tab ${!detailView && mainView === "fxSends" ? "active" : ""}`}
+            onClick={() => {
+              setMainView("fxSends");
+              setDetailView(null);
+            }}
+            data-node-id="73:576"
+          >
             FX SENDS
           </button>
-          <button type="button" className="top-nav__tab" data-node-id="73:2725">
+          <button
+            type="button"
+            className={`top-nav__tab ${!detailView && mainView === "dcaGroups" ? "active" : ""}`}
+            onClick={() => {
+              setMainView("dcaGroups");
+              setDetailView(null);
+            }}
+            data-node-id="73:2725"
+          >
             DCA GROUPS
           </button>
         </div>
@@ -5380,6 +5603,16 @@ function App() {
             : detailView.type === "fx"
               ? renderFxDetail()
               : renderMasterDetail()
+        : mainView === "auxSends"
+          ? renderGlobalSendsView("aux")
+          : mainView === "fxSends"
+            ? renderGlobalSendsView("fx")
+            : mainView === "dcaGroups"
+              ? renderDetailPlaceholder(
+                  "DCA GROUPS",
+                  "DCA Groups",
+                  "TODO(types): faltam mapeamentos reais de parametros DCA para habilitar esta tela global."
+                )
         : <section className="mixer-layout">
           <section
             className={`channels-scroller mixer-channels ${isChannelsDragging ? "channels-scroller--dragging" : ""}`}
