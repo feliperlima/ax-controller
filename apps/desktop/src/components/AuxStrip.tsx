@@ -384,7 +384,9 @@ export function AuxStrip({
 
       {/* Footer */}
       <button
+        disabled={disabled}
         onDoubleClick={(e) => {
+          if (disabled) return;
           e.stopPropagation();
           if (canOpenDetail) onOpenDetail?.(auxNumber);
         }}
@@ -403,10 +405,12 @@ export function AuxStrip({
           backgroundColor: stripColor,
           border: "none",
           borderRadius: "0 0 4px 4px",
-          cursor: canOpenDetail ? "pointer" : "default",
+          cursor: disabled ? "not-allowed" : canOpenDetail ? "pointer" : "default",
           minHeight: "40px",
           fontFamily: "Inter, system-ui, sans-serif",
           boxSizing: "border-box",
+          opacity: disabled ? 0.58 : 1,
+          filter: disabled ? "saturate(0.55) brightness(0.82)" : "none",
         }}
       >
         <span

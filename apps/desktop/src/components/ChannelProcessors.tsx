@@ -1088,13 +1088,27 @@ function formatCompressorRatio(ratio: number) {
   return `1:${Number(ratio.toFixed(2))}`;
 }
 
+const GATE_DECAY_STEPS = [2, 4, 6, 8, 16, 32] as const;
+
 function snapGateDecay(value: number) {
-  const allowed = [2, 4, 6, 8, 16, 32];
   const rounded = Math.round(value);
 
-  return allowed.reduce((closest, option) =>
+  return GATE_DECAY_STEPS.reduce((closest, option) =>
     Math.abs(option - rounded) < Math.abs(closest - rounded) ? option : closest
   );
+}
+
+function gateDecayToStepIndex(value: number) {
+  const snapped = snapGateDecay(value);
+  const index = GATE_DECAY_STEPS.findIndex((option) => option === snapped);
+
+  return index >= 0 ? index : 0;
+}
+
+function gateDecayFromStepIndex(index: number) {
+  const rounded = Math.round(index);
+
+  return GATE_DECAY_STEPS[clamp(rounded, 0, GATE_DECAY_STEPS.length - 1)];
 }
 
 const COMP_GR_SCALE_MARKERS = ["0", "-6", "-12", "-18", "-24", "-30"];
@@ -1303,6 +1317,8 @@ function EditableKnob({
   knobMin,
   knobMax,
   knobValueStep,
+  knobVelocityResponsive = true,
+  knobDiscreteStepMode = false,
   knobSize = 44,
   displayValue,
   suffix,
@@ -1323,6 +1339,8 @@ function EditableKnob({
   knobMin?: number;
   knobMax?: number;
   knobValueStep?: number;
+  knobVelocityResponsive?: boolean;
+  knobDiscreteStepMode?: boolean;
   knobSize?: number;
   displayValue: string;
   suffix?: string;
@@ -1359,6 +1377,8 @@ function EditableKnob({
         size={knobSize}
         pixelsPerStep={knobPixelsPerStep}
         valueStep={knobValueStep ?? step}
+        velocityResponsive={knobVelocityResponsive}
+        discreteStepMode={knobDiscreteStepMode}
         accentColor={accentColor}
         glowColor={glowColor}
         disabled={disabled}
@@ -1580,10 +1600,12 @@ function GateGraph({
   gate,
   disabled,
   onThresholdChange,
+  onAttackChange,
 }: {
   gate: GateState;
   disabled?: boolean;
   onThresholdChange: (value: number) => void;
+  onAttackChange: (value: number) => void;
 }) {
   const graphFrameRef = useRef<HTMLDivElement | null>(null);
   const [responsiveSize, setResponsiveSize] = useState({ width: 560, height: 270 });
@@ -1670,6 +1692,19 @@ function GateGraph({
     const db = -Math.round((y / graphHeight) * 80);
 
     onThresholdChange(db);
+  }
+
+  function updateAttackFromEvent(clientX: number, svg: SVGSVGElement) {
+    const point = getSvgPoint(svg, clientX, 0);
+    const nextHandleX = clamp(point.x, envelopeStartX + 20, envelopeStartX + 128);
+    const width = nextHandleX - envelopeStartX;
+    const attack = clamp(
+      Math.round(3 + ((width - 20) / 108) * (200 - 3)),
+      3,
+      200
+    );
+
+    onAttackChange(attack);
   }
 
   return (
@@ -1775,7 +1810,30 @@ function GateGraph({
         opacity={gate.enabled ? 0.9 : 0.35}
       />
 
-      <g style={{ pointerEvents: "none" }}>
+      <g
+        style={{ cursor: disabled ? "not-allowed" : "ew-resize" }}
+        onPointerDown={(event) => {
+          if (disabled) return;
+          event.preventDefault();
+          event.stopPropagation();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          updateAttackFromEvent(event.clientX, event.currentTarget.ownerSVGElement as SVGSVGElement);
+        }}
+        onPointerMove={(event) => {
+          if (disabled || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          updateAttackFromEvent(event.clientX, event.currentTarget.ownerSVGElement as SVGSVGElement);
+        }}
+        onPointerUp={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+      >
         <circle cx={decayHandleX} cy={thresholdY} r={12} fill="none" stroke={HANDLE_THEME.ratio} strokeWidth="1.8" opacity={0.5} />
         <circle cx={decayHandleX} cy={thresholdY} r={10} fill={HANDLE_THEME.ratio} stroke={HANDLE_THEME.idleStroke} strokeWidth="1.6" opacity={gate.enabled ? 0.7 : 0.32} filter="url(#gate-decay-glow)" />
         <text x={decayHandleX} y={thresholdY} fill={CHART_THEME.handleText} fontSize="12" fontWeight="900" textAnchor="middle" dominantBaseline="middle">
@@ -2401,14 +2459,6 @@ function EqGraph({
         </defs>
 
       <rect x={graphX} y={graphY} width={graphWidth} height={graphHeight} rx={4} fill="rgba(255,255,255,0.01)" />
-      <rect
-        x={graphX}
-        y={zeroLineY}
-        width={graphWidth}
-        height={graphY + graphHeight - zeroLineY}
-        fill="url(#eq-fill-base)"
-        opacity={eq.enabled ? 0.88 : 0.34}
-      />
       {horizontalMinorDb.map((gain) => (
         <line
           key={`minor-${gain}`}
@@ -2474,11 +2524,6 @@ function EqGraph({
           </text>
         </g>
       ))}
-      <polygon
-        points={`${points} ${graphX + graphWidth},${graphY + graphHeight} ${graphX},${graphY + graphHeight}`}
-        fill="var(--alpha-cyan-16)"
-        opacity={eq.enabled ? 0.34 : 0.14}
-      />
       {bandOverlays.map((overlay) => (
         <g key={overlay.key}>
           <polyline
@@ -2495,6 +2540,11 @@ function EqGraph({
           />
         </g>
       ))}
+      <polygon
+        points={`${graphX},${zeroLineY} ${points} ${graphX + graphWidth},${zeroLineY}`}
+        fill="var(--alpha-cyan-16)"
+        opacity={eq.enabled ? 0.34 : 0.14}
+      />
       <polyline points={points} fill="none" stroke="var(--primitive-neutral-100)" strokeWidth="2.2" />
       {(["hpf", "lpf"] as const).map((filter) => {
         const enabled = filter === "hpf" ? eq.hpfEnabled : eq.lpfEnabled;
@@ -2606,6 +2656,12 @@ function GateEditor({
   onReset: () => void;
 }) {
   const controllersDisabled = disabled || !gate.enabled;
+  const gateKnobPixelsPerStep = {
+    threshold: 3,
+    attack: 3,
+    hold: 1.8,
+    decay: 10,
+  };
 
   return (
     <ProcessorShell title="">
@@ -2684,7 +2740,12 @@ function GateEditor({
               background: "var(--surface-panel-raised)",
             }}
           >
-            <GateGraph gate={gate} disabled={disabled} onThresholdChange={(threshold) => onChange({ threshold })} />
+            <GateGraph
+              gate={gate}
+              disabled={disabled}
+              onThresholdChange={(threshold) => onChange({ threshold })}
+              onAttackChange={(attack) => onChange({ attack })}
+            />
           </div>
         </div>
 
@@ -2710,6 +2771,7 @@ function GateEditor({
               min={-160}
               max={0}
               step={1}
+              knobPixelsPerStep={gateKnobPixelsPerStep.threshold}
               knobSize={68}
               compact
               displayValue={gate.enabled ? formatDb(gate.threshold) : "—"}
@@ -2726,6 +2788,7 @@ function GateEditor({
               value={Math.round(gate.attack)}
               min={3}
               max={200}
+              knobPixelsPerStep={gateKnobPixelsPerStep.attack}
               knobSize={68}
               compact
               displayValue={gate.enabled ? formatMs(gate.attack) : "—"}
@@ -2742,6 +2805,7 @@ function GateEditor({
               value={Math.round(gate.hold)}
               min={0}
               max={530}
+              knobPixelsPerStep={gateKnobPixelsPerStep.hold}
               knobSize={68}
               compact
               displayValue={gate.enabled ? formatMs(gate.hold) : "—"}
@@ -2755,17 +2819,21 @@ function GateEditor({
           <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
             <EditableKnob
               label="DECAY"
-              value={snapGateDecay(gate.decay)}
-              min={2}
-              max={32}
+              value={gateDecayToStepIndex(gate.decay)}
+              min={0}
+              max={GATE_DECAY_STEPS.length - 1}
               step={1}
+              knobPixelsPerStep={gateKnobPixelsPerStep.decay}
+              knobVelocityResponsive={false}
+              knobDiscreteStepMode={true}
               knobSize={68}
               compact
               displayValue={gate.enabled ? `x${snapGateDecay(gate.decay)}` : "—"}
               disabled={controllersDisabled}
+              allowTextEdit={false}
               accentColor={MODULE_ACCENTS.gate.color}
               glowColor={MODULE_ACCENTS.gate.glow}
-              onChange={(decay) => onChange({ decay: snapGateDecay(decay) })}
+              onChange={(decayIndex) => onChange({ decay: gateDecayFromStepIndex(decayIndex) })}
             />
           </div>
         </div>
@@ -2966,7 +3034,7 @@ function CompressorEditor({
               min={0}
               max={COMP_RATIO_STEPS.length - 1}
               step={1}
-              knobPixelsPerStep={26}
+              knobPixelsPerStep={14}
               knobSize={68}
               compact
               displayValue={comp.enabled ? formatCompressorRatio(snapCompressorRatio(comp.ratio)) : "—"}
@@ -3320,7 +3388,9 @@ function EqEditor({
                   min={1}
                   max={FILTER_TYPE_STEPS.length}
                   step={1}
-                  knobPixelsPerStep={24}
+                  knobPixelsPerStep={14}
+                  knobVelocityResponsive={false}
+                  knobDiscreteStepMode={true}
                   knobSize={68}
                   compact
                   displayValue={FILTER_TYPE_LABELS[selectedFilter === "hpf" ? eq.hpfType : eq.lpfType]}
@@ -3341,7 +3411,9 @@ function EqEditor({
                   min={1}
                   max={FILTER_SLOPE_STEPS.length}
                   step={1}
-                  knobPixelsPerStep={30}
+                  knobPixelsPerStep={16}
+                  knobVelocityResponsive={false}
+                  knobDiscreteStepMode={true}
                   knobSize={68}
                   compact
                   displayValue={`${selectedFilter === "hpf" ? eq.hpfSlope : eq.lpfSlope}dB/oct`}

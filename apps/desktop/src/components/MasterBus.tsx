@@ -320,9 +320,11 @@ export function MasterBus({
           gap: 3,
           background: footerBackground,
           border: "none",
-          cursor: disabled ? "default" : "pointer",
+          cursor: disabled ? "not-allowed" : "pointer",
           boxSizing: "border-box",
           fontFamily: "inherit",
+          opacity: disabled ? 0.58 : 1,
+          filter: disabled ? "saturate(0.55) brightness(0.82)" : "none",
         }}
       >
         <div

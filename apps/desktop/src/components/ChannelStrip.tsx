@@ -146,7 +146,8 @@ export function ChannelStrip({
     12: "var(--channel-12)",
   };
 
-  const channelColor = CHANNEL_COLOR_PALETTE[colorId] ?? CHANNEL_COLOR_PALETTE[1];
+  const effectiveColorId = disabled ? 0 : colorId;
+  const channelColor = CHANNEL_COLOR_PALETTE[effectiveColorId] ?? CHANNEL_COLOR_PALETTE[0];
   const channelPrefix = section === "aux" ? "AUX" : section === "fx" ? "FX" : "CH";
   const footerTitle = `${channelPrefix} ${channel}`;
   const footerName = channelName?.trim().length ? channelName.trim() : footerTitle;
@@ -552,12 +553,14 @@ export function ChannelStrip({
       {/* FooterChannel (51:1392) */}
       {!isDetailVariant && (
         <button
+          disabled={disabled}
           onClick={(e) => {
             e.stopPropagation();
+            if (disabled) return;
             onFooterClick?.();
           }}
           onDoubleClick={(e) => {
-            if (!canOpenDetail) return;
+            if (disabled || !canOpenDetail) return;
             e.stopPropagation();
             onOpenDetail(channel);
           }}
@@ -576,10 +579,12 @@ export function ChannelStrip({
             backgroundColor: channelColor,
             border: "none",
             borderRadius: "0 0 4px 4px",
-            cursor: canOpenDetail ? "pointer" : "default",
+            cursor: disabled ? "not-allowed" : canOpenDetail ? "pointer" : "default",
             minHeight: "40px",
             fontFamily: "Inter, system-ui, sans-serif",
             fontStyle: "normal",
+            opacity: disabled ? 0.58 : 1,
+            filter: disabled ? "saturate(0.55) brightness(0.82)" : "none",
           }}
           title={canOpenDetail ? "Double click to open channel detail" : undefined}
         >

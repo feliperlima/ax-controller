@@ -172,8 +172,51 @@ export function FxStrip({
             strokeWidth={1.4}
             strokeLinejoin="round"
             strokeLinecap="round"
-            opacity={0.4}
+            opacity={disabled ? 0.3 : 0.4}
           />
+          {disabled ? (
+            <>
+              <rect
+                x={0}
+                y={0}
+                width={EQ_PREVIEW_WIDTH}
+                height={EQ_PREVIEW_HEIGHT}
+                fill="rgba(0,0,0,0.5)"
+              />
+              <text
+                x={EQ_PREVIEW_WIDTH / 2}
+                y={EQ_PREVIEW_HEIGHT / 2}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fill="rgba(241,245,249,0.95)"
+                style={{
+                  fontSize: "10px",
+                  fontWeight: 800,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                }}
+              >
+                EQ OFF
+              </text>
+            </>
+          ) : (
+            <text
+              x={EQ_PREVIEW_WIDTH - 6}
+              y={12}
+              textAnchor="end"
+              dominantBaseline="middle"
+              fill={stripColor}
+              opacity={0.8}
+              style={{
+                fontSize: "8px",
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+              }}
+            >
+              EQ FLAT
+            </text>
+          )}
         </svg>
       </div>
 
@@ -342,7 +385,9 @@ export function FxStrip({
           borderRadius: "0 0 4px 4px",
           boxSizing: "border-box",
           minHeight: "40px",
-          cursor: "pointer",
+          cursor: disabled ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.58 : 1,
+          filter: disabled ? "saturate(0.55) brightness(0.82)" : "none",
         }}
       >
         <span

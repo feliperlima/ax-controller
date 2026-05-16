@@ -3687,7 +3687,7 @@ function App() {
     const nextChannel = Math.max(1, Math.min(16, channelNumber));
 
     clearScheduledSendWrites();
-    setActiveProcessorModule("sends");
+    setActiveProcessorModule("eq");
     setDetailView({ type: "channel", channel: nextChannel });
     Promise.all([
       syncLinkStates(),
@@ -3883,7 +3883,7 @@ function App() {
               justifyContent: "space-between",
               gap: 16,
               minWidth: 0,
-              padding: "8px 16px",
+              padding: "8px 16px 8px 0",
               borderRadius: 4,
               background: "var(--surface-overlay-strong)",
             }}

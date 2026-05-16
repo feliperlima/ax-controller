@@ -10,6 +10,8 @@ type KnobProps = {
   size?: number;
   pixelsPerStep?: number;
   valueStep?: number;
+  velocityResponsive?: boolean;
+  discreteStepMode?: boolean;
   accentColor?: string;
   glowColor?: string;
   disabled?: boolean;
@@ -57,8 +59,10 @@ export function Knob({
   displayValue,
   variant = "gain",
   size = 44,
-  pixelsPerStep = 4,
+  pixelsPerStep = 3.5,
   valueStep = 1,
+  velocityResponsive = true,
+  discreteStepMode = false,
   accentColor,
   glowColor,
   disabled = false,
@@ -69,6 +73,8 @@ export function Knob({
     pointerId: number;
     startY: number;
     startValue: number;
+    lastY: number;
+    pendingDeltaY: number;
     previousUserSelect: string;
   } | null>(null);
 
@@ -110,10 +116,32 @@ export function Knob({
   function updateFromPointer(clientY: number) {
     const drag = dragRef.current;
     if (!drag) return;
+
     const deltaY = drag.startY - clientY;
+
+    if (discreteStepMode) {
+      const incrementalDeltaY = drag.lastY - clientY;
+      drag.pendingDeltaY += incrementalDeltaY;
+      const threshold = Math.max(0.0001, pixelsPerStep);
+
+      if (Math.abs(drag.pendingDeltaY) >= threshold) {
+        const direction = drag.pendingDeltaY > 0 ? 1 : -1;
+        const currentValue = clampValue(snapToStep(value, min, valueStep));
+        const rawValue = currentValue + direction * valueStep;
+        const nextValue = clampValue(snapToStep(rawValue, min, valueStep));
+        drag.pendingDeltaY = 0;
+
+        if (nextValue !== value) onChange(nextValue);
+      }
+
+      drag.lastY = clientY;
+      return;
+    }
+
     const steps = deltaY / Math.max(0.0001, pixelsPerStep);
     const rawValue = drag.startValue + steps * valueStep;
     const nextValue = clampValue(snapToStep(rawValue, min, valueStep));
+
     if (nextValue !== value) onChange(nextValue);
   }
 
@@ -179,6 +207,8 @@ export function Knob({
             pointerId: e.pointerId,
             startY: e.clientY,
             startValue: value,
+            lastY: e.clientY,
+            pendingDeltaY: 0,
             previousUserSelect: document.body.style.userSelect,
           };
           document.body.style.userSelect = "none";
