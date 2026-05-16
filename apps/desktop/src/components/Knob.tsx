@@ -9,6 +9,7 @@ type KnobProps = {
   variant?: "gain" | "pan";
   size?: number;
   pixelsPerStep?: number;
+  valueStep?: number;
   accentColor?: string;
   glowColor?: string;
   disabled?: boolean;
@@ -42,6 +43,12 @@ function describeArc(
   return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} ${sweep} ${end.x} ${end.y}`;
 }
 
+function snapToStep(value: number, min: number, step: number) {
+  const safeStep = Math.max(0.000001, step);
+  const stepsFromMin = Math.round((value - min) / safeStep);
+  return min + stepsFromMin * safeStep;
+}
+
 export function Knob({
   label,
   value,
@@ -50,7 +57,8 @@ export function Knob({
   displayValue,
   variant = "gain",
   size = 44,
-  pixelsPerStep = 6,
+  pixelsPerStep = 4,
+  valueStep = 1,
   accentColor,
   glowColor,
   disabled = false,
@@ -103,8 +111,9 @@ export function Knob({
     const drag = dragRef.current;
     if (!drag) return;
     const deltaY = drag.startY - clientY;
-    const steps = Math.trunc(deltaY / pixelsPerStep);
-    const nextValue = clampValue(drag.startValue + steps);
+    const steps = deltaY / Math.max(0.0001, pixelsPerStep);
+    const rawValue = drag.startValue + steps * valueStep;
+    const nextValue = clampValue(snapToStep(rawValue, min, valueStep));
     if (nextValue !== value) onChange(nextValue);
   }
 
@@ -199,12 +208,12 @@ export function Knob({
           if (e.key === "ArrowUp") {
             e.preventDefault();
             e.stopPropagation();
-            onChange(clampValue(value + 1));
+            onChange(clampValue(snapToStep(value + valueStep, min, valueStep)));
           }
           if (e.key === "ArrowDown") {
             e.preventDefault();
             e.stopPropagation();
-            onChange(clampValue(value - 1));
+            onChange(clampValue(snapToStep(value - valueStep, min, valueStep)));
           }
         }}
       >

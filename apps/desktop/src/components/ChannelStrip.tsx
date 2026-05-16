@@ -312,6 +312,7 @@ export function ChannelStrip({
           value={pan}
           min={0}
           max={200}
+          pixelsPerStep={2.5}
           displayValue={formatPan(pan)}
           size={48}
           disabled={disabled}

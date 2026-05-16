@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Knob } from "./Knob";
+import { MeterBar, MeterScale } from "./Meter";
+import { useCompressorMeters } from "../hooks/useCompressorMeters";
 
 export type GateState = {
   enabled: boolean;
@@ -55,6 +57,7 @@ type ChannelProcessorsProps = {
   state: ProcessorState;
   disabled?: boolean;
   hideGate?: boolean;
+  channelInputDb?: number;
   onModuleChange: (module: ProcessorModule) => void;
   onGateChange: (patch: Partial<GateState>) => void;
   onCompChange: (patch: Partial<CompressorState>) => void;
@@ -304,6 +307,20 @@ function formatEqAxisFreq(freq: number) {
   return String(freq);
 }
 
+function logValueToPosition(value: number, min: number, max: number) {
+  const safeMin = Math.max(min, 0.0001);
+  const safeMax = Math.max(max, safeMin + 0.0001);
+  const safeValue = clamp(value, safeMin, safeMax);
+  return Math.log10(safeValue);
+}
+
+function logPositionToValue(position: number, min: number, max: number) {
+  const safeMin = Math.max(min, 0.0001);
+  const safeMax = Math.max(max, safeMin + 0.0001);
+  const rawValue = 10 ** position;
+  return clamp(rawValue, safeMin, safeMax);
+}
+
 function generateLogGridFrequencies() {
   const result: number[] = [];
   const decades = [10, 100, 1000, 10000];
@@ -389,6 +406,140 @@ function snapGateDecay(value: number) {
   );
 }
 
+const COMP_GR_SCALE_MARKERS = ["0", "-6", "-12", "-18", "-24", "-30"];
+const COMP_GR_SEGMENTS = Array.from({ length: 15 }, (_, index) => (index + 1) * 2);
+
+function CompressorMeterScale({
+  markers,
+  showClip,
+  clipped = false,
+}: {
+  markers: string[];
+  showClip: boolean;
+  clipped?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "flex-start",
+        width: 21,
+        height: "100%",
+        color: "var(--fader-scale-text)",
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: "1.2px",
+        lineHeight: "12px",
+        fontFamily: "Inter, system-ui, sans-serif",
+        flexShrink: 0,
+      }}
+    >
+      {showClip ? (
+        <div
+          style={{
+            height: 20,
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "center",
+            lineHeight: "normal",
+            letterSpacing: 0,
+            marginBottom: 8,
+            paddingTop: 1,
+            color: clipped ? "var(--meter-clip)" : "var(--fader-scale-text)",
+          }}
+        >
+          Clip
+        </div>
+      ) : null}
+      <div
+        style={{
+          display: "flex",
+          flex: "1 1 auto",
+          minHeight: 0,
+          flexDirection: "column",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+        }}
+      >
+        {markers.map((marker) => (
+          <div
+            key={marker}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "center",
+              flexShrink: 0,
+              fontWeight: 700,
+              color: "inherit",
+            }}
+          >
+            {marker}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CompressorGainReductionMeterBar({ meterDb }: { meterDb: number }) {
+  const normalizedDb = clamp(meterDb, 0, 30);
+  const activeColor = MODULE_ACCENTS.comp.color;
+  const inactiveColor = "rgba(168,85,247,0.12)";
+  const activeSegmentCount = COMP_GR_SEGMENTS.reduce((count, segmentDb) => {
+    const activationThreshold = segmentDb >= 30 ? 29 : Math.max(1.5, segmentDb - 0.5);
+    return normalizedDb >= activationThreshold ? count + 1 : count;
+  }, 0);
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        width: 10,
+        height: "100%",
+        flexShrink: 0,
+      }}
+    >
+      <div
+        style={{
+          width: 10,
+          height: "100%",
+          minHeight: 0,
+          border: "1px solid var(--meter-border)",
+          borderRadius: 4,
+          backgroundColor: "var(--meter-background)",
+          padding: 1,
+          boxSizing: "border-box",
+          display: "flex",
+          flexDirection: "column",
+          gap: 1,
+          justifyContent: "flex-start",
+          overflow: "hidden",
+        }}
+      >
+        {COMP_GR_SEGMENTS.map((segmentDb, index) => {
+          const isActive = index < activeSegmentCount;
+
+          return (
+            <div
+              key={segmentDb}
+              style={{
+                width: "100%",
+                flex: "1 1 auto",
+                minHeight: 2,
+                borderRadius: 1,
+                opacity: isActive ? 0.95 : 0.42,
+                backgroundColor: isActive ? activeColor : inactiveColor,
+                boxShadow: isActive ? `0 0 4px 1px ${MODULE_ACCENTS.comp.glow}` : "none",
+              }}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function getSvgPoint(svg: SVGSVGElement, clientX: number, clientY: number) {
   const point = svg.createSVGPoint();
   point.x = clientX;
@@ -456,7 +607,11 @@ function EditableKnob({
   min,
   max,
   step = 1,
-  knobPixelsPerStep = 6,
+  knobPixelsPerStep = 4,
+  knobValue,
+  knobMin,
+  knobMax,
+  knobValueStep,
   knobSize = 44,
   displayValue,
   suffix,
@@ -473,6 +628,10 @@ function EditableKnob({
   max: number;
   step?: number;
   knobPixelsPerStep?: number;
+  knobValue?: number;
+  knobMin?: number;
+  knobMax?: number;
+  knobValueStep?: number;
   knobSize?: number;
   displayValue: string;
   suffix?: string;
@@ -502,16 +661,25 @@ function EditableKnob({
     <div style={{ display: "grid", justifyItems: "center", gap: compact ? 4 : 6, width: knobSize, minWidth: knobSize }}>
       <Knob
         label={label}
-        value={value}
-        min={min}
-        max={max}
+        value={knobValue ?? value}
+        min={knobMin ?? min}
+        max={knobMax ?? max}
         displayValue=""
         size={knobSize}
         pixelsPerStep={knobPixelsPerStep}
+        valueStep={knobValueStep ?? step}
         accentColor={accentColor}
         glowColor={glowColor}
         disabled={disabled}
-        onChange={onChange}
+        onChange={(nextKnobValue) => {
+          if (knobValue === undefined) {
+            onChange(nextKnobValue);
+            return;
+          }
+
+          const normalizedValue = clamp(nextKnobValue, knobMin ?? min, knobMax ?? max);
+          onChange(normalizedValue);
+        }}
       />
 
       {allowTextEdit && isEditing ? (
@@ -1777,13 +1945,30 @@ function CompressorEditor({
   disabled,
   onChange,
   onReset,
+  channelInputDb,
 }: {
   comp: CompressorState;
   disabled?: boolean;
   onChange: (patch: Partial<CompressorState>) => void;
   onReset: () => void;
+  channelInputDb?: number;
 }) {
   const controllersDisabled = disabled || !comp.enabled;
+  const metersDisabled = disabled || !comp.enabled;
+  const snappedThreshold = snapCompressorThreshold(comp.threshold);
+  const snappedRatio = snapCompressorRatio(comp.ratio);
+  const meterState = useCompressorMeters({
+    inputDb: channelInputDb,
+    thresholdDb: snappedThreshold,
+    ratio: snappedRatio >= 40 ? Number.POSITIVE_INFINITY : snappedRatio,
+    attackMs: comp.attack,
+    releaseMs: comp.release,
+    makeupDb: comp.gain,
+    enabled: comp.enabled,
+  });
+  const displayedGrDb = metersDisabled ? 0 : meterState.visualGainReductionDb;
+  const displayedOutDb = metersDisabled ? -75 : meterState.visualOutputDb;
+  const outClipped = !metersDisabled && displayedOutDb >= 14;
 
   return (
     <ProcessorShell title="">
@@ -1857,13 +2042,44 @@ function CompressorEditor({
               padding: 32,
               boxSizing: "border-box",
               display: "grid",
-              alignContent: "stretch",
+              gridTemplateColumns: "minmax(0, 1fr) auto",
+              alignItems: "stretch",
+              gap: 12,
               borderRadius: 4,
               border: "none",
               background: "var(--surface-panel-raised)",
             }}
           >
             <CompressorGraph comp={comp} disabled={disabled} onChange={onChange} />
+            <div
+              style={{
+                minHeight: 0,
+                height: "100%",
+                display: "grid",
+                gridTemplateColumns: "auto auto auto auto",
+                columnGap: 8,
+                alignItems: "stretch",
+                justifyItems: "center",
+                opacity: metersDisabled ? 0.45 : 1,
+              }}
+            >
+              <div style={{ display: "grid", gridTemplateRows: "18px minmax(0, 1fr)", justifyItems: "center", minHeight: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.4px", color: "var(--text-secondary)" }}>GR</div>
+                <CompressorGainReductionMeterBar meterDb={displayedGrDb} />
+              </div>
+              <div style={{ display: "grid", gridTemplateRows: "18px minmax(0, 1fr)", minHeight: 0 }}>
+                <div />
+                <CompressorMeterScale markers={COMP_GR_SCALE_MARKERS} showClip={false} />
+              </div>
+              <div style={{ display: "grid", gridTemplateRows: "18px minmax(0, 1fr)", justifyItems: "center", minHeight: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.4px", color: "var(--text-secondary)" }}>OUT</div>
+                <MeterBar meterDb={displayedOutDb} clipped={outClipped} />
+              </div>
+              <div style={{ display: "grid", gridTemplateRows: "18px minmax(0, 1fr)", minHeight: 0 }}>
+                <div />
+                <MeterScale clipped={outClipped} />
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1949,6 +2165,11 @@ function CompressorEditor({
               value={Math.round(comp.release)}
               min={10}
               max={1000}
+              knobValue={logValueToPosition(Math.round(comp.release), 10, 1000)}
+              knobMin={logValueToPosition(10, 10, 1000)}
+              knobMax={logValueToPosition(1000, 10, 1000)}
+              knobPixelsPerStep={3}
+              knobValueStep={0.02}
               knobSize={68}
               compact
               displayValue={comp.enabled ? formatMs(comp.release) : "—"}
@@ -1956,7 +2177,9 @@ function CompressorEditor({
               disabled={controllersDisabled}
               accentColor={MODULE_ACCENTS.comp.color}
               glowColor={MODULE_ACCENTS.comp.glow}
-              onChange={(release) => onChange({ release })}
+              onChange={(releasePosition) =>
+                onChange({ release: Math.round(logPositionToValue(releasePosition, 10, 1000)) })
+              }
             />
           </div>
           <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
@@ -2219,7 +2442,11 @@ function EqEditor({
                   value={snapEqFrequency(selectedFilter === "hpf" ? eq.hpfFreq : eq.lpfFreq)}
                   min={20}
                   max={20000}
-                  knobPixelsPerStep={0.5}
+                  knobValue={logValueToPosition(selectedFilter === "hpf" ? eq.hpfFreq : eq.lpfFreq, 20, 20000)}
+                  knobMin={logValueToPosition(20, 20, 20000)}
+                  knobMax={logValueToPosition(20000, 20, 20000)}
+                  knobPixelsPerStep={3}
+                  knobValueStep={0.02}
                   knobSize={68}
                   compact
                   displayValue={
@@ -2235,11 +2462,19 @@ function EqEditor({
                   disabled={disabled}
                   accentColor="var(--semantic-danger-base)"
                   glowColor="var(--alpha-red-60)"
-                  onChange={(freq) =>
+                  onChange={(freqPosition) =>
                     onChange(
                       selectedFilter === "hpf"
-                        ? { hpfFreq: snapEqFrequency(Math.min(freq, eq.lpfFreq - 10)) }
-                        : { lpfFreq: snapEqFrequency(Math.max(freq, eq.hpfFreq + 10)) }
+                        ? {
+                            hpfFreq: snapEqFrequency(
+                              Math.min(logPositionToValue(freqPosition, 20, 20000), eq.lpfFreq - 10)
+                            ),
+                          }
+                        : {
+                            lpfFreq: snapEqFrequency(
+                              Math.max(logPositionToValue(freqPosition, 20, 20000), eq.hpfFreq + 10)
+                            ),
+                          }
                     )
                   }
                 />
@@ -2295,7 +2530,11 @@ function EqEditor({
                   value={selectedNode === null ? 0 : snapEqFrequency(band.freq)}
                   min={20}
                   max={20000}
-                  knobPixelsPerStep={0.5}
+                  knobValue={selectedNode === null ? logValueToPosition(20, 20, 20000) : logValueToPosition(band.freq, 20, 20000)}
+                  knobMin={logValueToPosition(20, 20, 20000)}
+                  knobMax={logValueToPosition(20000, 20, 20000)}
+                  knobPixelsPerStep={3}
+                  knobValueStep={0.02}
                   knobSize={68}
                   compact
                   displayValue={selectedNode === null ? "—" : formatFreq(band.freq)}
@@ -2303,7 +2542,11 @@ function EqEditor({
                   disabled={disabled || selectedNode === null}
                   accentColor="var(--semantic-danger-base)"
                   glowColor="var(--alpha-red-60)"
-                  onChange={(freq) => onBandChange(selectedBand, { freq: snapEqFrequency(freq) })}
+                  onChange={(freqPosition) =>
+                    onBandChange(selectedBand, {
+                      freq: snapEqFrequency(logPositionToValue(freqPosition, 20, 20000)),
+                    })
+                  }
                 />
                 </div>
                 <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
@@ -2357,6 +2600,7 @@ export function ChannelProcessors({
   state,
   disabled = false,
   hideGate = false,
+  channelInputDb,
   onModuleChange,
   onGateChange,
   onCompChange,
@@ -2466,6 +2710,7 @@ export function ChannelProcessors({
             disabled={disabled}
             onChange={onCompChange}
             onReset={onResetComp}
+            channelInputDb={channelInputDb}
           />
         )}
 

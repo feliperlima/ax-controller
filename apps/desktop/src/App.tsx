@@ -3547,6 +3547,7 @@ function App() {
             activeModule={activeProcessorModule}
             state={processorState}
             disabled={!isConnected}
+            channelInputDb={channelState.meterDb}
             onModuleChange={setActiveProcessorModule}
             onGateChange={(patch) => handleGateChange(channelNumber, patch)}
             onCompChange={(patch) => handleCompChange(channelNumber, patch)}
