@@ -51,25 +51,15 @@ export type ProcessorState = {
   eq: EqState;
 };
 
-export type ProcessorModule = "gate" | "comp" | "eq" | "sends";
+export type ProcessorModule = "gate" | "comp" | "eq" | "sends" | "delay" | "presets";
 
-export type SendStripId =
-  | "fx1"
-  | "fx2"
-  | "aux1"
-  | "aux2"
-  | "aux3"
-  | "aux4"
-  | "aux5"
-  | "aux6"
-  | "aux7"
-  | "aux8";
+export type SendStripId = string;
 
 export type SendTapPoint = "pre" | "post";
 
 export type SendStripView = {
   id: SendStripId;
-  type: "fx" | "aux";
+  type: "fx" | "aux" | "channel" | "master";
   colorId: number;
   label: string;
   name: string;
@@ -82,8 +72,11 @@ type ChannelProcessorsProps = {
   activeModule: ProcessorModule;
   state: ProcessorState;
   disabled?: boolean;
+  hideComp?: boolean;
   hideGate?: boolean;
   hideSends?: boolean;
+  moduleItems?: Array<{ id: ProcessorModule; label: string }>;
+  customModuleContent?: Partial<Record<ProcessorModule, ReactNode>>;
   channelInputDb?: number;
   sends?: SendStripView[];
   onModuleChange: (module: ProcessorModule) => void;
@@ -239,19 +232,23 @@ function formatSendDb(value: number) {
 
 function getSendStripFooterColor(send: SendStripView) {
   const rawColorId = Math.round(send.colorId);
-  const effectiveColorId =
-    rawColorId === 0
-      ? send.type === "fx"
-        ? 7
-        : 8
-      : rawColorId;
+  const defaultColorByType: Record<SendStripView["type"], number> = {
+    fx: 7,
+    aux: 8,
+    channel: 0,
+    master: 0,
+  };
+  const effectiveColorId = rawColorId === 0 ? defaultColorByType[send.type] : rawColorId;
 
   if (effectiveColorId === 0) return "#7B7B7B";
   if (effectiveColorId >= 1 && effectiveColorId <= 12) {
     return `var(--channel-${String(effectiveColorId).padStart(2, "0")}, #c96626)`;
   }
 
-  return send.type === "fx" ? "var(--module-fx-primary)" : "var(--brand-primary)";
+  if (send.type === "fx") return "var(--module-fx-primary)";
+  if (send.type === "aux") return "var(--brand-primary)";
+  if (send.type === "master") return "var(--module-master-primary)";
+  return "#7B7B7B";
 }
 
 function SendsEditor({
@@ -265,8 +262,15 @@ function SendsEditor({
   onSendValueChange?: (id: SendStripId, nextValue: number) => void;
   onSendTapPointToggle?: (id: SendStripId) => void;
 }) {
-  const fxSends = sends.filter((send) => send.type === "fx");
-  const auxSends = sends.filter((send) => send.type === "aux");
+  const groupedSends = {
+    fx: sends.filter((send) => send.type === "fx"),
+    aux: sends.filter((send) => send.type === "aux"),
+    channel: sends.filter((send) => send.type === "channel"),
+    master: sends.filter((send) => send.type === "master"),
+  };
+  const visibleGroups = (["fx", "aux", "channel", "master"] as const)
+    .map((type) => ({ type, sends: groupedSends[type] }))
+    .filter((group) => group.sends.length > 0);
   const dragStateRef = useRef<SendsDragScrollState>({
     pointerId: null,
     pointerType: "",
@@ -404,7 +408,11 @@ function SendsEditor({
     const faderDb = sendValueToDb(send.value);
     const position = sendDbToFaderPosition(faderDb);
     const auxNumber = send.type === "aux" ? Number(send.id.replace("aux", "")) : 0;
-    const isLinkedPairLeader = send.type === "aux" && send.isLinked && auxNumber % 2 === 1;
+    const channelNumber = send.type === "channel" ? Number(send.id.replace("ch", "")) : 0;
+    const isLinkedPairLeader =
+      send.isLinked &&
+      ((send.type === "aux" && auxNumber % 2 === 1) ||
+        (send.type === "channel" && channelNumber % 2 === 1));
     const footerColor = getSendStripFooterColor(send);
 
     return (
@@ -727,23 +735,25 @@ function SendsEditor({
             minWidth: "100%",
           }}
         >
-          <div style={{ display: "grid", gridTemplateColumns: `repeat(${fxSends.length}, 110px)`, gap: 4 }}>
-            {fxSends.map((send) => renderSendStrip(send))}
-          </div>
+          {visibleGroups.map((group, index) => (
+            <div key={group.type} style={{ display: "contents" }}>
+              <div style={{ display: "grid", gridTemplateColumns: `repeat(${group.sends.length}, 110px)`, gap: 4 }}>
+                {group.sends.map((send) => renderSendStrip(send))}
+              </div>
 
-          <div
-            aria-hidden="true"
-            style={{
-              width: 1,
-              alignSelf: "stretch",
-              margin: "0 8px",
-              background: "#334155",
-            }}
-          />
-
-          <div style={{ display: "grid", gridTemplateColumns: `repeat(${auxSends.length}, 110px)`, gap: 4 }}>
-            {auxSends.map((send) => renderSendStrip(send))}
-          </div>
+              {index < visibleGroups.length - 1 && (
+                <div
+                  aria-hidden="true"
+                  style={{
+                    width: 1,
+                    alignSelf: "stretch",
+                    margin: "0 8px",
+                    background: "#334155",
+                  }}
+                />
+              )}
+            </div>
+          ))}
 
           <div
             aria-hidden="true"
@@ -878,6 +888,8 @@ const MODULE_ACCENTS: Record<ProcessorModule, { color: string; glow: string }> =
   comp: { color: "#a855f7", glow: "rgba(168,85,247,0.35)" },
   eq: { color: "#22d3ee", glow: "rgba(34,211,238,0.35)" },
   sends: { color: "#22d3ee", glow: "rgba(34,211,238,0.35)" },
+  delay: { color: "#f59e0b", glow: "rgba(245,158,11,0.35)" },
+  presets: { color: "#a78bfa", glow: "rgba(167,139,250,0.35)" },
 };
 const EQ_ACTIVE_MIN_FREQ = 20;
 const EQ_ACTIVE_MAX_FREQ = 20000;
@@ -3505,8 +3517,11 @@ export function ChannelProcessors({
   activeModule,
   state,
   disabled = false,
+  hideComp = false,
   hideGate = false,
   hideSends = false,
+  moduleItems,
+  customModuleContent,
   channelInputDb,
   sends,
   onModuleChange,
@@ -3520,12 +3535,14 @@ export function ChannelProcessors({
   onResetComp,
   onResetEq,
 }: ChannelProcessorsProps) {
-  const navItems: Array<{ id: ProcessorModule; label: string }> = [
+  const defaultNavItems: Array<{ id: ProcessorModule; label: string }> = [
     { id: "eq", label: "EQ" },
-    { id: "comp", label: "COMP" },
+    ...(!hideComp ? [{ id: "comp", label: "COMP" } as const] : []),
     ...(!hideGate ? [{ id: "gate", label: "GATE" } as const] : []),
     ...(!hideSends ? [{ id: "sends", label: "SENDS" } as const] : []),
   ];
+  const navItems = moduleItems ?? defaultNavItems;
+  const customActiveModuleContent = customModuleContent?.[activeModule];
 
   return (
     <div
@@ -3598,7 +3615,7 @@ export function ChannelProcessors({
           overflow: activeModule === "sends" ? "visible" : "hidden",
         }}
       >
-        {activeModule === "gate" && (
+        {!customActiveModuleContent && activeModule === "gate" && (
           <GateEditor
             gate={state.gate}
             disabled={disabled}
@@ -3607,7 +3624,7 @@ export function ChannelProcessors({
           />
         )}
 
-        {activeModule === "comp" && (
+        {!customActiveModuleContent && activeModule === "comp" && (
           <CompressorEditor
             comp={state.comp}
             disabled={disabled}
@@ -3617,7 +3634,7 @@ export function ChannelProcessors({
           />
         )}
 
-        {activeModule === "eq" && (
+        {!customActiveModuleContent && activeModule === "eq" && (
           <EqEditor
             eq={state.eq}
             disabled={disabled}
@@ -3627,7 +3644,7 @@ export function ChannelProcessors({
           />
         )}
 
-        {activeModule === "sends" && sends && (
+        {!customActiveModuleContent && activeModule === "sends" && sends && (
           <div
             style={{
               minHeight: 0,
@@ -3644,6 +3661,8 @@ export function ChannelProcessors({
             />
           </div>
         )}
+
+        {customActiveModuleContent}
       </div>
     </div>
   );

@@ -278,12 +278,16 @@ function auxColorParam(aux: number) {
 type DetailView =
   | { type: "channel"; channel: number }
   | { type: "aux"; aux: number }
+  | { type: "fx"; fx: 1 | 2 }
+  | { type: "master" }
   | null;
 type StripSection = "inputs" | "aux" | "fx";
 type CustomizationView = { section: StripSection; index: number } | null;
 type PairLinkState = Record<string, boolean>;
 type SendValueState = Record<SendStripId, number>;
 type SendTapPointState = Record<SendStripId, SendTapPoint>;
+type ChannelInputSendValues = Record<string, number>;
+type ChannelInputSendTapPointState = Record<string, SendTapPoint>;
 
 type DragScrollState = {
   pointerId: number | null;
@@ -520,6 +524,22 @@ function createDefaultSendTapPoints(): SendTapPointState {
     aux7: "post",
     aux8: "post",
   };
+}
+
+function createDefaultChannelInputSendValues(): ChannelInputSendValues {
+  const next: ChannelInputSendValues = {};
+  for (let channel = 1; channel <= 16; channel++) {
+    next[`ch${channel}`] = 1200;
+  }
+  return next;
+}
+
+function createDefaultChannelInputSendTapPoints(): ChannelInputSendTapPointState {
+  const next: ChannelInputSendTapPointState = {};
+  for (let channel = 1; channel <= 16; channel++) {
+    next[`ch${channel}`] = "post";
+  }
+  return next;
 }
 
 function decodeSendRawValue(rawValue: number | undefined) {
@@ -1108,6 +1128,12 @@ function App() {
   const [auxProcessorStates, setAuxProcessorStates] = useState<ProcessorState[]>(() =>
     Array.from({ length: 8 }, () => createDefaultAuxProcessorState())
   );
+  const [fxProcessorStates, setFxProcessorStates] = useState<ProcessorState[]>(() =>
+    Array.from({ length: 2 }, () => createDefaultProcessorState())
+  );
+  const [masterProcessorState, setMasterProcessorState] = useState<ProcessorState>(() =>
+    createDefaultAuxProcessorState()
+  );
   const [processorStates, setProcessorStates] = useState<ProcessorState[]>(
     createInitialProcessorStates
   );
@@ -1120,6 +1146,14 @@ function App() {
     useState<SendValueState>(createDefaultSendValues);
   const [sendTapPoints, setSendTapPoints] =
     useState<SendTapPointState>(createDefaultSendTapPoints);
+  const [auxInputSendValues, setAuxInputSendValues] =
+    useState<Record<number, ChannelInputSendValues>>({});
+  const [auxInputSendTapPoints, setAuxInputSendTapPoints] =
+    useState<Record<number, ChannelInputSendTapPointState>>({});
+  const [fxInputSendValues, setFxInputSendValues] =
+    useState<Record<number, ChannelInputSendValues>>({});
+  const [fxInputSendTapPoints, setFxInputSendTapPoints] =
+    useState<Record<number, ChannelInputSendTapPointState>>({});
   const [master, setMaster] = useState<MasterState>(createDefaultMasterState);
   const [mainMasterMeter, setMainMasterMeter] = useState<MainMasterMeterState>(
     createDefaultMainMasterMeterState
@@ -1355,6 +1389,17 @@ function App() {
     setAuxProcessorStates((current) =>
       current.map((processorState, index) =>
         index === auxNumber - 1 ? updater(processorState) : processorState
+      )
+    );
+  }
+
+  function updateFxProcessorState(
+    fxNumber: number,
+    updater: (current: ProcessorState) => ProcessorState
+  ) {
+    setFxProcessorStates((current) =>
+      current.map((processorState, index) =>
+        index === fxNumber - 1 ? updater(processorState) : processorState
       )
     );
   }
@@ -1960,6 +2005,187 @@ function App() {
     applyLinkStateFrom3056(value3056);
   }
 
+  async function syncBusInputSendsState(busType: "aux" | "fx", busNumber: number) {
+    const client = clientRef.current;
+    if (!client) return;
+
+    const mappedSendId = `${busType}${busNumber}` as SendStripId;
+    const params = Array.from({ length: 16 }, (_, index) =>
+      sendIdToParam(index + 1, mappedSendId)
+    );
+    const response = await client.readParams(params, 2200);
+    const valuesByParam = new Map(response.map((item) => [item.param, item.value]));
+
+    const nextValues = createDefaultChannelInputSendValues();
+    const nextTapPoints = createDefaultChannelInputSendTapPoints();
+
+    for (let channel = 1; channel <= 16; channel++) {
+      const id = `ch${channel}`;
+      const param = sendIdToParam(channel, mappedSendId);
+      const decoded = decodeSendRawValue(valuesByParam.get(param));
+      nextValues[id] = decoded.value;
+      nextTapPoints[id] = decoded.tapPoint;
+    }
+
+    if (busType === "aux") {
+      setAuxInputSendValues((current) => ({
+        ...current,
+        [busNumber]: nextValues,
+      }));
+      setAuxInputSendTapPoints((current) => ({
+        ...current,
+        [busNumber]: nextTapPoints,
+      }));
+      return;
+    }
+
+    setFxInputSendValues((current) => ({
+      ...current,
+      [busNumber]: nextValues,
+    }));
+    setFxInputSendTapPoints((current) => ({
+      ...current,
+      [busNumber]: nextTapPoints,
+    }));
+  }
+
+  function channelFromInputSendId(id: SendStripId) {
+    if (!id.startsWith("ch")) return null;
+    const channel = Number(id.slice(2));
+    if (!Number.isInteger(channel) || channel < 1 || channel > 16) return null;
+    return channel;
+  }
+
+  function getLinkedChannelInputTargets(sendId: SendStripId) {
+    const channel = channelFromInputSendId(sendId);
+    if (!channel) return [sendId];
+
+    const [odd, even] = getChannelPair(channel);
+    const key = pairKey(odd, even);
+    if (!channelLinks[key]) return [sendId];
+
+    return [`ch${odd}`, `ch${even}`] as SendStripId[];
+  }
+
+  function handleBusInputSendValueChange(
+    busType: "aux" | "fx",
+    busNumber: number,
+    sendId: SendStripId,
+    nextValue: number
+  ) {
+    const clampedValue = Math.max(0, Math.min(1300, Math.round(nextValue)));
+    const busTargets = busType === "aux" ? getLinkedAuxTargets(busNumber) : [busNumber];
+    const channelTargets = getLinkedChannelInputTargets(sendId);
+
+    if (busType === "aux") {
+      setAuxInputSendValues((current) => {
+        const next = { ...current };
+        busTargets.forEach((target) => {
+          next[target] = {
+            ...(next[target] ?? createDefaultChannelInputSendValues()),
+            ...channelTargets.reduce<Record<string, number>>((acc, channelTarget) => {
+              acc[channelTarget] = clampedValue;
+              return acc;
+            }, {}),
+          };
+        });
+        return next;
+      });
+    } else {
+      setFxInputSendValues((current) => ({
+        ...current,
+        [busNumber]: {
+          ...(current[busNumber] ?? createDefaultChannelInputSendValues()),
+          ...channelTargets.reduce<Record<string, number>>((acc, channelTarget) => {
+            acc[channelTarget] = clampedValue;
+            return acc;
+          }, {}),
+        },
+      }));
+    }
+
+    busTargets.forEach((busTarget) => {
+      const mappedSendId = `${busType}${busTarget}` as SendStripId;
+
+      channelTargets.forEach((channelTarget) => {
+        const channel = channelFromInputSendId(channelTarget);
+        if (!channel) return;
+        const tapPoint =
+          busType === "aux"
+            ? auxInputSendTapPoints[busTarget]?.[channelTarget] ?? "post"
+            : fxInputSendTapPoints[busTarget]?.[channelTarget] ?? "post";
+        const param = sendIdToParam(channel, mappedSendId);
+        scheduleSendParamWrite(param, encodeSendRawValue(clampedValue, tapPoint));
+      });
+    });
+  }
+
+  function handleBusInputSendTapPointToggle(
+    busType: "aux" | "fx",
+    busNumber: number,
+    sendId: SendStripId
+  ) {
+    const busTargets = busType === "aux" ? getLinkedAuxTargets(busNumber) : [busNumber];
+    const channelTargets = getLinkedChannelInputTargets(sendId);
+    const nextTapByTarget = new Map<string, SendTapPoint>();
+
+    if (busType === "aux") {
+      setAuxInputSendTapPoints((current) => {
+        const next = { ...current };
+        busTargets.forEach((target) => {
+          const currentTap = current[target]?.[sendId] ?? "post";
+          const toggled = currentTap === "post" ? "pre" : "post";
+          next[target] = {
+            ...(next[target] ?? createDefaultChannelInputSendTapPoints()),
+            ...channelTargets.reduce<Record<string, SendTapPoint>>((acc, channelTarget) => {
+              acc[channelTarget] = toggled;
+              return acc;
+            }, {}),
+          };
+          channelTargets.forEach((channelTarget) => {
+            nextTapByTarget.set(`${target}:${channelTarget}`, toggled);
+          });
+        });
+        return next;
+      });
+    } else {
+      setFxInputSendTapPoints((current) => {
+        const currentTap = current[busNumber]?.[sendId] ?? "post";
+        const toggled = currentTap === "post" ? "pre" : "post";
+        channelTargets.forEach((channelTarget) => {
+          nextTapByTarget.set(`${busNumber}:${channelTarget}`, toggled);
+        });
+        return {
+          ...current,
+          [busNumber]: {
+            ...(current[busNumber] ?? createDefaultChannelInputSendTapPoints()),
+            ...channelTargets.reduce<Record<string, SendTapPoint>>((acc, channelTarget) => {
+              acc[channelTarget] = toggled;
+              return acc;
+            }, {}),
+          },
+        };
+      });
+    }
+
+    busTargets.forEach((busTarget) => {
+      const mappedSendId = `${busType}${busTarget}` as SendStripId;
+
+      channelTargets.forEach((channelTarget) => {
+        const channel = channelFromInputSendId(channelTarget);
+        if (!channel) return;
+
+        const baseValue =
+          busType === "aux"
+            ? auxInputSendValues[busTarget]?.[channelTarget] ?? 1200
+            : fxInputSendValues[busTarget]?.[channelTarget] ?? 1200;
+        const tapPoint = nextTapByTarget.get(`${busTarget}:${channelTarget}`) ?? "post";
+        const param = sendIdToParam(channel, mappedSendId);
+        scheduleSendParamWrite(param, encodeSendRawValue(baseValue, tapPoint), true);
+      });
+    });
+  }
+
   function handleSendValueChange(channelNumber: number, sendId: SendStripId, nextValue: number) {
     const clampedValue = Math.max(0, Math.min(1300, Math.round(nextValue)));
     const targets = getLinkedAuxSendTargets(sendId);
@@ -2487,6 +2713,22 @@ function App() {
     syncChannelSendsState(detailView.channel).catch(() => {
       // Keep the existing values when send sync fails transiently.
     });
+  }, [activeProcessorModule, detailView, isConnected]);
+
+  useEffect(() => {
+    if (!isConnected || !detailView) return;
+    if (activeProcessorModule !== "sends") return;
+    if (detailView.type === "aux") {
+      syncBusInputSendsState("aux", detailView.aux).catch(() => {
+        // Keep the existing values when send sync fails transiently.
+      });
+      return;
+    }
+    if (detailView.type === "fx") {
+      syncBusInputSendsState("fx", detailView.fx).catch(() => {
+        // Keep the existing values when send sync fails transiently.
+      });
+    }
   }, [activeProcessorModule, detailView, isConnected]);
 
   useEffect(() => {
@@ -3732,6 +3974,69 @@ function App() {
     });
   }
 
+  function goToDetailFx(fxNumber: number) {
+    const nextFx = fxNumber === 2 ? 2 : 1;
+    setActiveProcessorModule("eq");
+    setDetailView({ type: "fx", fx: nextFx });
+  }
+
+  function goToDetailMaster() {
+    setActiveProcessorModule("eq");
+    setDetailView({ type: "master" });
+  }
+
+  function buildChannelInputSendsView(
+    values: ChannelInputSendValues = createDefaultChannelInputSendValues(),
+    tapPoints: ChannelInputSendTapPointState = createDefaultChannelInputSendTapPoints()
+  ): SendStripView[] {
+    return channels.map((channelState, index) => {
+      const channelNumber = index + 1;
+      const [odd, even] = getChannelPair(channelNumber);
+      const linkKey = pairKey(odd, even);
+      const id = `ch${channelNumber}`;
+
+      return {
+        id,
+        type: "channel",
+        colorId: channelState.colorId,
+        label: `CH ${channelNumber}`,
+        name: channelState.channelName?.trim() || `Channel ${channelNumber}`,
+        value: values[id] ?? 1200,
+        tapPoint: tapPoints[id] ?? "post",
+        isLinked: Boolean(channelLinks[linkKey]),
+      };
+    });
+  }
+
+  function renderDetailPlaceholder(moduleLabel: string, title: string, description: string) {
+    return (
+      <div
+        style={{
+          minHeight: 0,
+          height: "100%",
+          borderRadius: 4,
+          border: "1px solid var(--border-default)",
+          background: "var(--surface-panel-raised)",
+          display: "grid",
+          alignContent: "center",
+          justifyItems: "center",
+          gap: 10,
+          color: "var(--text-primary)",
+          textAlign: "center",
+          padding: 24,
+        }}
+      >
+        <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.1em", color: "var(--text-secondary)" }}>
+          {moduleLabel}
+        </div>
+        <div style={{ fontSize: 22, lineHeight: "28px", fontWeight: 700 }}>{title}</div>
+        <div style={{ fontSize: 13, lineHeight: "18px", maxWidth: 520, color: "var(--text-secondary)" }}>
+          {description}
+        </div>
+      </div>
+    );
+  }
+
   function renderChannelDetail() {
     if (!detailView || detailView.type !== "channel") return null;
 
@@ -3934,70 +4239,99 @@ function App() {
                 flex: "1 1 auto",
               }}
             >
-              <div
+              <button
+                type="button"
+                disabled={channelNumber === 1}
+                onClick={() => goToDetailChannel(channelNumber - 1)}
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  minWidth: 0,
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  border: "1px solid #334155",
+                  background: "#0b1220",
+                  color: "#fff",
+                  fontWeight: 900,
+                  fontSize: 14,
+                  cursor: channelNumber === 1 ? "not-allowed" : "pointer",
+                  opacity: channelNumber === 1 ? 0.4 : 1,
                 }}
               >
-                <div
-                  style={{
-                    fontFamily: "Inter, system-ui, sans-serif",
-                    fontSize: 22,
-                    lineHeight: "30px",
-                    fontWeight: 700,
-                    color: "#ffffff",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    maxWidth: 320,
-                  }}
-                >
-                  {detailChannelName.trim().length > 0 ? detailChannelName : `Canal ${channelNumber}`}
-                </div>
-                <div
-                  style={{
-                    minWidth: 45,
-                    padding: "4px 8px",
-                    borderRadius: 4,
-                    background: channelColorBadgeBackground(channelState.colorId),
-                    color: "var(--text-inverse)",
-                    fontSize: 12,
-                    lineHeight: "12px",
-                    fontWeight: 600,
-                    letterSpacing: "0.6px",
-                    textAlign: "center",
-                  }}
-                >
-                  {`CH ${channelNumber}`}
-                </div>
-                <button
-                  type="button"
-                  disabled={!isConnected}
-                  onClick={() => setCustomizationView({ section: "inputs", index: channelNumber })}
-                  aria-label="Editar canal"
-                  title="Editar canal"
-                  style={{
-                    width: 24,
-                    height: 24,
-                    border: "none",
-                    background: "transparent",
-                    color: "var(--text-secondary)",
-                    display: "grid",
-                    placeItems: "center",
-                    padding: 0,
-                    cursor: !isConnected ? "not-allowed" : "pointer",
-                    opacity: !isConnected ? 0.5 : 1,
-                  }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M11.98 1.793a1.5 1.5 0 0 1 2.122 2.121l-7.19 7.191-2.93.808.808-2.93 7.19-7.19Z" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
-                    <path d="M9.98 3.793 12.102 5.915" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
+                ‹
+              </button>
+              <div
+                style={{
+                  fontFamily: "Inter, system-ui, sans-serif",
+                  fontSize: 22,
+                  lineHeight: "30px",
+                  fontWeight: 700,
+                  color: "#ffffff",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  maxWidth: 320,
+                }}
+              >
+                {detailChannelName.trim().length > 0 ? detailChannelName : `Canal ${channelNumber}`}
               </div>
+              <div
+                style={{
+                  minWidth: 45,
+                  padding: "4px 8px",
+                  borderRadius: 4,
+                  background: channelColorBadgeBackground(channelState.colorId),
+                  color: "var(--text-inverse)",
+                  fontSize: 12,
+                  lineHeight: "12px",
+                  fontWeight: 600,
+                  letterSpacing: "0.6px",
+                  textAlign: "center",
+                }}
+              >
+                {`CH ${channelNumber}`}
+              </div>
+              <button
+                type="button"
+                disabled={!isConnected}
+                onClick={() => setCustomizationView({ section: "inputs", index: channelNumber })}
+                aria-label="Editar canal"
+                title="Editar canal"
+                style={{
+                  width: 24,
+                  height: 24,
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--text-secondary)",
+                  display: "grid",
+                  placeItems: "center",
+                  padding: 0,
+                  cursor: !isConnected ? "not-allowed" : "pointer",
+                  opacity: !isConnected ? 0.5 : 1,
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M11.98 1.793a1.5 1.5 0 0 1 2.122 2.121l-7.19 7.191-2.93.808.808-2.93 7.19-7.19Z" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M9.98 3.793 12.102 5.915" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+              <button
+                type="button"
+                disabled={channelNumber === 16}
+                onClick={() => goToDetailChannel(channelNumber + 1)}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  border: "1px solid #334155",
+                  background: "#0b1220",
+                  color: "#fff",
+                  fontWeight: 900,
+                  fontSize: 14,
+                  cursor: channelNumber === 16 ? "not-allowed" : "pointer",
+                  opacity: channelNumber === 16 ? 0.4 : 1,
+                }}
+              >
+                ›
+              </button>
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
@@ -4145,52 +4479,95 @@ function App() {
     const [pairOdd, pairEven] = getAuxPair(auxNumber);
     const linkKey = pairKey(pairOdd, pairEven);
     const isLinked = Boolean(auxLinks[linkKey]);
+    const sendsView = buildChannelInputSendsView(
+      auxInputSendValues[auxNumber],
+      auxInputSendTapPoints[auxNumber]
+    );
 
     return (
-      <div className="detail-layout" style={{ width: "100%", height: "100%" }}>
+      <div
+        className="detail-layout"
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr)",
+          gridTemplateRows: "auto minmax(0, 1fr)",
+          gap: 4,
+          padding: 8,
+        }}
+      >
         <section
           className="detail-panel"
           style={{
-            padding: 8,
-            borderRadius: 8,
-            border: "1px solid #1a2a37",
-            background: "linear-gradient(180deg, #08131b 0%, #050c13 100%)",
-            display: "grid",
-            gridTemplateRows: "auto auto 1fr",
-            gap: 8,
-            minHeight: 0,
-            overflow: "hidden",
+            padding: 0,
+            borderRadius: 4,
+            border: "none",
+            background: "transparent",
+            minWidth: 0,
+            position: "relative",
+            zIndex: 3,
           }}
         >
           <div
             style={{
+              minHeight: 48,
               display: "flex",
               alignItems: "center",
-              gap: 6,
-              flexWrap: "nowrap",
+              justifyContent: "space-between",
+              gap: 16,
+              minWidth: 0,
+              padding: "8px 16px 8px 0",
+              borderRadius: 4,
+              background: "var(--surface-overlay-strong)",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                width: 113,
+                flexShrink: 0,
+              }}
+            >
               <button
                 type="button"
                 onClick={() => setDetailView(null)}
                 style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: 6,
-                  border: "1px solid #1f6f8b",
-                  background: "#082232",
-                  color: "#a5f3fc",
+                  height: 32,
+                  padding: "4px 8px",
+                  borderRadius: 8,
+                  border: "1px solid var(--button-default-border)",
+                  background: "var(--button-default-bg)",
+                  color: "var(--button-default-text)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
                   fontWeight: 900,
-                  fontSize: 14,
+                  fontSize: 10,
+                  letterSpacing: "1.2px",
                   cursor: "pointer",
+                  whiteSpace: "nowrap",
                 }}
                 aria-label="Voltar"
                 title="Voltar"
               >
-                ←
+                <span style={{ fontSize: 14, lineHeight: 1 }}>←</span>
+                <span>VOLTAR</span>
               </button>
+            </div>
 
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                minWidth: 0,
+                flex: "1 1 auto",
+              }}
+            >
               <button
                 type="button"
                 disabled={auxNumber === 1}
@@ -4212,15 +4589,57 @@ function App() {
               </button>
               <span
                 style={{
-                  minWidth: 72,
+                  minWidth: 110,
                   textAlign: "center",
-                  fontSize: 13,
-                  fontWeight: 900,
-                  color: "#e5eef5",
+                  fontFamily: "Inter, system-ui, sans-serif",
+                  fontSize: 22,
+                  lineHeight: "30px",
+                  fontWeight: 700,
+                  color: "#ffffff",
                 }}
               >
-                AUX {auxNumber}/8
+                {auxState.channelName.trim().length > 0 ? auxState.channelName : `AUX ${auxNumber}`}
               </span>
+              <div
+                style={{
+                  minWidth: 60,
+                  padding: "4px 8px",
+                  borderRadius: 4,
+                  background: channelColorBadgeBackground(auxState.colorId),
+                  color: "var(--text-inverse)",
+                  fontSize: 12,
+                  lineHeight: "12px",
+                  fontWeight: 600,
+                  letterSpacing: "0.6px",
+                  textAlign: "center",
+                }}
+              >
+                {`AUX ${auxNumber}`}
+              </div>
+              <button
+                type="button"
+                disabled={!isConnected}
+                onClick={() => setCustomizationView({ section: "aux", index: auxNumber })}
+                aria-label="Editar auxiliar"
+                title="Editar auxiliar"
+                style={{
+                  width: 24,
+                  height: 24,
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--text-secondary)",
+                  display: "grid",
+                  placeItems: "center",
+                  padding: 0,
+                  cursor: !isConnected ? "not-allowed" : "pointer",
+                  opacity: !isConnected ? 0.5 : 1,
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M11.98 1.793a1.5 1.5 0 0 1 2.122 2.121l-7.19 7.191-2.93.808.808-2.93 7.19-7.19Z" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M9.98 3.793 12.102 5.915" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
               <button
                 type="button"
                 disabled={auxNumber === 8}
@@ -4242,57 +4661,119 @@ function App() {
               </button>
             </div>
 
-            <button
-              type="button"
-              disabled={!isConnected}
-              onClick={() => {
-                toggleAuxLink(auxNumber).catch((error) => {
-                  setStatus(
-                    error instanceof Error
-                      ? error.message
-                      : "Erro ao alternar link de auxiliar"
-                  );
-                });
-              }}
-              style={{
-                padding: "5px 10px",
-                borderRadius: 6,
-                border: isLinked ? "1px solid #38bdf8" : "1px solid #334155",
-                background: isLinked ? "#0b2a3b" : "#111827",
-                color: isLinked ? "#a5f3fc" : "#e5eef5",
-                fontWeight: 900,
-                fontSize: 12,
-                cursor: !isConnected ? "not-allowed" : "pointer",
-                opacity: !isConnected ? 0.5 : 1,
-                flexShrink: 0,
-              }}
-            >
-              {isLinked
-                ? `Linked AUX ${pairOdd}-${pairEven}`
-                : `Link AUX ${pairOdd}-${pairEven}`}
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
+              <button
+                type="button"
+                disabled={!isConnected}
+                onClick={() => {
+                  toggleAuxLink(auxNumber).catch((error) => {
+                    setStatus(
+                      error instanceof Error
+                        ? error.message
+                        : "Erro ao alternar link de auxiliar"
+                    );
+                  });
+                }}
+                style={{
+                  padding: "5px 10px",
+                  borderRadius: 6,
+                  border: isLinked ? "1px solid #67e8f9" : "1px solid #334155",
+                  background: isLinked ? "#164e63" : "#0f172a",
+                  color: isLinked ? "#f0fdff" : "#64748b",
+                  fontWeight: 900,
+                  fontSize: 12,
+                  letterSpacing: "0.06em",
+                  cursor: !isConnected ? "not-allowed" : "pointer",
+                  opacity: !isConnected ? 0.5 : 1,
+                  boxShadow: isLinked
+                    ? "0 0 8px rgba(103,232,249,0.35)"
+                    : "none",
+                }}
+              >
+                {isLinked ? `LINKED AUX${pairOdd}-AUX${pairEven}` : `LINK AUX${pairOdd}-AUX${pairEven}`}
+              </button>
+            </div>
           </div>
+        </section>
 
-          <div
+        <section
+          style={{
+            minHeight: 0,
+            display: "grid",
+            gridTemplateColumns: "110px minmax(0, 1fr)",
+            gap: 4,
+            padding: 0,
+            overflow: "visible",
+            position: "relative",
+          }}
+        >
+          <aside
             style={{
-              borderRadius: 8,
-              border: "1px solid #193141",
-              background: "#071721",
-              color: "#8fb3c9",
-              fontSize: 12,
-              fontWeight: 700,
-              padding: "8px 10px",
+              minWidth: 0,
+              minHeight: 0,
+              width: 110,
+              display: "flex",
+              justifyContent: "stretch",
+              justifySelf: "start",
+              overflow: "hidden",
+              position: "relative",
+              zIndex: 3,
             }}
           >
-            Configuracoes deste par serao espelhadas em estereo enquanto o link estiver ativo.
-          </div>
+            <AuxStrip
+              auxNumber={auxNumber}
+              variant="detail"
+              colorId={auxState.colorId}
+              channelName={auxState.channelName}
+              muted={auxState.muted}
+              soloOn={auxState.soloOn}
+              faderDb={auxState.faderDb}
+              faderPosition={auxState.faderPosition}
+              meterDb={auxState.meterDb}
+              peakDb={auxState.peakDb}
+              clipped={auxState.clipUntil > Date.now()}
+              isLinked={isLinked}
+              disabled={!isConnected}
+              eqState={processorState.eq}
+              onToggleMute={() => toggleStripMute("aux", auxNumber)}
+              onToggleSolo={() => toggleStripSolo("aux", auxNumber)}
+              onFaderChange={(position) => handleStripFaderChange("aux", auxNumber, position)}
+              onOpenDetail={goToDetailAux}
+            />
+          </aside>
 
+          <section
+            className="detail-panel"
+            style={{
+              padding: "0 24px",
+              borderRadius: 4,
+              border: "none",
+              background: "transparent",
+              minHeight: 0,
+              overflow: "hidden",
+              position: "relative",
+              zIndex: 1,
+            }}
+          >
           <ChannelProcessors
             activeModule={activeProcessorModule}
             state={processorState}
             disabled={!isConnected}
             hideGate={true}
-            hideSends={true}
+            moduleItems={[
+              { id: "eq", label: "EQ" },
+              { id: "comp", label: "COMP" },
+              { id: "delay", label: "DELAY" },
+              { id: "sends", label: "SENDS" },
+            ]}
+            customModuleContent={{
+              delay: renderDetailPlaceholder(
+                "DELAY",
+                "Delay do AUX",
+                "A interface de Delay sera mapeada em seguida com os parametros reais da mesa."
+              ),
+            }}
+            sends={sendsView}
             onModuleChange={setActiveProcessorModule}
             onGateChange={() => {}}
             onCompChange={(patch) => {
@@ -4462,45 +4943,356 @@ function App() {
                 }));
               });
             }}
+            onSendValueChange={(id, value) =>
+              handleBusInputSendValueChange("aux", auxNumber, id, value)
+            }
+            onSendTapPointToggle={(id) =>
+              handleBusInputSendTapPointToggle("aux", auxNumber, id)
+            }
           />
+          </section>
+        </section>
+      </div>
+    );
+  }
+
+  function renderFxDetail() {
+    if (!detailView || detailView.type !== "fx") return null;
+
+    const fxNumber = detailView.fx;
+    const fxState = fxStrips[fxNumber - 1];
+    const processorState = fxProcessorStates[fxNumber - 1];
+    const sendsView = buildChannelInputSendsView(
+      fxInputSendValues[fxNumber],
+      fxInputSendTapPoints[fxNumber]
+    );
+
+    return (
+      <div
+        className="detail-layout"
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr)",
+          gridTemplateRows: "auto minmax(0, 1fr)",
+          gap: 4,
+          padding: 8,
+        }}
+      >
+        <section className="detail-panel" style={{ padding: 0, borderRadius: 4, border: "none", background: "transparent", minWidth: 0, position: "relative", zIndex: 3 }}>
+          <div style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, minWidth: 0, padding: "8px 16px 8px 0", borderRadius: 4, background: "var(--surface-overlay-strong)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, width: 113, flexShrink: 0 }}>
+              <button type="button" onClick={() => setDetailView(null)} style={{ height: 32, padding: "4px 8px", borderRadius: 8, border: "1px solid var(--button-default-border)", background: "var(--button-default-bg)", color: "var(--button-default-text)", display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 900, fontSize: 10, letterSpacing: "1.2px", cursor: "pointer", whiteSpace: "nowrap" }}>
+                <span style={{ fontSize: 14, lineHeight: 1 }}>←</span>
+                <span>VOLTAR</span>
+              </button>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 0, flex: "1 1 auto" }}>
+              <button
+                type="button"
+                disabled={fxNumber === 1}
+                onClick={() => goToDetailFx(fxNumber - 1)}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  border: "1px solid #334155",
+                  background: "#0b1220",
+                  color: "#fff",
+                  fontWeight: 900,
+                  fontSize: 14,
+                  cursor: fxNumber === 1 ? "not-allowed" : "pointer",
+                  opacity: fxNumber === 1 ? 0.4 : 1,
+                }}
+              >
+                ‹
+              </button>
+              <div style={{ fontFamily: "Inter, system-ui, sans-serif", fontSize: 22, lineHeight: "30px", fontWeight: 700, color: "#ffffff" }}>
+                {fxState.channelName.trim().length > 0 ? fxState.channelName : `FX ${fxNumber}`}
+              </div>
+              <div style={{ minWidth: 50, padding: "4px 8px", borderRadius: 4, background: channelColorBadgeBackground(fxState.colorId), color: "var(--text-inverse)", fontSize: 12, lineHeight: "12px", fontWeight: 600, letterSpacing: "0.6px", textAlign: "center" }}>
+                {`FX ${fxNumber}`}
+              </div>
+              <button
+                type="button"
+                disabled={!isConnected}
+                onClick={() => setCustomizationView({ section: "fx", index: fxNumber })}
+                aria-label="Editar FX"
+                title="Editar FX"
+                style={{
+                  width: 24,
+                  height: 24,
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--text-secondary)",
+                  display: "grid",
+                  placeItems: "center",
+                  padding: 0,
+                  cursor: !isConnected ? "not-allowed" : "pointer",
+                  opacity: !isConnected ? 0.5 : 1,
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M11.98 1.793a1.5 1.5 0 0 1 2.122 2.121l-7.19 7.191-2.93.808.808-2.93 7.19-7.19Z" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M9.98 3.793 12.102 5.915" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+              <button
+                type="button"
+                disabled={fxNumber === 2}
+                onClick={() => goToDetailFx(fxNumber + 1)}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  border: "1px solid #334155",
+                  background: "#0b1220",
+                  color: "#fff",
+                  fontWeight: 900,
+                  fontSize: 14,
+                  cursor: fxNumber === 2 ? "not-allowed" : "pointer",
+                  opacity: fxNumber === 2 ? 0.4 : 1,
+                }}
+              >
+                ›
+              </button>
+            </div>
+            <div style={{ width: 113, flexShrink: 0 }} />
+          </div>
         </section>
 
-        <aside
-          style={{
-            minWidth: 0,
-            minHeight: 0,
-            width: 140,
-            display: "flex",
-            justifyContent: "flex-end",
-            justifySelf: "end",
-            overflow: "hidden",
-          }}
-        >
-          <ChannelStrip
-            channel={auxNumber}
-            channelName={auxState.channelName}
-            section="aux"
-            muted={auxState.muted}
-            soloOn={auxState.soloOn}
-            phantomOn={auxState.phantomOn}
-            colorId={auxState.colorId}
-            eqState={processorState.eq}
-            faderDb={auxState.faderDb}
-            faderPosition={auxState.faderPosition}
-            pan={auxState.pan}
-            gain={auxState.gain}
-            meterDb={auxState.meterDb}
-            peakDb={auxState.peakDb}
-            clipped={auxState.clipUntil > Date.now()}
-            disabled={!isConnected}
-            onToggleMute={() => toggleStripMute("aux", auxNumber)}
-            onToggleSolo={() => toggleStripSolo("aux", auxNumber)}
-            onTogglePhantom={() => toggleStripPhantom("aux", auxNumber)}
-            onFaderChange={(position) => handleStripFaderChange("aux", auxNumber, position)}
-            onPanChange={(value) => handleStripPanChange("aux", auxNumber, value)}
-            onGainChange={(value) => handleStripGainChange("aux", auxNumber, value)}
-          />
-        </aside>
+        <section style={{ minHeight: 0, display: "grid", gridTemplateColumns: "110px minmax(0, 1fr)", gap: 4, padding: 0, overflow: "visible", position: "relative" }}>
+          <aside style={{ minWidth: 0, minHeight: 0, width: 110, display: "flex", justifyContent: "stretch", justifySelf: "start", overflow: "hidden", position: "relative", zIndex: 3 }}>
+            <FxStrip
+              fxNumber={fxNumber}
+              variant="detail"
+              colorId={fxState.colorId}
+              channelName={fxState.channelName}
+              muted={fxState.muted}
+              soloOn={fxState.soloOn}
+              faderDb={fxState.faderDb}
+              faderPosition={fxState.faderPosition}
+              meterDb={fxState.meterDb}
+              peakDb={fxState.peakDb}
+              clipped={fxState.clipUntil > Date.now()}
+              disabled={!isConnected}
+              onToggleMute={() => toggleStripMute("fx", fxNumber)}
+              onToggleSolo={() => toggleStripSolo("fx", fxNumber)}
+              onFaderChange={(position) => handleStripFaderChange("fx", fxNumber, position)}
+            />
+          </aside>
+
+          <section className="detail-panel" style={{ padding: "0 24px", borderRadius: 4, border: "none", background: "transparent", minHeight: 0, overflow: "hidden", position: "relative", zIndex: 1 }}>
+            <ChannelProcessors
+              activeModule={activeProcessorModule}
+              state={processorState}
+              disabled={!isConnected}
+              hideComp={true}
+              hideGate={true}
+              moduleItems={[
+                { id: "eq", label: "EQ" },
+                { id: "presets", label: "PRESETS" },
+                { id: "sends", label: "SENDS" },
+              ]}
+              customModuleContent={{
+                presets: renderDetailPlaceholder(
+                  "PRESETS",
+                  "Presets de Efeitos",
+                  "A interface de presets de FX sera mapeada na proxima etapa com o protocolo real."
+                ),
+              }}
+              sends={sendsView}
+              onModuleChange={setActiveProcessorModule}
+              onGateChange={() => {}}
+              onCompChange={() => {}}
+              onEqChange={(patch) => {
+                updateFxProcessorState(fxNumber, (current) => ({
+                  ...current,
+                  eq: mergeEqPatch(current.eq, patch),
+                }));
+              }}
+              onEqBandChange={(band, patch) => {
+                updateFxProcessorState(fxNumber, (current) => ({
+                  ...current,
+                  eq: {
+                    ...current.eq,
+                    bands: current.eq.bands.map((bandState, index) =>
+                      index === band - 1 ? { ...bandState, ...patch } : bandState
+                    ),
+                  },
+                }));
+              }}
+              onSendValueChange={(id, value) =>
+                handleBusInputSendValueChange("fx", fxNumber, id, value)
+              }
+              onSendTapPointToggle={(id) =>
+                handleBusInputSendTapPointToggle("fx", fxNumber, id)
+              }
+              onResetGate={() => {}}
+              onResetComp={() => {}}
+              onResetEq={() => {
+                updateFxProcessorState(fxNumber, (current) => ({
+                  ...current,
+                  eq: {
+                    ...DEFAULT_EQ,
+                    enabled: current.eq.enabled,
+                    bands: DEFAULT_EQ.bands.map((band, index) => ({
+                      ...band,
+                      enabled: current.eq.bands[index]?.enabled ?? band.enabled,
+                    })),
+                  },
+                }));
+              }}
+            />
+          </section>
+        </section>
+      </div>
+    );
+  }
+
+  function renderMasterDetail() {
+    if (!detailView || detailView.type !== "master") return null;
+
+    const sendsView = buildChannelInputSendsView();
+
+    return (
+      <div
+        className="detail-layout"
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr)",
+          gridTemplateRows: "auto minmax(0, 1fr)",
+          gap: 4,
+          padding: 8,
+        }}
+      >
+        <section className="detail-panel" style={{ padding: 0, borderRadius: 4, border: "none", background: "transparent", minWidth: 0, position: "relative", zIndex: 3 }}>
+          <div style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, minWidth: 0, padding: "8px 16px 8px 0", borderRadius: 4, background: "var(--surface-overlay-strong)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, width: 113, flexShrink: 0 }}>
+              <button type="button" onClick={() => setDetailView(null)} style={{ height: 32, padding: "4px 8px", borderRadius: 8, border: "1px solid var(--button-default-border)", background: "var(--button-default-bg)", color: "var(--button-default-text)", display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 900, fontSize: 10, letterSpacing: "1.2px", cursor: "pointer", whiteSpace: "nowrap" }}>
+                <span style={{ fontSize: 14, lineHeight: 1 }}>←</span>
+                <span>VOLTAR</span>
+              </button>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 0, flex: "1 1 auto" }}>
+              <div style={{ fontFamily: "Inter, system-ui, sans-serif", fontSize: 22, lineHeight: "30px", fontWeight: 700, color: "#ffffff" }}>
+                Master Bus
+              </div>
+              <div style={{ minWidth: 72, padding: "4px 8px", borderRadius: 4, background: "#7B7B7B", color: "var(--text-inverse)", fontSize: 12, lineHeight: "12px", fontWeight: 600, letterSpacing: "0.6px", textAlign: "center" }}>
+                MASTER
+              </div>
+            </div>
+            <div style={{ width: 113, flexShrink: 0 }} />
+          </div>
+        </section>
+
+        <section style={{ minHeight: 0, display: "grid", gridTemplateColumns: "183px minmax(0, 1fr)", gap: 4, padding: 0, overflow: "visible", position: "relative" }}>
+          <aside style={{ minWidth: 0, minHeight: 0, width: 183, display: "flex", justifyContent: "stretch", justifySelf: "start", overflow: "hidden", position: "relative", zIndex: 3 }}>
+            <MasterBus
+              leftColorId={master.leftColorId}
+              rightColorId={master.rightColorId}
+              muted={master.leftMuted}
+              soloOn={master.soloOn}
+              linked={masterLinked}
+              leftFaderDb={master.leftFaderDb}
+              leftFaderPosition={master.leftFaderPosition}
+              rightFaderPosition={master.rightFaderPosition}
+              meterDbL={mainMasterMeter.leftDb}
+              meterDbR={mainMasterMeter.rightDb}
+              peakDbL={mainMasterMeter.leftPeakDb}
+              peakDbR={mainMasterMeter.rightPeakDb}
+              clippedL={mainMasterMeter.leftClipUntil > Date.now()}
+              clippedR={mainMasterMeter.rightClipUntil > Date.now()}
+              disabled={!isConnected}
+              onToggleMute={toggleMainMasterMute}
+              onToggleSolo={toggleMainMasterSolo}
+              onToggleLink={() => {
+                toggleMasterLink().catch((error) => {
+                  setStatus(error instanceof Error ? error.message : "Erro ao alternar link de master");
+                });
+              }}
+              onMainFaderChange={handleMainMasterFaderChange}
+              onLeftFaderChange={handleMasterLeftFaderChange}
+              onRightFaderChange={handleMasterRightFaderChange}
+            />
+          </aside>
+
+          <section className="detail-panel" style={{ padding: "0 24px", borderRadius: 4, border: "none", background: "transparent", minHeight: 0, overflow: "hidden", position: "relative", zIndex: 1 }}>
+            <ChannelProcessors
+              activeModule={activeProcessorModule}
+              state={masterProcessorState}
+              disabled={!isConnected}
+              hideGate={true}
+              moduleItems={[
+                { id: "eq", label: "EQ" },
+                { id: "comp", label: "COMP" },
+                { id: "delay", label: "DELAY" },
+                { id: "sends", label: "SENDS" },
+              ]}
+              customModuleContent={{
+                delay: renderDetailPlaceholder(
+                  "DELAY",
+                  "Delay do Master",
+                  "A interface de Delay do Master sera mapeada com os parametros reais da mesa."
+                ),
+              }}
+              sends={sendsView}
+              onModuleChange={setActiveProcessorModule}
+              onGateChange={() => {}}
+              onCompChange={(patch) => {
+                setMasterProcessorState((current) => ({
+                  ...current,
+                  comp: { ...current.comp, ...patch },
+                }));
+              }}
+              onEqChange={(patch) => {
+                setMasterProcessorState((current) => ({
+                  ...current,
+                  eq: mergeEqPatch(current.eq, patch),
+                }));
+              }}
+              onEqBandChange={(band, patch) => {
+                setMasterProcessorState((current) => ({
+                  ...current,
+                  eq: {
+                    ...current.eq,
+                    bands: current.eq.bands.map((bandState, index) =>
+                      index === band - 1 ? { ...bandState, ...patch } : bandState
+                    ),
+                  },
+                }));
+              }}
+              onSendValueChange={() => {}}
+              onSendTapPointToggle={() => {}}
+              onResetGate={() => {}}
+              onResetComp={() => {
+                setMasterProcessorState((current) => ({
+                  ...current,
+                  comp: {
+                    ...DEFAULT_COMP,
+                    enabled: current.comp.enabled,
+                  },
+                }));
+              }}
+              onResetEq={() => {
+                setMasterProcessorState((current) => ({
+                  ...current,
+                  eq: {
+                    ...DEFAULT_AUX_EQ,
+                    enabled: current.eq.enabled,
+                    bands: DEFAULT_AUX_EQ.bands.map((band, index) => ({
+                      ...band,
+                      enabled: current.eq.bands[index]?.enabled ?? band.enabled,
+                    })),
+                  },
+                }));
+              }}
+            />
+          </section>
+        </section>
       </div>
     );
   }
@@ -4583,7 +5375,11 @@ function App() {
       {detailView
         ? detailView.type === "channel"
           ? renderChannelDetail()
-          : renderAuxDetail()
+          : detailView.type === "aux"
+            ? renderAuxDetail()
+            : detailView.type === "fx"
+              ? renderFxDetail()
+              : renderMasterDetail()
         : <section className="mixer-layout">
           <section
             className={`channels-scroller mixer-channels ${isChannelsDragging ? "channels-scroller--dragging" : ""}`}
@@ -4715,6 +5511,7 @@ function App() {
                     onFaderChange={(position) =>
                       handleStripFaderChange("fx", fxNumber, position)
                     }
+                    onOpenDetail={goToDetailFx}
                   />
                 </div>
               );
@@ -4839,6 +5636,7 @@ function App() {
               onMainFaderChange={handleMainMasterFaderChange}
               onLeftFaderChange={handleMasterLeftFaderChange}
               onRightFaderChange={handleMasterRightFaderChange}
+              onOpenDetail={goToDetailMaster}
             />
               );
             })()}

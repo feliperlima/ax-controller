@@ -6,6 +6,7 @@ import { stripColorFromId } from "./stripColor";
 
 type FxStripProps = {
   fxNumber: 1 | 2;
+  variant?: "default" | "detail";
   colorId?: number;
   channelName?: string;
   muted: boolean;
@@ -19,6 +20,7 @@ type FxStripProps = {
   onToggleMute: () => void;
   onToggleSolo: () => void;
   onFaderChange: (value: number) => void;
+  onOpenDetail?: (fxNumber: 1 | 2) => void;
 };
 
 const EQ_PREVIEW_WIDTH = 78;
@@ -84,6 +86,7 @@ function buildFlatPreview(width: number, height: number, pointCount = 40) {
 
 export function FxStrip({
   fxNumber,
+  variant = "default",
   colorId = 7,
   channelName,
   muted,
@@ -97,12 +100,15 @@ export function FxStrip({
   onToggleMute,
   onToggleSolo,
   onFaderChange,
+  onOpenDetail,
 }: FxStripProps) {
+  const isDetailVariant = variant === "detail";
   const stripColor = stripColorFromId(colorId, 7, "var(--module-fx-primary)");
   const label = `FX${fxNumber}`;
   const displayName = channelName?.trim().length
     ? channelName.trim()
     : `FX ${fxNumber}`;
+  const canOpenDetail = typeof onOpenDetail === "function";
 
   // FX strips don't have EQ state — always show a flat preview line
   const eqPreview = useMemo(
@@ -119,7 +125,7 @@ export function FxStrip({
         alignItems: "center",
         justifyContent: "flex-start",
         overflow: "hidden",
-        padding: 0,
+        padding: isDetailVariant ? "8px 4px" : 0,
         borderRadius: "4px",
         width: 110,
         minWidth: 110,
@@ -131,94 +137,78 @@ export function FxStrip({
         fontSize: "10px",
       }}
     >
-      {/* Header: flat preview (FX has no EQ state) */}
-      <div
-        style={{
-          width: "100%",
-          display: "flex",
-          flexDirection: "column",
-          paddingTop: "8px",
-          paddingLeft: "4px",
-          paddingRight: "4px",
-          paddingBottom: 0,
-        }}
-      >
-        <svg
-          viewBox={`0 0 ${EQ_PREVIEW_WIDTH} ${EQ_PREVIEW_HEIGHT}`}
-          preserveAspectRatio="xMidYMid meet"
-          onClick={(e) => e.stopPropagation()}
+      {!isDetailVariant && (
+        <div
           style={{
             width: "100%",
-            height: `${EQ_PREVIEW_HEIGHT}px`,
-            display: "block",
-            backgroundColor: "rgba(0,0,0,0.8)",
-            borderRadius: "4px",
-            cursor: "pointer",
+            display: "flex",
+            flexDirection: "column",
+            paddingTop: "8px",
+            paddingLeft: "4px",
+            paddingRight: "4px",
+            paddingBottom: 0,
           }}
         >
-          <line
-            x1={0}
-            y1={eqPreview.zeroY}
-            x2={EQ_PREVIEW_WIDTH}
-            y2={eqPreview.zeroY}
-            stroke={stripColor}
-            strokeWidth={0.9}
-            opacity={0.3}
-          />
-          <polyline
-            points={eqPreview.points}
-            fill="none"
-            stroke="var(--text-primary)"
-            strokeWidth={1.4}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-            opacity={disabled ? 0.3 : 0.4}
-          />
-          {disabled ? (
-            <>
-              <rect
-                x={0}
-                y={0}
-                width={EQ_PREVIEW_WIDTH}
-                height={EQ_PREVIEW_HEIGHT}
-                fill="rgba(0,0,0,0.5)"
-              />
-              <text
-                x={EQ_PREVIEW_WIDTH / 2}
-                y={EQ_PREVIEW_HEIGHT / 2}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                fill="rgba(241,245,249,0.95)"
-                style={{
-                  fontSize: "10px",
-                  fontWeight: 800,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                }}
-              >
-                EQ OFF
-              </text>
-            </>
-          ) : (
-            <text
-              x={EQ_PREVIEW_WIDTH - 6}
-              y={12}
-              textAnchor="end"
-              dominantBaseline="middle"
-              fill={stripColor}
-              opacity={0.8}
-              style={{
-                fontSize: "8px",
-                fontWeight: 700,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-              }}
-            >
-              EQ FLAT
-            </text>
-          )}
-        </svg>
-      </div>
+          <svg
+            viewBox={`0 0 ${EQ_PREVIEW_WIDTH} ${EQ_PREVIEW_HEIGHT}`}
+            preserveAspectRatio="xMidYMid meet"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              height: `${EQ_PREVIEW_HEIGHT}px`,
+              display: "block",
+              backgroundColor: "rgba(0,0,0,0.8)",
+              borderRadius: "4px",
+              cursor: "pointer",
+            }}
+          >
+            <line
+              x1={0}
+              y1={eqPreview.zeroY}
+              x2={EQ_PREVIEW_WIDTH}
+              y2={eqPreview.zeroY}
+              stroke={stripColor}
+              strokeWidth={0.9}
+              opacity={disabled ? 0.2 : 0.48}
+            />
+            <polyline
+              points={eqPreview.points}
+              fill="none"
+              stroke="var(--text-primary)"
+              strokeWidth={1.4}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              opacity={disabled ? 0.32 : 0.82}
+            />
+            {disabled && (
+              <>
+                <rect
+                  x={0}
+                  y={0}
+                  width={EQ_PREVIEW_WIDTH}
+                  height={EQ_PREVIEW_HEIGHT}
+                  fill="rgba(0,0,0,0.5)"
+                />
+                <text
+                  x={EQ_PREVIEW_WIDTH / 2}
+                  y={EQ_PREVIEW_HEIGHT / 2}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fill="rgba(241,245,249,0.95)"
+                  style={{
+                    fontSize: "10px",
+                    fontWeight: 800,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  EQ OFF
+                </text>
+              </>
+            )}
+          </svg>
+        </div>
+      )}
 
       {/* MUTE + SOLO buttons */}
       <div
@@ -368,59 +358,64 @@ export function FxStrip({
         {faderDb <= -120 ? "-∞" : `${faderDb} dB`}
       </div>
 
-      {/* Footer */}
-      <div
-        onDoubleClick={(e) => e.stopPropagation()}
-        style={{
-          width: "100%",
-          height: "40px",
-          marginTop: "-16px",
-          padding: "4px",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "flex-start",
-          justifyContent: "center",
-          gap: "3px",
-          backgroundColor: stripColor,
-          borderRadius: "0 0 4px 4px",
-          boxSizing: "border-box",
-          minHeight: "40px",
-          cursor: disabled ? "not-allowed" : "pointer",
-          opacity: disabled ? 0.58 : 1,
-          filter: disabled ? "saturate(0.55) brightness(0.82)" : "none",
-        }}
-      >
-        <span
+      {!isDetailVariant && (
+        <div
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            if (disabled || !canOpenDetail) return;
+            onOpenDetail(fxNumber);
+          }}
           style={{
             width: "100%",
-            fontSize: "10px",
-            lineHeight: "12px",
-            fontWeight: 600,
-            letterSpacing: "0.5px",
-            textTransform: "uppercase",
-            color: "rgba(0,0,0,0.7)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            height: "40px",
+            marginTop: "-16px",
+            padding: "4px",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-start",
+            justifyContent: "center",
+            gap: "3px",
+            backgroundColor: stripColor,
+            borderRadius: "0 0 4px 4px",
+            boxSizing: "border-box",
+            minHeight: "40px",
+            cursor: disabled ? "not-allowed" : canOpenDetail ? "pointer" : "default",
+            opacity: disabled ? 0.58 : 1,
+            filter: disabled ? "saturate(0.55) brightness(0.82)" : "none",
           }}
         >
-          {label}
-        </span>
-        <span
-          style={{
-            width: "100%",
-            fontSize: "16px",
-            fontWeight: 700,
-            color: "rgba(0,0,0,0.85)",
-            lineHeight: "20px",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {displayName}
-        </span>
-      </div>
+          <span
+            style={{
+              width: "100%",
+              fontSize: "10px",
+              lineHeight: "12px",
+              fontWeight: 600,
+              letterSpacing: "0.5px",
+              textTransform: "uppercase",
+              color: "rgba(0,0,0,0.7)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {label}
+          </span>
+          <span
+            style={{
+              width: "100%",
+              fontSize: "16px",
+              fontWeight: 700,
+              color: "rgba(0,0,0,0.85)",
+              lineHeight: "20px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {displayName}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

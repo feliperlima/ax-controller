@@ -25,6 +25,7 @@ type MasterBusProps = {
   onMainFaderChange: (value: number) => void;
   onLeftFaderChange: (value: number) => void;
   onRightFaderChange: (value: number) => void;
+  onOpenDetail?: () => void;
 };
 
 const FADER_DB_POINTS = [
@@ -76,9 +77,11 @@ export function MasterBus({
   onMainFaderChange,
   onLeftFaderChange,
   onRightFaderChange,
+  onOpenDetail,
 }: MasterBusProps) {
   const footerName = "Master Bus";
   const isLinked = linked;
+  const canOpenDetail = typeof onOpenDetail === "function";
   const faderDbLabel = (db: number) => (db <= -120 ? "-∞" : `${db} dB`);
   const leftColor = stripColorFromId(leftColorId, 0, "var(--module-master-primary)");
   const rightColor = stripColorFromId(rightColorId, 0, "var(--module-master-primary)");
@@ -306,6 +309,11 @@ export function MasterBus({
       {/* Footer: height=40, L/R label + name */}
       <button
         onClick={(e) => { e.stopPropagation(); }}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          if (disabled || !canOpenDetail) return;
+          onOpenDetail();
+        }}
         disabled={disabled}
         style={{
           width: "100%",
@@ -320,7 +328,7 @@ export function MasterBus({
           gap: 3,
           background: footerBackground,
           border: "none",
-          cursor: disabled ? "not-allowed" : "pointer",
+          cursor: disabled ? "not-allowed" : canOpenDetail ? "pointer" : "default",
           boxSizing: "border-box",
           fontFamily: "inherit",
           opacity: disabled ? 0.58 : 1,

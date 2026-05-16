@@ -6,6 +6,7 @@ import { stripColorFromId } from "./stripColor";
 
 type AuxStripProps = {
   auxNumber: number;
+  variant?: "default" | "detail";
   colorId?: number;
   channelName?: string;
   muted: boolean;
@@ -84,6 +85,7 @@ function buildEqPreview(eq: EqState, width: number, height: number, pointCount =
 
 export function AuxStrip({
   auxNumber,
+  variant = "default",
   colorId = 8,
   channelName,
   muted,
@@ -101,6 +103,7 @@ export function AuxStrip({
   onFaderChange,
   onOpenDetail,
 }: AuxStripProps) {
+  const isDetailVariant = variant === "detail";
   const stripColor = stripColorFromId(colorId, 8, "var(--brand-primary)");
   const label = `AUX${auxNumber}`;
   const displayName = channelName?.trim().length
@@ -124,7 +127,7 @@ export function AuxStrip({
         alignItems: "center",
         justifyContent: "flex-start",
         overflow: "hidden",
-        padding: 0,
+        padding: isDetailVariant ? "8px 4px" : 0,
         borderRadius: "4px",
         width: 110,
         minWidth: 110,
@@ -138,100 +141,102 @@ export function AuxStrip({
       }}
     >
       {/* Header: EQ preview */}
-      <div
-        style={{
-          width: "100%",
-          display: "flex",
-          flexDirection: "column",
-          paddingTop: "8px",
-          paddingLeft: "4px",
-          paddingRight: "4px",
-          paddingBottom: 0,
-        }}
-      >
-        {eqPreview ? (
-          <svg
-            viewBox={`0 0 ${EQ_PREVIEW_WIDTH} ${EQ_PREVIEW_HEIGHT}`}
-            preserveAspectRatio="xMidYMid meet"
-            onClick={(e) => {
-              if (!canOpenDetail) return;
-              e.stopPropagation();
-              onOpenDetail?.(auxNumber);
-            }}
-            style={{
-              width: "100%",
-              height: `${EQ_PREVIEW_HEIGHT}px`,
-              display: "block",
-              backgroundColor: "rgba(0,0,0,0.8)",
-              borderRadius: "4px",
-              cursor: canOpenDetail ? "pointer" : "default",
-            }}
-          >
-            <line
-              x1={0}
-              y1={eqPreview.zeroY}
-              x2={EQ_PREVIEW_WIDTH}
-              y2={eqPreview.zeroY}
-              stroke={stripColor}
-              strokeWidth={0.9}
-              opacity={0.22}
-            />
-            <polygon
-              points={`0,${eqPreview.zeroY.toFixed(2)} ${eqPreview.points} ${EQ_PREVIEW_WIDTH},${eqPreview.zeroY.toFixed(2)}`}
-              fill={stripColor}
-              opacity={(eqState?.enabled ?? false) ? 0.22 : 0.1}
-            />
-            <polyline
-              points={eqPreview.points}
-              fill="none"
-              stroke="var(--text-primary)"
-              strokeWidth={1.4}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              opacity={(eqState?.enabled ?? false) ? 0.95 : 0.62}
-            />
-            {!(eqState?.enabled ?? false) && (
-              <>
-                <rect x={0} y={0} width={EQ_PREVIEW_WIDTH} height={EQ_PREVIEW_HEIGHT} fill="rgba(0,0,0,0.48)" />
-                <text
-                  x={EQ_PREVIEW_WIDTH / 2}
-                  y={EQ_PREVIEW_HEIGHT / 2}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  fill="rgba(241,245,249,0.95)"
-                  style={{ fontSize: "10px", fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase" }}
-                >
-                  EQ OFF
-                </text>
-              </>
-            )}
-          </svg>
-        ) : (
-          <div
-            style={{
-              width: "100%",
-              height: `${EQ_PREVIEW_HEIGHT}px`,
-              backgroundColor: "rgba(0,0,0,0.8)",
-              borderRadius: "4px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <span
+      {!isDetailVariant && (
+        <div
+          style={{
+            width: "100%",
+            display: "flex",
+            flexDirection: "column",
+            paddingTop: "8px",
+            paddingLeft: "4px",
+            paddingRight: "4px",
+            paddingBottom: 0,
+          }}
+        >
+          {eqPreview ? (
+            <svg
+              viewBox={`0 0 ${EQ_PREVIEW_WIDTH} ${EQ_PREVIEW_HEIGHT}`}
+              preserveAspectRatio="xMidYMid meet"
+              onClick={(e) => {
+                if (!canOpenDetail) return;
+                e.stopPropagation();
+                onOpenDetail?.(auxNumber);
+              }}
               style={{
-                fontSize: "12px",
-                fontWeight: 800,
-                letterSpacing: "0.08em",
-                color: stripColor,
-                textTransform: "uppercase",
+                width: "100%",
+                height: `${EQ_PREVIEW_HEIGHT}px`,
+                display: "block",
+                backgroundColor: "rgba(0,0,0,0.8)",
+                borderRadius: "4px",
+                cursor: canOpenDetail ? "pointer" : "default",
               }}
             >
-              {label}
-            </span>
-          </div>
-        )}
-      </div>
+              <line
+                x1={0}
+                y1={eqPreview.zeroY}
+                x2={EQ_PREVIEW_WIDTH}
+                y2={eqPreview.zeroY}
+                stroke={stripColor}
+                strokeWidth={0.9}
+                opacity={0.22}
+              />
+              <polygon
+                points={`0,${eqPreview.zeroY.toFixed(2)} ${eqPreview.points} ${EQ_PREVIEW_WIDTH},${eqPreview.zeroY.toFixed(2)}`}
+                fill={stripColor}
+                opacity={(eqState?.enabled ?? false) ? 0.22 : 0.1}
+              />
+              <polyline
+                points={eqPreview.points}
+                fill="none"
+                stroke="var(--text-primary)"
+                strokeWidth={1.4}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                opacity={(eqState?.enabled ?? false) ? 0.95 : 0.62}
+              />
+              {!(eqState?.enabled ?? false) && (
+                <>
+                  <rect x={0} y={0} width={EQ_PREVIEW_WIDTH} height={EQ_PREVIEW_HEIGHT} fill="rgba(0,0,0,0.48)" />
+                  <text
+                    x={EQ_PREVIEW_WIDTH / 2}
+                    y={EQ_PREVIEW_HEIGHT / 2}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fill="rgba(241,245,249,0.95)"
+                    style={{ fontSize: "10px", fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase" }}
+                  >
+                    EQ OFF
+                  </text>
+                </>
+              )}
+            </svg>
+          ) : (
+            <div
+              style={{
+                width: "100%",
+                height: `${EQ_PREVIEW_HEIGHT}px`,
+                backgroundColor: "rgba(0,0,0,0.8)",
+                borderRadius: "4px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: "12px",
+                  fontWeight: 800,
+                  letterSpacing: "0.08em",
+                  color: stripColor,
+                  textTransform: "uppercase",
+                }}
+              >
+                {label}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* MUTE + SOLO buttons */}
       <div
@@ -383,67 +388,69 @@ export function AuxStrip({
       </div>
 
       {/* Footer */}
-      <button
-        disabled={disabled}
-        onDoubleClick={(e) => {
-          if (disabled) return;
-          e.stopPropagation();
-          if (canOpenDetail) onOpenDetail?.(auxNumber);
-        }}
-        style={{
-          width: "100%",
-          height: "40px",
-          marginTop: "-16px",
-          padding: "4px",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "flex-start",
-          justifyContent: "center",
-          gap: "3px",
-          textAlign: "left",
-          color: "var(--text-inverse)",
-          backgroundColor: stripColor,
-          border: "none",
-          borderRadius: "0 0 4px 4px",
-          cursor: disabled ? "not-allowed" : canOpenDetail ? "pointer" : "default",
-          minHeight: "40px",
-          fontFamily: "Inter, system-ui, sans-serif",
-          boxSizing: "border-box",
-          opacity: disabled ? 0.58 : 1,
-          filter: disabled ? "saturate(0.55) brightness(0.82)" : "none",
-        }}
-      >
-        <span
+      {!isDetailVariant && (
+        <button
+          disabled={disabled}
+          onDoubleClick={(e) => {
+            if (disabled) return;
+            e.stopPropagation();
+            if (canOpenDetail) onOpenDetail?.(auxNumber);
+          }}
           style={{
             width: "100%",
-            fontSize: "10px",
-            lineHeight: "12px",
-            fontWeight: 600,
-            letterSpacing: "0.5px",
-            textTransform: "uppercase",
-            color: "rgba(0,0,0,0.7)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            height: "40px",
+            marginTop: "-16px",
+            padding: "4px",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-start",
+            justifyContent: "center",
+            gap: "3px",
+            textAlign: "left",
+            color: "var(--text-inverse)",
+            backgroundColor: stripColor,
+            border: "none",
+            borderRadius: "0 0 4px 4px",
+            cursor: disabled ? "not-allowed" : canOpenDetail ? "pointer" : "default",
+            minHeight: "40px",
+            fontFamily: "Inter, system-ui, sans-serif",
+            boxSizing: "border-box",
+            opacity: disabled ? 0.58 : 1,
+            filter: disabled ? "saturate(0.55) brightness(0.82)" : "none",
           }}
         >
-          {label}
-        </span>
-        <span
-          style={{
-            width: "100%",
-            fontSize: "16px",
-            fontWeight: 700,
-            color: "rgba(0,0,0,0.85)",
-            lineHeight: "20px",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {displayName}
-        </span>
-      </button>
+          <span
+            style={{
+              width: "100%",
+              fontSize: "10px",
+              lineHeight: "12px",
+              fontWeight: 600,
+              letterSpacing: "0.5px",
+              textTransform: "uppercase",
+              color: "rgba(0,0,0,0.7)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {label}
+          </span>
+          <span
+            style={{
+              width: "100%",
+              fontSize: "16px",
+              fontWeight: 700,
+              color: "rgba(0,0,0,0.85)",
+              lineHeight: "20px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {displayName}
+          </span>
+        </button>
+      )}
     </div>
   );
 }

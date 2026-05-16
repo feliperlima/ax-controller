@@ -61,7 +61,7 @@ export function Knob({
   size = 44,
   pixelsPerStep = 3.5,
   valueStep = 1,
-  velocityResponsive = true,
+  
   discreteStepMode = false,
   accentColor,
   glowColor,
@@ -211,6 +211,7 @@ export function Knob({
             pendingDeltaY: 0,
             previousUserSelect: document.body.style.userSelect,
           };
+
           document.body.style.userSelect = "none";
           e.currentTarget.setPointerCapture(e.pointerId);
         }}
