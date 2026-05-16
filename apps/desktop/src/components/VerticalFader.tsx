@@ -8,6 +8,7 @@ type VerticalFaderProps = {
   snapPoints?: number[];
   snapThreshold?: number;
   zeroMarkerValue?: number;
+  showZeroMarker?: boolean;
   layoutWidth?: number;
   thumbVariant?: "default" | "master";
   thumbIndicatorColor?: string;
@@ -23,6 +24,7 @@ export function VerticalFader({
   snapPoints,
   snapThreshold = 1.6,
   zeroMarkerValue = 90,
+  showZeroMarker = true,
   layoutWidth,
   thumbVariant = "default",
   thumbIndicatorColor,
@@ -298,32 +300,36 @@ export function VerticalFader({
         </div>
       </div>
 
-      <div
-        style={{
-          position: "absolute",
-          left: `calc(50% - ${ZERO_MARKER_OUTSIDE_OFFSET + ZERO_MARKER_WIDTH}px)`,
-          top: zeroMarkerTop,
-          width: ZERO_MARKER_WIDTH,
-          height: 1,
-          backgroundColor: "var(--fader-thumb-line)",
-          boxShadow: "0 0 2px rgba(241,245,249,0.7)",
-          pointerEvents: "none",
-          zIndex: 9,
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          left: `calc(50% + ${ZERO_MARKER_OUTSIDE_OFFSET}px)`,
-          top: zeroMarkerTop,
-          width: ZERO_MARKER_WIDTH,
-          height: 1,
-          backgroundColor: "var(--fader-thumb-line)",
-          boxShadow: "0 0 2px rgba(241,245,249,0.7)",
-          pointerEvents: "none",
-          zIndex: 9,
-        }}
-      />
+      {showZeroMarker && (
+        <>
+          <div
+            style={{
+              position: "absolute",
+              left: `calc(50% - ${ZERO_MARKER_OUTSIDE_OFFSET + ZERO_MARKER_WIDTH}px)`,
+              top: zeroMarkerTop,
+              width: ZERO_MARKER_WIDTH,
+              height: 1,
+              backgroundColor: "var(--fader-thumb-line)",
+              boxShadow: "0 0 2px rgba(241,245,249,0.7)",
+              pointerEvents: "none",
+              zIndex: 9,
+            }}
+          />
+          <div
+            style={{
+              position: "absolute",
+              left: `calc(50% + ${ZERO_MARKER_OUTSIDE_OFFSET}px)`,
+              top: zeroMarkerTop,
+              width: ZERO_MARKER_WIDTH,
+              height: 1,
+              backgroundColor: "var(--fader-thumb-line)",
+              boxShadow: "0 0 2px rgba(241,245,249,0.7)",
+              pointerEvents: "none",
+              zIndex: 9,
+            }}
+          />
+        </>
+      )}
 
       <div
         ref={thumbRef}

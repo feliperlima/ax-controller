@@ -477,6 +477,7 @@ const FX_SEND_BASES: Record<number, number> = {
 };
 
 const SEND_WRITE_THROTTLE_MS = 80;
+const SEND_PRE_FADER_FLAG = 32768;
 
 // Channel sends use the same fader scale as channel faders. AUX sends are params 77–84 + channel offset; FX sends are 89–90 + channel offset.
 function sendDbToValue(db: number | "-inf") {
@@ -506,7 +507,6 @@ function createDefaultSendValues(): SendValueState {
   };
 }
 
-// Pre/Post UI is ready. Only write tap point changes when a confirmed protocol mapping exists. Do not invent send tap-point params.
 function createDefaultSendTapPoints(): SendTapPointState {
   return {
     fx1: "post",
@@ -520,6 +520,29 @@ function createDefaultSendTapPoints(): SendTapPointState {
     aux7: "post",
     aux8: "post",
   };
+}
+
+function decodeSendRawValue(rawValue: number | undefined) {
+  if (rawValue === undefined) {
+    return {
+      value: 1200,
+      tapPoint: "post" as SendTapPoint,
+    };
+  }
+
+  const normalized = Math.max(0, Math.round(rawValue));
+  const pre = normalized >= SEND_PRE_FADER_FLAG;
+  const baseValue = pre ? normalized - SEND_PRE_FADER_FLAG : normalized;
+
+  return {
+    value: Math.max(0, Math.min(1300, baseValue)),
+    tapPoint: pre ? ("pre" as SendTapPoint) : ("post" as SendTapPoint),
+  };
+}
+
+function encodeSendRawValue(value: number, tapPoint: SendTapPoint) {
+  const clamped = Math.max(0, Math.min(1300, Math.round(value)));
+  return tapPoint === "pre" ? clamped + SEND_PRE_FADER_FLAG : clamped;
 }
 
 function sendIdToParam(channel: number, id: SendStripId) {
@@ -1919,12 +1942,16 @@ function App() {
 
     setChannelSendValues(() => {
       const next = createDefaultSendValues();
+      const nextTapPoints = createDefaultSendTapPoints();
 
       SEND_IDS.forEach((id) => {
         const param = sendIdToParam(channelNumber, id);
-        const value = values.get(param);
-        next[id] = value === undefined ? 1200 : value;
+        const decoded = decodeSendRawValue(values.get(param));
+        next[id] = decoded.value;
+        nextTapPoints[id] = decoded.tapPoint;
       });
+
+      setSendTapPoints(nextTapPoints);
 
       return next;
     });
@@ -1947,15 +1974,34 @@ function App() {
 
     targets.forEach((target) => {
       const param = sendIdToParam(channelNumber, target);
-      scheduleSendParamWrite(param, clampedValue);
+      const tapPoint = sendTapPoints[target] ?? "post";
+      scheduleSendParamWrite(param, encodeSendRawValue(clampedValue, tapPoint));
     });
   }
 
-  function handleSendTapPointToggle(sendId: SendStripId) {
-    setSendTapPoints((current) => ({
-      ...current,
-      [sendId]: current[sendId] === "post" ? "pre" : "post",
-    }));
+  function handleSendTapPointToggle(channelNumber: number, sendId: SendStripId) {
+    const targets = getLinkedAuxSendTargets(sendId);
+
+    const nextTapByTarget = new Map<SendStripId, SendTapPoint>();
+
+    setSendTapPoints((current) => {
+      const next = { ...current };
+
+      targets.forEach((target) => {
+        const toggled = current[target] === "post" ? "pre" : "post";
+        next[target] = toggled;
+        nextTapByTarget.set(target, toggled);
+      });
+
+      return next;
+    });
+
+    targets.forEach((target) => {
+      const param = sendIdToParam(channelNumber, target);
+      const baseValue = channelSendValues[target] ?? 1200;
+      const tapPoint = nextTapByTarget.get(target) ?? "post";
+      scheduleSendParamWrite(param, encodeSendRawValue(baseValue, tapPoint), true);
+    });
   }
 
   async function syncAuxState(auxNumber: number) {
@@ -2744,6 +2790,14 @@ function App() {
         await syncAllStripNames();
       } catch (syncError) {
         console.error("Erro ao sincronizar nomes:", syncError);
+      }
+
+      try {
+        const channelForInitialSendSync =
+          detailView && detailView.type === "channel" ? detailView.channel : 1;
+        await syncChannelSendsState(channelForInitialSendSync);
+      } catch (syncError) {
+        console.error("Erro ao sincronizar sends:", syncError);
       }
 
       startMeterPolling();
@@ -4069,7 +4123,9 @@ function App() {
             onSendValueChange={(id, value) =>
               handleSendValueChange(channelNumber, id, value)
             }
-            onSendTapPointToggle={handleSendTapPointToggle}
+            onSendTapPointToggle={(id) =>
+              handleSendTapPointToggle(channelNumber, id)
+            }
             onResetGate={() => resetGate(channelNumber)}
             onResetComp={() => resetComp(channelNumber)}
             onResetEq={() => resetEq(channelNumber)}

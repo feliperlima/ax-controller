@@ -49,6 +49,16 @@ const BASE = {
 };
 
 const CHANNEL_COLOR_BASE = 3110;
+// Color params confirmed on DUONN Axios 16: channels use 3110–3125, FX1=3136, FX2=3137, MasterL=3146, MasterR=3147. Value 0 means clear/default; values 1–12 map to the mixer color palette.
+const FX_COLOR_PARAMS: Record<number, number> = {
+  1: 3136,
+  2: 3137,
+};
+const MASTER_COLOR_PARAMS = {
+  left: 3146,
+  right: 3147,
+};
+
 export const MASTER = {
   left: {
     fader: 2548,
@@ -469,7 +479,7 @@ function gainToValue(value: number) {
 }
 
 function channelColorToValue(value: number) {
-  return Math.max(1, Math.min(12, Math.round(value)));
+  return Math.max(0, Math.min(12, Math.round(value)));
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -988,6 +998,15 @@ export class Axios16Client {
 
   setChannelColor(channel: number, colorId: number) {
     this.sendParam(channelColorParam(channel), channelColorToValue(colorId));
+  }
+
+  setFxColor(fx: 1 | 2, colorId: number) {
+    this.sendParam(FX_COLOR_PARAMS[fx], channelColorToValue(colorId));
+  }
+
+  setMasterColor(side: MasterSide, colorId: number) {
+    const param = side === "L" || side === "left" ? MASTER_COLOR_PARAMS.left : MASTER_COLOR_PARAMS.right;
+    this.sendParam(param, channelColorToValue(colorId));
   }
 
   setGateEnabled(channel: number, enabled: boolean) {

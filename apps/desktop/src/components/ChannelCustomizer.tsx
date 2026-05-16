@@ -1,6 +1,7 @@
 import { DuonnIcon, DUONN_CHANNEL_ICONS } from "./DuonnIcon";
 
 const CHANNEL_COLOR_PALETTE: Record<number, string> = {
+  0: "#7B7B7B",
   1: "#4174BE",
   2: "#4F22E8",
   3: "#13BEC4",

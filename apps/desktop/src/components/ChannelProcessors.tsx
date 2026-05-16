@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Knob } from "./Knob";
 import { MeterBar, MeterScale } from "./Meter";
+import { VerticalFader } from "./VerticalFader";
 import { useCompressorMeters } from "../hooks/useCompressorMeters";
 
 export type GateState = {
@@ -50,23 +51,712 @@ export type ProcessorState = {
   eq: EqState;
 };
 
-export type ProcessorModule = "gate" | "comp" | "eq";
+export type ProcessorModule = "gate" | "comp" | "eq" | "sends";
+
+export type SendStripId =
+  | "fx1"
+  | "fx2"
+  | "aux1"
+  | "aux2"
+  | "aux3"
+  | "aux4"
+  | "aux5"
+  | "aux6"
+  | "aux7"
+  | "aux8";
+
+export type SendTapPoint = "pre" | "post";
+
+export type SendStripView = {
+  id: SendStripId;
+  type: "fx" | "aux";
+  colorId: number;
+  label: string;
+  name: string;
+  value: number;
+  tapPoint: SendTapPoint;
+  isLinked: boolean;
+};
 
 type ChannelProcessorsProps = {
   activeModule: ProcessorModule;
   state: ProcessorState;
   disabled?: boolean;
   hideGate?: boolean;
+  hideSends?: boolean;
   channelInputDb?: number;
+  sends?: SendStripView[];
   onModuleChange: (module: ProcessorModule) => void;
   onGateChange: (patch: Partial<GateState>) => void;
   onCompChange: (patch: Partial<CompressorState>) => void;
   onEqChange: (patch: Partial<EqState>) => void;
   onEqBandChange: (band: number, patch: Partial<EqBandState>) => void;
+  onSendValueChange?: (id: SendStripId, nextValue: number) => void;
+  onSendTapPointToggle?: (id: SendStripId) => void;
   onResetGate: () => void;
   onResetComp: () => void;
   onResetEq: () => void;
 };
+
+const SEND_FADER_DB_POINTS = [
+  { pos: 0, db: -120 },
+  { pos: 10, db: -50 },
+  { pos: 25, db: -30 },
+  { pos: 45, db: -20 },
+  { pos: 65, db: -10 },
+  { pos: 80, db: -5 },
+  { pos: 100, db: 0 },
+];
+
+const SEND_FADER_SNAP_POINTS_DB = [-50, -40, -30, -20, -10, -5, 0];
+const SEND_FADER_SNAP_POINTS = SEND_FADER_SNAP_POINTS_DB.map((db) =>
+  sendDbToFaderPosition(db)
+);
+const SEND_FADER_MARKS_DB = [-50, -40, -30, -20, -10, -5, 0];
+const SEND_FADER_THUMB_HEIGHT = 50;
+const SEND_FADER_THUMB_HALF = SEND_FADER_THUMB_HEIGHT / 2;
+const SEND_FADER_TRACK_WIDTH = 23;
+const SEND_MARKER_WIDTH = 8;
+const SEND_MARKER_GAP = 2;
+const SEND_MARKER_OUTSIDE_OFFSET = SEND_FADER_TRACK_WIDTH / 2 + SEND_MARKER_GAP;
+const SEND_FADER_RENDERED_WIDTH =
+  SEND_FADER_TRACK_WIDTH + (SEND_MARKER_GAP + SEND_MARKER_WIDTH) * 2;
+const SENDS_RIGHT_BLEED_PX = 24;
+const SENDS_RIGHT_END_GUTTER_PX = 24;
+
+type SendsDragScrollState = {
+  pointerId: number | null;
+  pointerType: "mouse" | "touch" | "pen" | "";
+  scrollerElement: HTMLElement | null;
+  startX: number;
+  startY: number;
+  startScrollLeft: number;
+  startAtMs: number;
+  dragging: boolean;
+  suppressClick: boolean;
+};
+
+function getDragScrollProfile(pointerType: "mouse" | "touch" | "pen" | "") {
+  if (pointerType === "mouse") {
+    return {
+      holdMs: 0,
+      thresholdPx: 2,
+      horizontalBias: 1,
+    };
+  }
+
+  if (pointerType === "pen") {
+    return {
+      holdMs: 0,
+      thresholdPx: 3,
+      horizontalBias: 1.02,
+    };
+  }
+
+  return {
+    holdMs: 8,
+    thresholdPx: 4,
+    horizontalBias: 1.04,
+  };
+}
+
+function shouldPrioritizeLocalControl(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false;
+
+  if (
+    target.closest(
+      "button, input, select, textarea, label, a, [role='button'], [data-drag-scroll-priority='control'], [data-drag-scroll-priority='thumb']"
+    )
+  ) {
+    return true;
+  }
+
+  const sliderElement = target.closest("[role='slider']");
+  if (!sliderElement) return false;
+
+  const thumbOnlySlider =
+    sliderElement.getAttribute("data-thumb-only-drag") === "true";
+
+  if (thumbOnlySlider) {
+    return Boolean(target.closest("[data-drag-scroll-priority='thumb']"));
+  }
+
+  return true;
+}
+
+function sendMarkTop(db: number) {
+  const pos = sendDbToFaderPosition(db);
+  return `calc(${SEND_FADER_THUMB_HALF}px + ${(100 - pos) / 100} * (100% - ${SEND_FADER_THUMB_HEIGHT}px))`;
+}
+
+function sendValueToDb(value: number) {
+  if (value <= 0) return -120;
+  return Math.max(-120, Math.min(0, (Math.round(value) - 1200) / 10));
+}
+
+function sendDbToValue(db: number | "-inf") {
+  if (db === "-inf") return 0;
+  const clamped = Math.max(-120, Math.min(0, db));
+  if (clamped <= -120) return 0;
+  return Math.round(1200 + clamped * 10);
+}
+
+function sendDbToFaderPosition(db: number) {
+  for (let i = 0; i < SEND_FADER_DB_POINTS.length - 1; i++) {
+    const current = SEND_FADER_DB_POINTS[i];
+    const next = SEND_FADER_DB_POINTS[i + 1];
+
+    if (db >= current.db && db <= next.db) {
+      const t = (db - current.db) / (next.db - current.db);
+      return current.pos + t * (next.pos - current.pos);
+    }
+  }
+
+  return db <= -120 ? 0 : 100;
+}
+
+function sendFaderPositionToDb(position: number) {
+  const clamped = Math.max(0, Math.min(100, position));
+
+  for (let i = 0; i < SEND_FADER_DB_POINTS.length - 1; i++) {
+    const current = SEND_FADER_DB_POINTS[i];
+    const next = SEND_FADER_DB_POINTS[i + 1];
+
+    if (clamped >= current.pos && clamped <= next.pos) {
+      const t = (clamped - current.pos) / (next.pos - current.pos);
+      return current.db + t * (next.db - current.db);
+    }
+  }
+
+  return clamped <= 0 ? -120 : 0;
+}
+
+function formatSendDb(value: number) {
+  if (value <= 0) return "-∞";
+  const db = sendValueToDb(value);
+  return `${db > 0 ? "+" : ""}${db.toFixed(1)} dB`;
+}
+
+function getSendStripFooterColor(send: SendStripView) {
+  const rawColorId = Math.round(send.colorId);
+  const effectiveColorId =
+    rawColorId === 0
+      ? send.type === "fx"
+        ? 7
+        : 8
+      : rawColorId;
+
+  if (effectiveColorId === 0) return "#7B7B7B";
+  if (effectiveColorId >= 1 && effectiveColorId <= 12) {
+    return `var(--channel-${String(effectiveColorId).padStart(2, "0")}, #c96626)`;
+  }
+
+  return send.type === "fx" ? "var(--module-fx-primary)" : "var(--brand-primary)";
+}
+
+function SendsEditor({
+  sends,
+  disabled,
+  onSendValueChange,
+  onSendTapPointToggle,
+}: {
+  sends: SendStripView[];
+  disabled?: boolean;
+  onSendValueChange?: (id: SendStripId, nextValue: number) => void;
+  onSendTapPointToggle?: (id: SendStripId) => void;
+}) {
+  const fxSends = sends.filter((send) => send.type === "fx");
+  const auxSends = sends.filter((send) => send.type === "aux");
+  const dragStateRef = useRef<SendsDragScrollState>({
+    pointerId: null,
+    pointerType: "",
+    scrollerElement: null,
+    startX: 0,
+    startY: 0,
+    startScrollLeft: 0,
+    startAtMs: 0,
+    dragging: false,
+    suppressClick: false,
+  });
+  const dragScrollRafRef = useRef<number | null>(null);
+  const pendingDragScrollLeftRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (dragScrollRafRef.current !== null) {
+        cancelAnimationFrame(dragScrollRafRef.current);
+        dragScrollRafRef.current = null;
+      }
+
+      pendingDragScrollLeftRef.current = null;
+    };
+  }, []);
+
+  function scheduleDragScrollLeft(scrollerElement: HTMLElement, scrollLeft: number) {
+    pendingDragScrollLeftRef.current = scrollLeft;
+
+    if (dragScrollRafRef.current !== null) {
+      return;
+    }
+
+    dragScrollRafRef.current = requestAnimationFrame(() => {
+      dragScrollRafRef.current = null;
+      const nextScrollLeft = pendingDragScrollLeftRef.current;
+      pendingDragScrollLeftRef.current = null;
+      if (nextScrollLeft === null) return;
+
+      scrollerElement.scrollLeft = nextScrollLeft;
+    });
+  }
+
+  function resetDragScrollState() {
+    if (dragScrollRafRef.current !== null) {
+      cancelAnimationFrame(dragScrollRafRef.current);
+      dragScrollRafRef.current = null;
+    }
+
+    pendingDragScrollLeftRef.current = null;
+    dragStateRef.current.pointerId = null;
+    dragStateRef.current.pointerType = "";
+    dragStateRef.current.scrollerElement = null;
+    dragStateRef.current.startX = 0;
+    dragStateRef.current.startY = 0;
+    dragStateRef.current.startScrollLeft = 0;
+    dragStateRef.current.startAtMs = 0;
+    dragStateRef.current.dragging = false;
+  }
+
+  function handleSendsPointerDownCapture(event: React.PointerEvent<HTMLElement>) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (shouldPrioritizeLocalControl(event.target)) return;
+
+    dragStateRef.current.pointerId = event.pointerId;
+    dragStateRef.current.pointerType =
+      event.pointerType === "mouse" ||
+      event.pointerType === "touch" ||
+      event.pointerType === "pen"
+        ? event.pointerType
+        : "touch";
+    dragStateRef.current.startX = event.clientX;
+    dragStateRef.current.startY = event.clientY;
+    dragStateRef.current.scrollerElement = event.currentTarget;
+    dragStateRef.current.startScrollLeft = event.currentTarget.scrollLeft;
+    dragStateRef.current.startAtMs = Date.now();
+    dragStateRef.current.dragging = false;
+    dragStateRef.current.suppressClick = false;
+  }
+
+  function handleSendsPointerMoveCapture(event: React.PointerEvent<HTMLElement>) {
+    if (dragStateRef.current.pointerId !== event.pointerId) return;
+
+    const deltaX = event.clientX - dragStateRef.current.startX;
+    const deltaY = event.clientY - dragStateRef.current.startY;
+
+    if (!dragStateRef.current.dragging) {
+      const profile = getDragScrollProfile(dragStateRef.current.pointerType);
+      const holdElapsed =
+        Date.now() - dragStateRef.current.startAtMs >= profile.holdMs;
+      const passedThreshold = Math.abs(deltaX) >= profile.thresholdPx;
+      const horizontalIntent =
+        Math.abs(deltaX) > Math.abs(deltaY) * profile.horizontalBias;
+
+      if (!(holdElapsed && passedThreshold && horizontalIntent)) return;
+
+      dragStateRef.current.dragging = true;
+      dragStateRef.current.suppressClick = true;
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+
+    event.preventDefault();
+    const scrollerElement =
+      dragStateRef.current.scrollerElement ?? event.currentTarget;
+    scheduleDragScrollLeft(
+      scrollerElement,
+      dragStateRef.current.startScrollLeft - deltaX
+    );
+  }
+
+  function handleSendsPointerUpCapture(event: React.PointerEvent<HTMLElement>) {
+    if (dragStateRef.current.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    resetDragScrollState();
+  }
+
+  function handleSendsPointerCancelCapture(event: React.PointerEvent<HTMLElement>) {
+    if (dragStateRef.current.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    resetDragScrollState();
+  }
+
+  function handleSendsClickCapture(event: React.MouseEvent<HTMLElement>) {
+    if (!dragStateRef.current.suppressClick) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    dragStateRef.current.suppressClick = false;
+  }
+
+  function renderSendStrip(send: SendStripView) {
+    const faderDb = sendValueToDb(send.value);
+    const position = sendDbToFaderPosition(faderDb);
+    const auxNumber = send.type === "aux" ? Number(send.id.replace("aux", "")) : 0;
+    const isLinkedPairLeader = send.type === "aux" && send.isLinked && auxNumber % 2 === 1;
+    const footerColor = getSendStripFooterColor(send);
+
+    return (
+      <div
+        key={send.id}
+        style={{
+          width: 110,
+          minWidth: 110,
+          height: "100%",
+          position: "relative",
+          zIndex: isLinkedPairLeader ? 3 : 1,
+        }}
+      >
+        {isLinkedPairLeader && (
+          <div
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              left: 0,
+              bottom: 40,
+              transform: "translateY(2px)",
+              width: 224,
+              height: 4,
+              borderRadius: "1px",
+              background: "#fb923c",
+              boxShadow: "0 0 8px rgba(251,146,60,0.5)",
+              pointerEvents: "none",
+              zIndex: 8,
+            }}
+          />
+        )}
+
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "24px",
+            alignItems: "center",
+            justifyContent: "flex-start",
+            overflow: "hidden",
+            padding: 0,
+            borderRadius: "4px",
+            width: 110,
+            minWidth: 110,
+            height: "100%",
+            backgroundColor: "var(--surface-panel-raised)",
+            boxShadow: "0px 4px 2px rgba(0,0,0,0.25)",
+            color: "var(--text-primary)",
+            fontFamily: "system-ui, sans-serif",
+            fontSize: "10px",
+            position: "relative",
+          }}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            style={{
+              width: "100%",
+              display: "flex",
+              flexDirection: "column",
+              paddingTop: "8px",
+              paddingLeft: "4px",
+              paddingRight: "4px",
+              paddingBottom: 0,
+            }}
+          >
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onSendTapPointToggle?.(send.id);
+              }}
+              disabled={disabled}
+              style={{
+                height: 32,
+                width: "100%",
+                borderRadius: 8,
+                border: "1px solid #1f2937",
+                background: "#020817",
+                color: "#e2e8f0",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: "0.09em",
+                textTransform: "none",
+                cursor: disabled ? "not-allowed" : "pointer",
+                opacity: disabled ? 0.55 : 1,
+              }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 12,
+                  height: 12,
+                  borderRadius: "999px",
+                  background: send.tapPoint === "post" ? "#22d3ee" : "#facc15",
+                  boxShadow:
+                    send.tapPoint === "post"
+                      ? "0 0 7px rgba(34,211,238,0.5)"
+                      : "0 0 7px rgba(250,204,21,0.5)",
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: 11, lineHeight: "11px" }}>
+                {send.tapPoint === "post" ? "Post" : "Pre"}
+              </span>
+            </button>
+          </div>
+
+          <div
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            style={{
+              display: "flex",
+              gap: 0,
+              alignItems: "center",
+              justifyContent: "center",
+              flex: "1 1 0",
+              minHeight: 0,
+              width: "calc(100% - 8px)",
+              alignSelf: "stretch",
+              paddingLeft: 0,
+              paddingRight: 0,
+              boxSizing: "border-box",
+              marginLeft: "auto",
+              marginRight: "auto",
+            }}
+          >
+            <div style={{ flex: "0 0 auto", height: "100%", display: "flex", alignItems: "center", overflow: "visible" }}>
+              <div
+                aria-hidden="true"
+                style={{
+                  width: SEND_FADER_RENDERED_WIDTH,
+                  height: "100%",
+                  position: "relative",
+                  flexShrink: 0,
+                }}
+              >
+                {SEND_FADER_MARKS_DB.map((db) => {
+                  const isZero = db === 0;
+                  const baseStyle = {
+                    position: "absolute" as const,
+                    top: sendMarkTop(db),
+                    width: SEND_MARKER_WIDTH,
+                    height: 1,
+                    borderRadius: 999,
+                    transform: "translateY(-50%)",
+                    pointerEvents: "none" as const,
+                    background: isZero ? "var(--fader-thumb-line)" : "#64748b",
+                    opacity: isZero ? 0.95 : 0.42,
+                    boxShadow: isZero ? "0 0 2px rgba(241,245,249,0.7)" : "none",
+                  };
+
+                  return (
+                    <div key={`send-mark-${db}`}>
+                      <span
+                        style={{
+                          ...baseStyle,
+                          left: `calc(50% - ${SEND_MARKER_OUTSIDE_OFFSET + SEND_MARKER_WIDTH}px)`,
+                        }}
+                      />
+                      <span
+                        style={{
+                          ...baseStyle,
+                          left: `calc(50% + ${SEND_MARKER_OUTSIDE_OFFSET}px)`,
+                        }}
+                      />
+                    </div>
+                  );
+                })}
+
+                <VerticalFader
+                  value={position}
+                  height="100%"
+                  width={SEND_FADER_TRACK_WIDTH}
+                  disabled={disabled}
+                  dragFromThumbOnly
+                  snapPoints={SEND_FADER_SNAP_POINTS}
+                  snapThreshold={1.8}
+                  zeroMarkerValue={sendDbToFaderPosition(0)}
+                  showZeroMarker={false}
+                  thumbVariant="default"
+                  thumbIndicatorColor={send.isLinked ? "#fb923c" : undefined}
+                  onChange={(nextPosition) => {
+                    const nextDb = sendFaderPositionToDb(nextPosition);
+                    const nextValue = sendDbToValue(nextDb);
+                    onSendValueChange?.(send.id, nextValue);
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div
+            style={{
+              marginTop: "-16px",
+              width: "calc(100% - 8px)",
+              alignSelf: "center",
+              height: "36px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              textAlign: "center",
+              fontSize: "16px",
+              fontWeight: 400,
+              color: "var(--text-primary)",
+              backgroundColor: "var(--surface-overlay-strong)",
+              borderRadius: "4px",
+              overflow: "hidden",
+              padding: "11px 4px",
+              boxSizing: "border-box",
+              fontFamily: "Inter, system-ui, sans-serif",
+              lineHeight: 1,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {formatSendDb(send.value)}
+          </div>
+
+          <div
+            style={{
+              width: "100%",
+              height: "40px",
+              marginTop: "-16px",
+              padding: "4px",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "flex-start",
+              justifyContent: "center",
+              gap: "3px",
+              textAlign: "left",
+              color: "var(--text-inverse)",
+              backgroundColor: footerColor,
+              border: "none",
+              borderRadius: "0 0 4px 4px",
+              minHeight: "40px",
+              fontFamily: "Inter, system-ui, sans-serif",
+              boxSizing: "border-box",
+            }}
+          >
+            <span
+              style={{
+                width: "100%",
+                fontSize: "10px",
+                lineHeight: "12px",
+                fontWeight: 600,
+                letterSpacing: "0.5px",
+                textTransform: "uppercase",
+                color: "rgba(0,0,0,0.7)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {send.label}
+            </span>
+            <span
+              style={{
+                width: "100%",
+                fontSize: "16px",
+                fontWeight: 700,
+                color: "rgba(0,0,0,0.85)",
+                lineHeight: "20px",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={send.name}
+            >
+              {send.name}
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        minHeight: 0,
+        height: "100%",
+        borderRadius: 4,
+        border: "none",
+        background: "transparent",
+        overflowX: "hidden",
+        overflowY: "hidden",
+        display: "grid",
+        gridTemplateRows: "minmax(0, 1fr)",
+      }}
+    >
+      <div
+        onPointerDownCapture={handleSendsPointerDownCapture}
+        onPointerMoveCapture={handleSendsPointerMoveCapture}
+        onPointerUpCapture={handleSendsPointerUpCapture}
+        onPointerCancelCapture={handleSendsPointerCancelCapture}
+        onClickCapture={handleSendsClickCapture}
+        style={{
+          minHeight: 0,
+          overflowY: "auto",
+          overflowX: "hidden",
+          padding: "0 0 12px 0",
+          WebkitOverflowScrolling: "touch",
+          touchAction: "none",
+          userSelect: "none",
+          WebkitUserSelect: "none",
+          cursor: "grab",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            gap: 0,
+            minHeight: "100%",
+            alignItems: "stretch",
+            width: "max-content",
+            minWidth: "100%",
+          }}
+        >
+          <div style={{ display: "grid", gridTemplateColumns: `repeat(${fxSends.length}, 110px)`, gap: 4 }}>
+            {fxSends.map((send) => renderSendStrip(send))}
+          </div>
+
+          <div
+            aria-hidden="true"
+            style={{
+              width: 1,
+              alignSelf: "stretch",
+              margin: "0 8px",
+              background: "#334155",
+            }}
+          />
+
+          <div style={{ display: "grid", gridTemplateColumns: `repeat(${auxSends.length}, 110px)`, gap: 4 }}>
+            {auxSends.map((send) => renderSendStrip(send))}
+          </div>
+
+          <div
+            aria-hidden="true"
+            style={{
+              flex: `0 0 ${SENDS_RIGHT_END_GUTTER_PX}px`,
+              width: SENDS_RIGHT_END_GUTTER_PX,
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 
 function GateMiniPreview({ gate }: { gate: GateState }) {
@@ -187,6 +877,7 @@ const MODULE_ACCENTS: Record<ProcessorModule, { color: string; glow: string }> =
   gate: { color: "#22c55e", glow: "rgba(34,197,94,0.35)" },
   comp: { color: "#a855f7", glow: "rgba(168,85,247,0.35)" },
   eq: { color: "#22d3ee", glow: "rgba(34,211,238,0.35)" },
+  sends: { color: "#22d3ee", glow: "rgba(34,211,238,0.35)" },
 };
 const EQ_ACTIVE_MIN_FREQ = 20;
 const EQ_ACTIVE_MAX_FREQ = 20000;
@@ -457,7 +1148,7 @@ function CompressorMeterScale({
           display: "flex",
           flex: "1 1 auto",
           minHeight: 0,
-          flexDirection: "column",
+          overflow: "hidden",
           justifyContent: "space-between",
           alignItems: "flex-start",
         }}
@@ -2743,25 +3434,25 @@ export function ChannelProcessors({
   state,
   disabled = false,
   hideGate = false,
+  hideSends = false,
   channelInputDb,
+  sends,
   onModuleChange,
   onGateChange,
   onCompChange,
   onEqChange,
   onEqBandChange,
+  onSendValueChange,
+  onSendTapPointToggle,
   onResetGate,
   onResetComp,
   onResetEq,
 }: ChannelProcessorsProps) {
-  const navItems: Array<
-    | { id: ProcessorModule; label: string; disabled?: false }
-    | { id: "fx-sends" | "aux-sends"; label: string; disabled: true }
-  > = [
+  const navItems: Array<{ id: ProcessorModule; label: string }> = [
     { id: "eq", label: "EQ" },
     { id: "comp", label: "COMP" },
     ...(!hideGate ? [{ id: "gate", label: "GATE" } as const] : []),
-    { id: "fx-sends", label: "FX SENDS", disabled: true },
-    { id: "aux-sends", label: "AUX SENDS", disabled: true },
+    ...(!hideSends ? [{ id: "sends", label: "SENDS" } as const] : []),
   ];
 
   return (
@@ -2789,9 +3480,8 @@ export function ChannelProcessors({
           <button
             key={item.id}
             type="button"
-            disabled={disabled || item.disabled}
+            disabled={disabled}
             onClick={() => {
-              if (item.disabled) return;
               onModuleChange(item.id);
             }}
             style={{
@@ -2800,22 +3490,20 @@ export function ChannelProcessors({
               borderRadius: 0,
               border: "none",
               borderBottom:
-                !item.disabled && activeModule === item.id
+                activeModule === item.id
                   ? "2px solid var(--border-focus)"
                   : "2px solid transparent",
               background: "transparent",
               color:
-                item.disabled
-                  ? "var(--text-tertiary)"
-                  : !item.disabled && activeModule === item.id
-                    ? "var(--text-primary)"
-                    : "var(--text-secondary)",
+                activeModule === item.id
+                  ? "var(--text-primary)"
+                  : "var(--text-secondary)",
               fontSize: 10,
               lineHeight: "12px",
               fontWeight: 700,
               letterSpacing: "1.2px",
-              cursor: disabled || item.disabled ? "not-allowed" : "pointer",
-              opacity: item.disabled ? 0.6 : 1,
+              cursor: disabled ? "not-allowed" : "pointer",
+              opacity: 1,
               whiteSpace: "nowrap",
               width: "100%",
               justifySelf: "stretch",
@@ -2835,7 +3523,7 @@ export function ChannelProcessors({
           borderRadius: 0,
           border: "none",
           background: "transparent",
-          overflow: "hidden",
+          overflow: activeModule === "sends" ? "visible" : "hidden",
         }}
       >
         {activeModule === "gate" && (
@@ -2865,6 +3553,24 @@ export function ChannelProcessors({
             onBandChange={onEqBandChange}
             onReset={onResetEq}
           />
+        )}
+
+        {activeModule === "sends" && sends && (
+          <div
+            style={{
+              minHeight: 0,
+              height: "100%",
+              width: `calc(100% + ${SENDS_RIGHT_BLEED_PX}px)`,
+              marginRight: `-${SENDS_RIGHT_BLEED_PX}px`,
+            }}
+          >
+            <SendsEditor
+              sends={sends}
+              disabled={disabled}
+              onSendValueChange={onSendValueChange}
+              onSendTapPointToggle={onSendTapPointToggle}
+            />
+          </div>
         )}
       </div>
     </div>

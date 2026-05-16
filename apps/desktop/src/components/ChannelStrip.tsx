@@ -131,6 +131,7 @@ export function ChannelStrip({
   onOpenDetail,
 }: ChannelStripProps) {
   const CHANNEL_COLOR_PALETTE: Record<number, string> = {
+    0: "#7B7B7B",
     1: "var(--channel-01)",
     2: "var(--channel-02)",
     3: "var(--channel-03)",
