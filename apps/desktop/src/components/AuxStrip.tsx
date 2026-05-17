@@ -128,11 +128,10 @@ export function AuxStrip({
       style={{
         display: "flex",
         flexDirection: "column",
-        gap: "24px",
         alignItems: "center",
         justifyContent: "flex-start",
         overflow: "hidden",
-        padding: isDetailVariant ? "8px 4px" : 0,
+        padding: 0,
         borderRadius: "4px",
         width: "var(--strip-width)",
         minWidth: "var(--strip-width)",
@@ -145,6 +144,18 @@ export function AuxStrip({
         position: "relative",
       }}
     >
+      <div
+        style={{
+          width: "100%",
+          flex: "1 1 0",
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: "24px",
+          padding: "8px 4px 8px",
+          boxSizing: "border-box",
+        }}
+      >
       {/* Header: EQ preview */}
       {!isDetailVariant && (
         <div
@@ -152,9 +163,9 @@ export function AuxStrip({
             width: "100%",
             display: "flex",
             flexDirection: "column",
-            paddingTop: "8px",
-            paddingLeft: "4px",
-            paddingRight: "4px",
+            paddingTop: 0,
+            paddingLeft: 0,
+            paddingRight: 0,
             paddingBottom: 0,
           }}
         >
@@ -249,8 +260,8 @@ export function AuxStrip({
           onPointerDown={(e) => e.stopPropagation()}
           style={{
             width: "100%",
-            paddingLeft: 4,
-            paddingRight: 4,
+            paddingLeft: 0,
+            paddingRight: 0,
             boxSizing: "border-box",
           }}
         >
@@ -293,8 +304,8 @@ export function AuxStrip({
           gridTemplateColumns: "1fr 1fr",
           gap: "8px",
           width: "100%",
-          paddingLeft: 4,
-          paddingRight: 4,
+          paddingLeft: 0,
+          paddingRight: 0,
           boxSizing: "border-box",
         }}
       >
@@ -359,15 +370,15 @@ export function AuxStrip({
         onPointerDown={(e) => e.stopPropagation()}
         style={{
           display: "flex",
-          gap: 0,
+          gap: "clamp(12px, 3vw, 24px)",
           alignItems: "center",
-          justifyContent: "space-between",
+          justifyContent: "center",
           flex: "1 1 0",
           minHeight: 0,
-          width: "calc(100% - 8px)",
+          width: "100%",
           alignSelf: "stretch",
-          paddingLeft: 0,
-          paddingRight: 0,
+          paddingLeft: 4,
+          paddingRight: 4,
           boxSizing: "border-box",
           marginLeft: "auto",
           marginRight: "auto",
@@ -409,8 +420,9 @@ export function AuxStrip({
       {/* dB display */}
       <div
         style={{
-          marginTop: "-16px",
-          width: "calc(100% - 8px)",
+          marginTop: 0,
+          marginBottom: 0,
+          width: "100%",
           alignSelf: "center",
           height: "36px",
           display: "flex",
@@ -432,6 +444,7 @@ export function AuxStrip({
       >
         {faderDb <= -120 ? "-∞" : `${faderDb} dB`}
       </div>
+      </div>
 
       {/* Footer */}
       {!isDetailVariant && (
@@ -445,7 +458,7 @@ export function AuxStrip({
           style={{
             width: "100%",
             height: "40px",
-            marginTop: "-16px",
+            marginTop: 0,
             padding: "4px",
             display: "flex",
             flexDirection: "column",

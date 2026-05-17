@@ -97,8 +97,8 @@ export function MasterBus({
         flexDirection: "column",
         overflow: "hidden",
         borderRadius: "4px",
-        width: 183,
-        minWidth: 183,
+        width: "var(--master-strip-width)",
+        minWidth: "var(--master-strip-width)",
         height: "100%",
         backgroundColor: "var(--surface-card-hover)",
         boxShadow: "0px 4px 2px rgba(0,0,0,0.25)",
@@ -107,12 +107,23 @@ export function MasterBus({
         fontSize: "10px",
       }}
     >
+      <div
+        style={{
+          width: "100%",
+          flex: "1 1 0",
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          padding: "8px 4px 8px",
+          boxSizing: "border-box",
+        }}
+      >
       {/* Buttons group */}
       <div
         style={{
-          marginTop: 8,
-          paddingLeft: 4,
-          paddingRight: 4,
+          marginTop: 0,
+          paddingLeft: 0,
+          paddingRight: 0,
           display: "flex",
           flexDirection: "column",
           gap: 8,
@@ -151,11 +162,12 @@ export function MasterBus({
           STEREO LINK
         </button>
         {/* Row 2: MUTE + SOLO */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, width: "100%" }}>
           <button
             disabled={disabled}
             onClick={(e) => { e.stopPropagation(); onToggleMute(); }}
             style={{
+              width: "100%",
               height: 32,
               borderRadius: 8,
               border: muted ? "2px solid var(--button-mute-border)" : "1px solid var(--button-default-border)",
@@ -178,6 +190,7 @@ export function MasterBus({
             disabled={disabled}
             onClick={(e) => { e.stopPropagation(); onToggleSolo(); }}
             style={{
+              width: "100%",
               height: 32,
               borderRadius: 8,
               border: soloOn ? "2px solid var(--button-solo-border)" : "1px solid var(--button-default-border)",
@@ -203,9 +216,9 @@ export function MasterBus({
       <div
         style={{
           marginTop: 24,
-          paddingLeft: 4,
-          paddingRight: 4,
-          paddingBottom: 8,
+          paddingLeft: 0,
+          paddingRight: 0,
+          paddingBottom: 0,
           flex: "1 1 0",
           minHeight: 0,
           display: "flex",
@@ -222,6 +235,9 @@ export function MasterBus({
             gap: 24,
             justifyContent: "center",
             alignItems: "stretch",
+            paddingLeft: 4,
+            paddingRight: 4,
+            boxSizing: "border-box",
           }}
         >
           {/* === Meter block: 49px (scale 21 + gap 4 + L bar 10 + gap 4 + R bar 10) === */}
@@ -304,6 +320,7 @@ export function MasterBus({
         >
           {faderDbLabel(leftFaderDb)}
         </div>
+      </div>
       </div>
 
       {/* Footer: height=40, L/R label + name */}

@@ -77,6 +77,7 @@ type ChannelProcessorsProps = {
   hideComp?: boolean;
   hideGate?: boolean;
   hideSends?: boolean;
+  hideModuleTabs?: boolean;
   moduleItems?: Array<{ id: ProcessorModule; label: string }>;
   customModuleContent?: Partial<Record<ProcessorModule, ReactNode>>;
   channelInputDb?: number;
@@ -451,11 +452,7 @@ function SendsEditor({
           style={{
             display: "flex",
             flexDirection: "column",
-            gap: "24px",
-            alignItems: "center",
-            justifyContent: "flex-start",
             overflow: "hidden",
-            padding: 0,
             borderRadius: "4px",
             width: "var(--strip-width)",
             minWidth: "var(--strip-width)",
@@ -466,180 +463,208 @@ function SendsEditor({
             fontFamily: "system-ui, sans-serif",
             fontSize: "10px",
             position: "relative",
+            padding: 0,
+            boxSizing: "border-box",
           }}
         >
           <div
-            onClick={(event) => event.stopPropagation()}
-            onPointerDown={(event) => event.stopPropagation()}
             style={{
               width: "100%",
-              display: "flex",
-              flexDirection: "column",
-              paddingTop: "8px",
-              paddingLeft: "4px",
-              paddingRight: "4px",
-              paddingBottom: 0,
-            }}
-          >
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onSendTapPointToggle?.(send.id);
-              }}
-              disabled={disabled}
-              style={{
-                height: 32,
-                width: "100%",
-                borderRadius: 8,
-                color: "#e2e8f0",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                fontSize: 11,
-                fontWeight: 700,
-                letterSpacing: "0.09em",
-                textTransform: "none",
-                cursor: disabled ? "not-allowed" : "pointer",
-                opacity: disabled ? 0.55 : 1,
-              }}
-            >
-              <span
-                aria-hidden="true"
-                style={{
-                  width: 12,
-                  height: 12,
-                  borderRadius: "999px",
-                  background: send.tapPoint === "post" ? "#22d3ee" : "#facc15",
-                  boxShadow:
-                    send.tapPoint === "post"
-                      ? "0 0 7px rgba(34,211,238,0.5)"
-                      : "0 0 7px rgba(250,204,21,0.5)",
-                  flexShrink: 0,
-                }}
-              />
-              <span style={{ fontSize: 11, lineHeight: "11px" }}>
-                {send.tapPoint === "post" ? "Post" : "Pre"}
-              </span>
-            </button>
-          </div>
-
-          <div
-            onClick={(event) => event.stopPropagation()}
-            onPointerDown={(event) => event.stopPropagation()}
-            style={{
-              display: "flex",
-              gap: 0,
-              alignItems: "center",
-              justifyContent: "center",
               flex: "1 1 0",
               minHeight: 0,
-              width: "calc(100% - 8px)",
-              alignSelf: "stretch",
-              paddingLeft: 0,
-              paddingRight: 0,
+              display: "flex",
+              flexDirection: "column",
+              gap: "24px",
+              padding: "8px 4px 8px",
               boxSizing: "border-box",
-              marginLeft: "auto",
-              marginRight: "auto",
             }}
           >
-            <div style={{ flex: "0 0 auto", height: "100%", display: "flex", alignItems: "center", overflow: "visible" }}>
-              <div
-                aria-hidden="true"
+            <div
+              onClick={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+              style={{
+                width: "100%",
+                display: "flex",
+                flexDirection: "column",
+                paddingTop: 0,
+                paddingLeft: 0,
+                paddingRight: 0,
+                paddingBottom: 0,
+              }}
+            >
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onSendTapPointToggle?.(send.id);
+                }}
+                disabled={disabled}
                 style={{
-                  width: SEND_FADER_RENDERED_WIDTH,
-                  height: "100%",
-                  position: "relative",
-                  flexShrink: 0,
+                  height: 32,
+                  width: "100%",
+                  borderRadius: 8,
+                  border:
+                    send.tapPoint === "post"
+                      ? "1px solid #22d3ee"
+                      : "1px solid #facc15",
+                  background:
+                    send.tapPoint === "post"
+                      ? "linear-gradient(180deg, rgba(34,211,238,0.2) 0%, rgba(14,116,144,0.26) 100%)"
+                      : "linear-gradient(180deg, rgba(250,204,21,0.2) 0%, rgba(161,98,7,0.26) 100%)",
+                  color: "#e2e8f0",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: "0.09em",
+                  textTransform: "none",
+                  cursor: disabled ? "not-allowed" : "pointer",
+                  opacity: disabled ? 0.55 : 1,
+                  boxShadow:
+                    send.tapPoint === "post"
+                      ? "0 0 12px rgba(34,211,238,0.18)"
+                      : "0 0 12px rgba(250,204,21,0.18)",
                 }}
               >
-                {SEND_FADER_MARKS_DB.map((db) => {
-                  const isZero = db === 0;
-                  const baseStyle = {
-                    position: "absolute" as const,
-                    top: sendMarkTop(db),
-                    width: SEND_MARKER_WIDTH,
-                    height: 1,
-                    borderRadius: 999,
-                    transform: "translateY(-50%)",
-                    pointerEvents: "none" as const,
-                    background: isZero ? "var(--fader-thumb-line)" : "#64748b",
-                    opacity: isZero ? 0.95 : 0.42,
-                    boxShadow: isZero ? "0 0 2px rgba(241,245,249,0.7)" : "none",
-                  };
-
-                  return (
-                    <div key={`send-mark-${db}`}>
-                      <span
-                        style={{
-                          ...baseStyle,
-                          left: `calc(50% - ${SEND_MARKER_OUTSIDE_OFFSET + SEND_MARKER_WIDTH}px)`,
-                        }}
-                      />
-                      <span
-                        style={{
-                          ...baseStyle,
-                          left: `calc(50% + ${SEND_MARKER_OUTSIDE_OFFSET}px)`,
-                        }}
-                      />
-                    </div>
-                  );
-                })}
-
-                <VerticalFader
-                  value={position}
-                  height="100%"
-                  width={SEND_FADER_TRACK_WIDTH}
-                  disabled={disabled}
-                  dragFromThumbOnly
-                  snapPoints={SEND_FADER_SNAP_POINTS}
-                  snapThreshold={1.8}
-                  zeroMarkerValue={sendDbToFaderPosition(0)}
-                  showZeroMarker={false}
-                  thumbVariant="default"
-                  thumbIndicatorColor={send.isLinked ? "#fb923c" : undefined}
-                  onChange={(nextPosition) => {
-                    const nextDb = sendFaderPositionToDb(nextPosition);
-                    const nextValue = sendDbToValue(nextDb);
-                    onSendValueChange?.(send.id, nextValue);
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 12,
+                    height: 12,
+                    borderRadius: "999px",
+                    background: send.tapPoint === "post" ? "#22d3ee" : "#facc15",
+                    boxShadow:
+                      send.tapPoint === "post"
+                        ? "0 0 7px rgba(34,211,238,0.5)"
+                        : "0 0 7px rgba(250,204,21,0.5)",
+                    flexShrink: 0,
                   }}
                 />
+                <span style={{ fontSize: 11, lineHeight: "11px" }}>
+                  {send.tapPoint === "post" ? "Post" : "Pre"}
+                </span>
+              </button>
+            </div>
+
+            <div
+              onClick={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+              style={{
+                display: "flex",
+                gap: "clamp(12px, 3vw, 24px)",
+                alignItems: "center",
+                justifyContent: "center",
+                flex: "1 1 0",
+                minHeight: 0,
+                width: "100%",
+                alignSelf: "stretch",
+                paddingLeft: 4,
+                paddingRight: 4,
+                boxSizing: "border-box",
+                marginLeft: "auto",
+                marginRight: "auto",
+              }}
+            >
+              <div style={{ flex: "0 0 auto", height: "100%", display: "flex", alignItems: "center", overflow: "visible" }}>
+                <div
+                  aria-hidden="true"
+                  style={{
+                    width: SEND_FADER_RENDERED_WIDTH,
+                    height: "100%",
+                    position: "relative",
+                    flexShrink: 0,
+                  }}
+                >
+                  {SEND_FADER_MARKS_DB.map((db) => {
+                    const isZero = db === 0;
+                    const baseStyle = {
+                      position: "absolute" as const,
+                      top: sendMarkTop(db),
+                      width: SEND_MARKER_WIDTH,
+                      height: 1,
+                      borderRadius: 999,
+                      transform: "translateY(-50%)",
+                      pointerEvents: "none" as const,
+                      background: isZero ? "var(--fader-thumb-line)" : "#64748b",
+                      opacity: isZero ? 0.95 : 0.42,
+                      boxShadow: isZero ? "0 0 2px rgba(241,245,249,0.7)" : "none",
+                    };
+
+                    return (
+                      <div key={`send-mark-${db}`}>
+                        <span
+                          style={{
+                            ...baseStyle,
+                            left: `calc(50% - ${SEND_MARKER_OUTSIDE_OFFSET + SEND_MARKER_WIDTH}px)`,
+                          }}
+                        />
+                        <span
+                          style={{
+                            ...baseStyle,
+                            left: `calc(50% + ${SEND_MARKER_OUTSIDE_OFFSET}px)`,
+                          }}
+                        />
+                      </div>
+                    );
+                  })}
+
+                  <VerticalFader
+                    value={position}
+                    height="100%"
+                    width={SEND_FADER_TRACK_WIDTH}
+                    disabled={disabled}
+                    dragFromThumbOnly
+                    snapPoints={SEND_FADER_SNAP_POINTS}
+                    snapThreshold={1.8}
+                    zeroMarkerValue={sendDbToFaderPosition(0)}
+                    showZeroMarker={false}
+                    thumbVariant="default"
+                    thumbIndicatorColor={send.isLinked ? "#fb923c" : undefined}
+                    onChange={(nextPosition) => {
+                      const nextDb = sendFaderPositionToDb(nextPosition);
+                      const nextValue = sendDbToValue(nextDb);
+                      onSendValueChange?.(send.id, nextValue);
+                    }}
+                  />
+                </div>
               </div>
             </div>
-          </div>
 
-          <div
-            style={{
-              marginTop: "-16px",
-              width: "calc(100% - 8px)",
-              alignSelf: "center",
-              height: "36px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              textAlign: "center",
-              fontSize: "16px",
-              fontWeight: 400,
-              color: "var(--text-primary)",
-              backgroundColor: "var(--surface-overlay-strong)",
-              borderRadius: "4px",
-              overflow: "hidden",
-              padding: "11px 4px",
-              boxSizing: "border-box",
-              fontFamily: "Inter, system-ui, sans-serif",
-              lineHeight: 1,
-              whiteSpace: "nowrap",
-            }}
-          >
-            {formatSendDb(send.value)}
+            <div
+              style={{
+                marginTop: 0,
+                width: "100%",
+                alignSelf: "center",
+                marginBottom: 0,
+                height: "36px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                textAlign: "center",
+                fontSize: "16px",
+                fontWeight: 400,
+                color: "var(--text-primary)",
+                backgroundColor: "var(--surface-overlay-strong)",
+                borderRadius: "4px",
+                overflow: "hidden",
+                padding: "11px 4px",
+                boxSizing: "border-box",
+                fontFamily: "Inter, system-ui, sans-serif",
+                lineHeight: 1,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {formatSendDb(send.value)}
+            </div>
           </div>
 
           <div
             style={{
               width: "100%",
               height: "40px",
-              marginTop: "-16px",
+              marginTop: 0,
               padding: "4px",
               display: "flex",
               flexDirection: "column",
@@ -734,7 +759,7 @@ function SendsEditor({
           minHeight: 0,
           overflowY: "auto",
           overflowX: "hidden",
-          padding: "0 0 12px 0",
+          padding: 0,
           WebkitOverflowScrolling: "touch",
           touchAction: "none",
           userSelect: "none",
@@ -3595,6 +3620,7 @@ export function ChannelProcessors({
   hideComp = false,
   hideGate = false,
   hideSends = false,
+  hideModuleTabs = false,
   moduleItems,
   customModuleContent,
   channelInputDb,
@@ -3625,64 +3651,66 @@ export function ChannelProcessors({
         minHeight: 0,
         height: "100%",
         display: "grid",
-        gridTemplateRows: "32px minmax(0, 1fr)",
+        gridTemplateRows: hideModuleTabs ? "minmax(0, 1fr)" : "32px minmax(0, 1fr)",
         gap: 0,
       }}
     >
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: `repeat(${navItems.length}, minmax(0, 1fr))`,
-          borderRadius: 4,
-          border: "none",
-          background: "transparent",
-          overflow: "hidden",
-          minWidth: 0,
-        }}
-      >
-        {navItems.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            disabled={disabled}
-            onClick={() => {
-              onModuleChange(item.id);
-            }}
-            style={{
-              height: 32,
-              padding: "0 16px",
-              borderRadius: 0,
-              border: "none",
-              borderBottom:
-                activeModule === item.id
-                  ? "2px solid var(--border-focus)"
-                  : "2px solid transparent",
-              background: "transparent",
-              color:
-                activeModule === item.id
-                  ? "var(--text-primary)"
-                  : "var(--text-secondary)",
-              fontSize: 10,
-              lineHeight: "12px",
-              fontWeight: 700,
-              letterSpacing: "1.2px",
-              cursor: disabled ? "not-allowed" : "pointer",
-              opacity: 1,
-              whiteSpace: "nowrap",
-              width: "100%",
-              justifySelf: "stretch",
-            }}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
+      {!hideModuleTabs && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: `repeat(${navItems.length}, minmax(0, 1fr))`,
+            borderRadius: 4,
+            border: "none",
+            background: "transparent",
+            overflow: "hidden",
+            minWidth: 0,
+          }}
+        >
+          {navItems.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              disabled={disabled}
+              onClick={() => {
+                onModuleChange(item.id);
+              }}
+              style={{
+                height: 32,
+                padding: "0 16px",
+                borderRadius: 0,
+                border: "none",
+                borderBottom:
+                  activeModule === item.id
+                    ? "2px solid var(--border-focus)"
+                    : "2px solid transparent",
+                background: "transparent",
+                color:
+                  activeModule === item.id
+                    ? "var(--text-primary)"
+                    : "var(--text-secondary)",
+                fontSize: 10,
+                lineHeight: "12px",
+                fontWeight: 700,
+                letterSpacing: "1.2px",
+                cursor: disabled ? "not-allowed" : "pointer",
+                opacity: 1,
+                whiteSpace: "nowrap",
+                width: "100%",
+                justifySelf: "stretch",
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div
         style={{
           minWidth: 0,
           minHeight: 0,
-          marginTop: 24,
+          marginTop: hideModuleTabs ? 0 : 24,
           padding: 0,
           borderRadius: 0,
           border: "none",

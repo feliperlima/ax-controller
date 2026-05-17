@@ -60,21 +60,6 @@ export const DCA_GROUPS_CONFIG: Readonly<Record<DcaGroupId, DcaGroupConfig>> = {
   },
 };
 
-const MUTE_GROUP_BASE_PARAM = 3057;
-const MUTE_GROUP_STRIDE = 5;
-
-function deriveMuteGroupConfig(id: MuteGroupId): MuteGroupConfig {
-  const base = MUTE_GROUP_BASE_PARAM + (id - 1) * MUTE_GROUP_STRIDE;
-  const isDerived = id === 2 || id === 3;
-
-  return {
-    id,
-    activeParam: base,
-    memberParams: [base + 1, base + 2, base + 3, base + 4],
-    isDerived,
-  };
-}
-
 export const MUTE_GROUPS_CONFIG: Readonly<Record<MuteGroupId, MuteGroupConfig>> = {
   1: {
     id: 1,
@@ -83,8 +68,20 @@ export const MUTE_GROUPS_CONFIG: Readonly<Record<MuteGroupId, MuteGroupConfig>> 
     allMutedValues: [65535, 65280, 63],
     clearValues: [0, 0, 0],
   },
-  2: deriveMuteGroupConfig(2),
-  3: deriveMuteGroupConfig(3),
+  2: {
+    id: 2,
+    activeParam: 3062,
+    memberParams: [3063, 3064, 3065, 3066],
+    allMutedValues: [65535, 65280, 63],
+    clearValues: [0, 0, 0],
+  },
+  3: {
+    id: 3,
+    activeParam: 3067,
+    memberParams: [3068, 3069, 3070, 3071],
+    allMutedValues: [65535, 65280, 63],
+    clearValues: [0, 0, 0],
+  },
   4: {
     id: 4,
     activeParam: 3072,

@@ -170,11 +170,10 @@ export function ChannelStrip({
       style={{
         display: "flex",
         flexDirection: "column",
-        gap: "24px",
         alignItems: "center",
         justifyContent: "flex-start",
         overflow: "hidden",
-        padding: isDetailVariant ? "8px 4px" : 0,
+        padding: 0,
         borderRadius: "4px",
         width: "var(--strip-width)",
         minWidth: "var(--strip-width)",
@@ -186,15 +185,27 @@ export function ChannelStrip({
         fontSize: "10px",
       }}
     >
+      <div
+        style={{
+          width: "100%",
+          flex: "1 1 0",
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: "24px",
+          padding: "8px 4px 8px",
+          boxSizing: "border-box",
+        }}
+      >
       {!isDetailVariant && (
         <div
           style={{
             width: "100%",
             display: "flex",
             flexDirection: "column",
-            paddingTop: "8px",
-            paddingLeft: "4px",
-            paddingRight: "4px",
+            paddingTop: 0,
+            paddingLeft: 0,
+            paddingRight: 0,
             paddingBottom: 0,
           }}
         >
@@ -292,8 +303,8 @@ export function ChannelStrip({
           onPointerDown={(event) => event.stopPropagation()}
           style={{
             width: "100%",
-            paddingLeft: "4px",
-            paddingRight: "4px",
+            paddingLeft: 0,
+            paddingRight: 0,
             boxSizing: "border-box",
           }}
         >
@@ -377,8 +388,8 @@ export function ChannelStrip({
           gridTemplateColumns: "1fr 1fr",
           gap: "8px",
           width: "100%",
-          paddingLeft: "4px",
-          paddingRight: "4px",
+          paddingLeft: 0,
+          paddingRight: 0,
           boxSizing: "border-box",
         }}
       >
@@ -509,15 +520,15 @@ export function ChannelStrip({
         onPointerDown={(event) => event.stopPropagation()}
         style={{
           display: "flex",
-          gap: 0,
+          gap: "clamp(12px, 3vw, 24px)",
           alignItems: "center",
-          justifyContent: "space-between",
+          justifyContent: "center",
           flex: "1 1 0",
           minHeight: 0,
-          width: "calc(100% - 8px)",
+          width: "100%",
           alignSelf: "stretch",
-          paddingLeft: 0,
-          paddingRight: 0,
+          paddingLeft: 4,
+          paddingRight: 4,
           boxSizing: "border-box",
           marginLeft: "auto",
           marginRight: "auto",
@@ -530,7 +541,7 @@ export function ChannelStrip({
             gap: "4px",
             height: "100%",
             alignItems: "flex-end",
-            justifyContent: "center",
+          justifyContent: "center",
             flex: "0 0 auto",
           }}
         >
@@ -570,8 +581,9 @@ export function ChannelStrip({
       {/* FaderDisplay (51:1390) */}
       <div
         style={{
-          marginTop: "-16px",
-          width: "calc(100% - 8px)",
+          marginTop: 0,
+          marginBottom: 0,
+          width: "100%",
           alignSelf: "center",
           height: "36px",
           display: "flex",
@@ -596,7 +608,8 @@ export function ChannelStrip({
         {faderDb <= -120 ? "-∞" : `${faderDb} dB`}
       </div>
 
-      {/* FooterChannel (51:1392) */}
+      </div>
+
       {!isDetailVariant && (
         <button
           disabled={disabled}
@@ -613,7 +626,7 @@ export function ChannelStrip({
           style={{
             width: "100%",
             height: "40px",
-            marginTop: "-16px",
+            marginTop: 0,
             padding: "4px",
             display: "flex",
             flexDirection: "column",

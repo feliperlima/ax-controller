@@ -432,8 +432,7 @@ export function toMixerSafeName(name: string) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-zA-Z0-9 _-]/g, "")
-    .slice(0, 12)
-    .toUpperCase();
+    .slice(0, 12);
 }
 
 function makeWriteNameCommand(targetIndex: number, displayName: string) {
@@ -754,14 +753,36 @@ export class Axios16Client {
     return request;
   }
 
+  readNameByIndex(targetIndex: number, timeoutMs = 1200) {
+    const request = this.readQueue.then(() =>
+      this.executeReadNameByIndex(targetIndex, timeoutMs)
+    );
+
+    this.readQueue = request.then(
+      () => undefined,
+      () => undefined
+    );
+
+    return request;
+  }
+
   private executeReadName(target: NameTarget, timeoutMs: number) {
+    const targetIndex = getNameTargetIndex(target);
+    return this.executeReadNameByIndex(targetIndex, timeoutMs);
+  }
+
+  private executeReadNameByIndex(targetIndex: number, timeoutMs: number) {
     const ws = this.ws;
 
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       throw new Error("Cliente não conectado.");
     }
 
-    const targetIndex = getNameTargetIndex(target);
+    if (!Number.isFinite(targetIndex) || targetIndex < 0 || targetIndex > 255) {
+      throw new Error("Indice de nome invalido. Use 0..255.");
+    }
+
+    const normalizedTargetIndex = Math.round(targetIndex);
 
     return new Promise<string>((resolve, reject) => {
       let settled = false;
@@ -789,7 +810,7 @@ export class Axios16Client {
         if (!(event.data instanceof ArrayBuffer)) return;
         const decoded = decodeNameResponse(event.data);
         if (!decoded) return;
-        if (decoded.targetIndex !== targetIndex) return;
+        if (decoded.targetIndex !== normalizedTargetIndex) return;
 
         if (settled) return;
         settled = true;
@@ -808,7 +829,7 @@ export class Axios16Client {
       ws.addEventListener("message", onMessage);
       ws.addEventListener("close", onClose);
       ws.addEventListener("error", onError);
-      ws.send(makeReadNameCommand(targetIndex));
+      ws.send(makeReadNameCommand(normalizedTargetIndex));
     });
   }
 
@@ -819,6 +840,20 @@ export class Axios16Client {
 
     const targetIndex = getNameTargetIndex(target);
     const packet = makeWriteNameCommand(targetIndex, displayName);
+    this.ws.send(packet);
+  }
+
+  setNameByIndex(targetIndex: number, displayName: string) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error("Cliente não conectado.");
+    }
+
+    if (!Number.isFinite(targetIndex) || targetIndex < 0 || targetIndex > 255) {
+      throw new Error("Indice de nome invalido. Use 0..255.");
+    }
+
+    const normalizedTargetIndex = Math.round(targetIndex);
+    const packet = makeWriteNameCommand(normalizedTargetIndex, displayName);
     this.ws.send(packet);
   }
 
