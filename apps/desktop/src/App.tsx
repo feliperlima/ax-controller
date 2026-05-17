@@ -4241,7 +4241,7 @@ function App() {
           gridTemplateColumns: "minmax(0, 1fr)",
           gridTemplateRows: "auto minmax(0, 1fr)",
           gap: 4,
-          padding: 8,
+          padding: 0,
         }}
       >
         <section
@@ -4264,7 +4264,7 @@ function App() {
               justifyContent: "space-between",
               gap: 16,
               minWidth: 0,
-              padding: "8px 16px 8px 0",
+              padding: "8px",
               borderRadius: 4,
               background: "var(--surface-overlay-strong)",
             }}
@@ -4315,25 +4315,6 @@ function App() {
                 flex: "1 1 auto",
               }}
             >
-              <button
-                type="button"
-                disabled={channelNumber === 1}
-                onClick={() => goToDetailChannel(channelNumber - 1)}
-                style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: 6,
-                  border: "1px solid #334155",
-                  background: "#0b1220",
-                  color: "#fff",
-                  fontWeight: 900,
-                  fontSize: 14,
-                  cursor: channelNumber === 1 ? "not-allowed" : "pointer",
-                  opacity: channelNumber === 1 ? 0.4 : 1,
-                }}
-              >
-                ‹
-              </button>
               <div
                 style={{
                   fontFamily: "Inter, system-ui, sans-serif",
@@ -4350,17 +4331,9 @@ function App() {
                 {detailChannelName.trim().length > 0 ? detailChannelName : `Canal ${channelNumber}`}
               </div>
               <div
+                className="dca-matrix-row__tag"
                 style={{
-                  minWidth: 45,
-                  padding: "4px 8px",
-                  borderRadius: 4,
                   background: channelColorBadgeBackground(channelState.colorId),
-                  color: "var(--text-inverse)",
-                  fontSize: 12,
-                  lineHeight: "12px",
-                  fontWeight: 600,
-                  letterSpacing: "0.6px",
-                  textAlign: "center",
                 }}
               >
                 {`CH ${channelNumber}`}
@@ -4389,25 +4362,58 @@ function App() {
                   <path d="M9.98 3.793 12.102 5.915" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
               </button>
-              <button
-                type="button"
-                disabled={channelNumber === 16}
-                onClick={() => goToDetailChannel(channelNumber + 1)}
-                style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: 6,
-                  border: "1px solid #334155",
-                  background: "#0b1220",
-                  color: "#fff",
-                  fontWeight: 900,
-                  fontSize: 14,
-                  cursor: channelNumber === 16 ? "not-allowed" : "pointer",
-                  opacity: channelNumber === 16 ? 0.4 : 1,
-                }}
-              >
-                ›
-              </button>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "flex-end",
+                gap: 6,
+                width: 113,
+                flexShrink: 0,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button
+                  type="button"
+                  disabled={channelNumber === 1}
+                  onClick={() => goToDetailChannel(channelNumber - 1)}
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 6,
+                    border: "1px solid #334155",
+                    background: "#0b1220",
+                    color: "#fff",
+                    fontWeight: 900,
+                    fontSize: 14,
+                    cursor: channelNumber === 1 ? "not-allowed" : "pointer",
+                    opacity: channelNumber === 1 ? 0.4 : 1,
+                  }}
+                >
+                  ‹
+                </button>
+                <button
+                  type="button"
+                  disabled={channelNumber === 16}
+                  onClick={() => goToDetailChannel(channelNumber + 1)}
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 6,
+                    border: "1px solid #334155",
+                    background: "#0b1220",
+                    color: "#fff",
+                    fontWeight: 900,
+                    fontSize: 14,
+                    cursor: channelNumber === 16 ? "not-allowed" : "pointer",
+                    opacity: channelNumber === 16 ? 0.4 : 1,
+                  }}
+                >
+                  ›
+                </button>
+              </div>
             </div>
           </div>
 
@@ -4419,7 +4425,7 @@ function App() {
             display: "grid",
             gridTemplateColumns: "var(--strip-width) minmax(0, 1fr)",
             gap: 4,
-            padding: 0,
+            padding: 8,
             overflow: "visible",
             position: "relative",
           }}
@@ -4548,7 +4554,7 @@ function App() {
           gridTemplateColumns: "minmax(0, 1fr)",
           gridTemplateRows: "auto minmax(0, 1fr)",
           gap: 4,
-          padding: 8,
+          padding: 0,
         }}
       >
         <section
@@ -4571,7 +4577,7 @@ function App() {
               justifyContent: "space-between",
               gap: 16,
               minWidth: 0,
-              padding: "8px 16px 8px 0",
+              padding: "8px",
               borderRadius: 4,
               background: "var(--surface-overlay-strong)",
             }}
@@ -4622,25 +4628,6 @@ function App() {
                 flex: "1 1 auto",
               }}
             >
-              <button
-                type="button"
-                disabled={auxNumber === 1}
-                onClick={() => goToDetailAux(auxNumber - 1)}
-                style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: 6,
-                  border: "1px solid #334155",
-                  background: "#0b1220",
-                  color: "#fff",
-                  fontWeight: 900,
-                  fontSize: 14,
-                  cursor: auxNumber === 1 ? "not-allowed" : "pointer",
-                  opacity: auxNumber === 1 ? 0.4 : 1,
-                }}
-              >
-                ‹
-              </button>
               <span
                 style={{
                   minWidth: "var(--strip-width)",
@@ -4655,17 +4642,9 @@ function App() {
                 {auxState.channelName.trim().length > 0 ? auxState.channelName : `AUX ${auxNumber}`}
               </span>
               <div
+                className="dca-matrix-row__tag"
                 style={{
-                  minWidth: 60,
-                  padding: "4px 8px",
-                  borderRadius: 4,
                   background: channelColorBadgeBackground(auxState.colorId),
-                  color: "var(--text-inverse)",
-                  fontSize: 12,
-                  lineHeight: "12px",
-                  fontWeight: 600,
-                  letterSpacing: "0.6px",
-                  textAlign: "center",
                 }}
               >
                 {`AUX ${auxNumber}`}
@@ -4693,6 +4672,37 @@ function App() {
                   <path d="M11.98 1.793a1.5 1.5 0 0 1 2.122 2.121l-7.19 7.191-2.93.808.808-2.93 7.19-7.19Z" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
                   <path d="M9.98 3.793 12.102 5.915" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
+              </button>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "flex-end",
+                gap: 6,
+                width: 113,
+                flexShrink: 0,
+              }}
+            >
+              <button
+                type="button"
+                disabled={auxNumber === 1}
+                onClick={() => goToDetailAux(auxNumber - 1)}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  border: "1px solid #334155",
+                  background: "#0b1220",
+                  color: "#fff",
+                  fontWeight: 900,
+                  fontSize: 14,
+                  cursor: auxNumber === 1 ? "not-allowed" : "pointer",
+                  opacity: auxNumber === 1 ? 0.4 : 1,
+                }}
+              >
+                ‹
               </button>
               <button
                 type="button"
@@ -4724,7 +4734,7 @@ function App() {
             display: "grid",
             gridTemplateColumns: "var(--strip-width) minmax(0, 1fr)",
             gap: 4,
-            padding: 0,
+            padding: 8,
             overflow: "visible",
             position: "relative",
           }}
@@ -5010,11 +5020,11 @@ function App() {
           gridTemplateColumns: "minmax(0, 1fr)",
           gridTemplateRows: "auto minmax(0, 1fr)",
           gap: 4,
-          padding: 8,
+          padding: 0,
         }}
       >
         <section className="detail-panel" style={{ padding: 0, borderRadius: 4, border: "none", background: "transparent", minWidth: 0, position: "relative", zIndex: 3 }}>
-          <div style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, minWidth: 0, padding: "8px 16px 8px 0", borderRadius: 4, background: "var(--surface-overlay-strong)" }}>
+          <div style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, minWidth: 0, padding: "8px", borderRadius: 4, background: "var(--surface-overlay-strong)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, width: 113, flexShrink: 0 }}>
               <button type="button" onClick={() => setDetailView(null)} style={{ height: 32, padding: "4px 8px", borderRadius: 8, border: "1px solid var(--button-default-border)", background: "var(--button-default-bg)", color: "var(--button-default-text)", display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 900, fontSize: 10, letterSpacing: "1.2px", cursor: "pointer", whiteSpace: "nowrap" }}>
                 <span style={{ fontSize: 14, lineHeight: 1 }}>←</span>
@@ -5022,29 +5032,13 @@ function App() {
               </button>
             </div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 0, flex: "1 1 auto" }}>
-              <button
-                type="button"
-                disabled={fxNumber === 1}
-                onClick={() => goToDetailFx(fxNumber - 1)}
-                style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: 6,
-                  border: "1px solid #334155",
-                  background: "#0b1220",
-                  color: "#fff",
-                  fontWeight: 900,
-                  fontSize: 14,
-                  cursor: fxNumber === 1 ? "not-allowed" : "pointer",
-                  opacity: fxNumber === 1 ? 0.4 : 1,
-                }}
-              >
-                ‹
-              </button>
               <div style={{ fontFamily: "Inter, system-ui, sans-serif", fontSize: 22, lineHeight: "30px", fontWeight: 700, color: "#ffffff" }}>
                 {fxState.channelName.trim().length > 0 ? fxState.channelName : `FX ${fxNumber}`}
               </div>
-              <div style={{ minWidth: 50, padding: "4px 8px", borderRadius: 4, background: channelColorBadgeBackground(fxState.colorId), color: "var(--text-inverse)", fontSize: 12, lineHeight: "12px", fontWeight: 600, letterSpacing: "0.6px", textAlign: "center" }}>
+              <div
+                className="dca-matrix-row__tag"
+                style={{ background: channelColorBadgeBackground(fxState.colorId) }}
+              >
                 {`FX ${fxNumber}`}
               </div>
               <button
@@ -5071,6 +5065,27 @@ function App() {
                   <path d="M9.98 3.793 12.102 5.915" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
               </button>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, width: 113, flexShrink: 0 }}>
+              <button
+                type="button"
+                disabled={fxNumber === 1}
+                onClick={() => goToDetailFx(fxNumber - 1)}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  border: "1px solid #334155",
+                  background: "#0b1220",
+                  color: "#fff",
+                  fontWeight: 900,
+                  fontSize: 14,
+                  cursor: fxNumber === 1 ? "not-allowed" : "pointer",
+                  opacity: fxNumber === 1 ? 0.4 : 1,
+                }}
+              >
+                ‹
+              </button>
               <button
                 type="button"
                 disabled={fxNumber === 2}
@@ -5091,11 +5106,10 @@ function App() {
                 ›
               </button>
             </div>
-            <div style={{ width: 113, flexShrink: 0 }} />
           </div>
         </section>
 
-        <section style={{ minHeight: 0, display: "grid", gridTemplateColumns: "var(--strip-width) minmax(0, 1fr)", gap: 4, padding: 0, overflow: "visible", position: "relative" }}>
+        <section style={{ minHeight: 0, display: "grid", gridTemplateColumns: "var(--strip-width) minmax(0, 1fr)", gap: 4, padding: 8, overflow: "visible", position: "relative" }}>
           <aside style={{ minWidth: 0, minHeight: 0, width: "var(--strip-width)", display: "flex", justifyContent: "stretch", justifySelf: "start", overflow: "hidden", position: "relative", zIndex: 3 }}>
             <FxStrip
               fxNumber={fxNumber}
@@ -5222,11 +5236,11 @@ function App() {
           gridTemplateColumns: "minmax(0, 1fr)",
           gridTemplateRows: "auto minmax(0, 1fr)",
           gap: 4,
-          padding: 8,
+          padding: 0,
         }}
       >
         <section className="detail-panel" style={{ padding: 0, borderRadius: 4, border: "none", background: "transparent", minWidth: 0, position: "relative", zIndex: 3 }}>
-          <div style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, minWidth: 0, padding: "8px 16px 8px 0", borderRadius: 4, background: "var(--surface-overlay-strong)" }}>
+          <div style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, minWidth: 0, padding: "8px", borderRadius: 4, background: "var(--surface-overlay-strong)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, width: 113, flexShrink: 0 }}>
               <button type="button" onClick={() => setDetailView(null)} style={{ height: 32, padding: "4px 8px", borderRadius: 8, border: "1px solid var(--button-default-border)", background: "var(--button-default-bg)", color: "var(--button-default-text)", display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 900, fontSize: 10, letterSpacing: "1.2px", cursor: "pointer", whiteSpace: "nowrap" }}>
                 <span style={{ fontSize: 14, lineHeight: 1 }}>←</span>
@@ -5237,7 +5251,14 @@ function App() {
               <div style={{ fontFamily: "Inter, system-ui, sans-serif", fontSize: 22, lineHeight: "30px", fontWeight: 700, color: "#ffffff" }}>
                 Master Bus
               </div>
-              <div style={{ minWidth: 72, padding: "4px 8px", borderRadius: 4, background: "#7B7B7B", color: "var(--text-inverse)", fontSize: 12, lineHeight: "12px", fontWeight: 600, letterSpacing: "0.6px", textAlign: "center" }}>
+              <div
+                className="dca-matrix-row__tag"
+                style={{
+                  background: channelColorBadgeBackground(
+                    master.leftColorId || master.rightColorId
+                  ),
+                }}
+              >
                 MASTER
               </div>
             </div>
@@ -5245,7 +5266,7 @@ function App() {
           </div>
         </section>
 
-        <section style={{ minHeight: 0, display: "grid", gridTemplateColumns: "var(--master-strip-width) minmax(0, 1fr)", gap: 4, padding: 0, overflow: "visible", position: "relative" }}>
+        <section style={{ minHeight: 0, display: "grid", gridTemplateColumns: "var(--master-strip-width) minmax(0, 1fr)", gap: 4, padding: 8, overflow: "visible", position: "relative" }}>
           <aside style={{ minWidth: 0, minHeight: 0, width: "var(--master-strip-width)", display: "flex", justifyContent: "stretch", justifySelf: "start", overflow: "hidden", position: "relative", zIndex: 3 }}>
             <MasterBus
               leftColorId={master.leftColorId}
@@ -5358,22 +5379,22 @@ function App() {
     const selectedBus = isAux ? selectedAuxSendsTarget : selectedFxSendsTarget;
     const destinationCount = isAux ? auxStrips.length : fxStrips.length;
     const destinations = Array.from({ length: destinationCount }, (_, index) => index + 1);
-    const busLabel = `${isAux ? "AUX" : "FX"} ${selectedBus}`;
     const values = isAux
       ? auxInputSendValues[selectedBus]
       : fxInputSendValues[selectedBus];
     const tapPoints = isAux
       ? auxInputSendTapPoints[selectedBus]
       : fxInputSendTapPoints[selectedBus];
-    const sendsView = buildChannelInputSendsView(
-      values,
-      tapPoints,
-      `TO ${busLabel}`
-    );
+    const sendsView = buildChannelInputSendsView(values, tapPoints);
 
     const selectedBusProcessorState = isAux
       ? auxProcessorStates[selectedBus - 1] ?? createDefaultAuxProcessorState()
       : fxProcessorStates[selectedBus - 1] ?? createDefaultProcessorState();
+    const selectedAuxStrip = isAux ? auxStrips[selectedBus - 1] : null;
+    const selectedFxStrip = isAux ? null : fxStrips[selectedBus - 1];
+    const selectedAuxPair = isAux ? getAuxPair(selectedBus) : null;
+    const selectedAuxLinkKey = selectedAuxPair ? pairKey(selectedAuxPair[0], selectedAuxPair[1]) : null;
+    const selectedAuxLinked = selectedAuxLinkKey ? Boolean(auxLinks[selectedAuxLinkKey]) : false;
 
     return (
       <div
@@ -5383,46 +5404,45 @@ function App() {
           height: "100%",
           display: "grid",
           gridTemplateColumns: "minmax(0, 1fr)",
-          gridTemplateRows: "auto minmax(0, 1fr)",
-          gap: 4,
-          padding: 8,
+          gridTemplateRows: "32px minmax(0, 1fr)",
+          gap: 0,
+          padding: "8px 8px 8px 8px",
         }}
       >
         <section
           className="detail-panel"
           style={{
-            padding: "10px 12px",
-            borderRadius: 4,
-            border: "1px solid var(--border-default)",
-            background: "var(--surface-overlay-strong)",
             minWidth: 0,
-            position: "relative",
-            zIndex: 3,
-            display: "grid",
-            gap: 10,
+            borderRadius: 4,
+            border: "none",
+            background: "transparent",
+            overflow: "hidden",
           }}
         >
-          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, minWidth: 0 }}>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: "0.12em", color: "var(--text-secondary)", textTransform: "uppercase" }}>
-                {`SENDS ON FADER · ${busLabel}`}
-              </div>
-              <div style={{ marginTop: 3, fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
-                {`Faders control channel sends to ${busLabel}`}
-              </div>
-            </div>
-            <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", color: "var(--text-secondary)", textTransform: "uppercase", whiteSpace: "nowrap" }}>
-              {isAux ? "Aux Mix" : "Send Mix"}
-            </div>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <div
+            role="tablist"
+            aria-label={`${isAux ? "Auxiliares" : "FX"} do Sends on Fader`}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 0,
+              borderRadius: 4,
+              border: "none",
+              background: "transparent",
+              overflow: "hidden",
+              minWidth: 0,
+            }}
+          >
             {destinations.map((destination) => {
               const active = destination === selectedBus;
               return (
                 <button
                   key={`${kind}-destination-${destination}`}
                   type="button"
+                  role="tab"
+                  aria-selected={active}
+                  disabled={!isConnected}
                   onClick={() => {
                     if (isAux) {
                       setSelectedAuxSendsTarget(destination);
@@ -5431,20 +5451,30 @@ function App() {
                     }
                   }}
                   style={{
-                    height: 28,
-                    padding: "0 10px",
-                    borderRadius: 7,
-                    border: active ? "1px solid #7dd3fc" : "1px solid #334155",
-                    background: active ? "#0e7490" : "#0f172a",
-                    color: active ? "#ecfeff" : "#94a3b8",
+                    height: 32,
+                    padding: "0 16px",
+                    borderRadius: 0,
+                    border: "none",
+                    borderBottom: active
+                      ? "2px solid var(--border-focus)"
+                      : "2px solid transparent",
+                    background: "transparent",
+                    color: active
+                      ? "var(--text-primary)"
+                      : "var(--text-secondary)",
                     fontSize: 10,
-                    fontWeight: 800,
-                    letterSpacing: "0.08em",
+                    lineHeight: "12px",
+                    fontWeight: 700,
+                    letterSpacing: "1.2px",
                     textTransform: "uppercase",
-                    cursor: "pointer",
+                    cursor: !isConnected ? "not-allowed" : "pointer",
+                    opacity: !isConnected ? 0.5 : 1,
+                    whiteSpace: "nowrap",
+                    width: "auto",
+                    flex: "0 0 auto",
                   }}
                 >
-                  {`${isAux ? "Aux" : "FX"} ${destination}`}
+                  {`${isAux ? "AUX" : "FX"} ${destination}`}
                 </button>
               );
             })}
@@ -5461,37 +5491,150 @@ function App() {
             overflow: "hidden",
             position: "relative",
             zIndex: 1,
-            padding: "0 12px 0 0",
+            padding: 0,
           }}
         >
-          <ChannelProcessors
-            activeModule="sends"
-            state={selectedBusProcessorState}
-            disabled={!isConnected}
-            hideGate={true}
-            hideComp={true}
-            moduleItems={[
-              { id: "sends", label: isAux ? "AUX MIX" : "SEND MIX" },
-            ]}
-            sends={sendsView}
-            onModuleChange={() => {}}
-            onGateChange={() => {}}
-            onCompChange={() => {}}
-            onEqChange={() => {}}
-            onEqBandChange={() => {}}
-            onSendValueChange={(id, value) =>
-              handleBusInputSendValueChange(kind, selectedBus, id, value)
-            }
-            onSendTapPointToggle={(id) =>
-              handleBusInputSendTapPointToggle(kind, selectedBus, id)
-            }
-            onResetGate={() => {}}
-            onResetComp={() => {}}
-            onResetEq={() => {}}
-          />
+          <aside
+            style={{
+              minHeight: 0,
+              width: "var(--strip-width)",
+              overflow: "hidden",
+              position: "absolute",
+              top: 24,
+              left: 0,
+              bottom: 0,
+              zIndex: 3,
+              boxSizing: "border-box",
+              paddingBottom: 0,
+            }}
+          >
+            {isAux && selectedAuxStrip ? (
+              <AuxStrip
+                auxNumber={selectedBus}
+                colorId={selectedAuxStrip.colorId}
+                channelName={selectedAuxStrip.channelName}
+                muted={selectedAuxStrip.muted}
+                soloOn={selectedAuxStrip.soloOn}
+                faderDb={selectedAuxStrip.faderDb}
+                faderPosition={selectedAuxStrip.faderPosition}
+                meterDb={selectedAuxStrip.meterDb}
+                peakDb={selectedAuxStrip.peakDb}
+                clipped={selectedAuxStrip.clipUntil > Date.now()}
+                isLinked={selectedAuxLinked}
+                disabled={!isConnected}
+                eqState={selectedBusProcessorState.eq}
+                onToggleMute={() => toggleStripMute("aux", selectedBus)}
+                onToggleSolo={() => toggleStripSolo("aux", selectedBus)}
+                onToggleLink={() => {
+                  toggleAuxLink(selectedBus).catch((error) => {
+                    setStatus(
+                      error instanceof Error
+                        ? error.message
+                        : "Erro ao alternar link de auxiliar"
+                    );
+                  });
+                }}
+                linkButtonLabel={selectedAuxPair ? `${selectedAuxPair[0]}-${selectedAuxPair[1]}` : undefined}
+                onFaderChange={(position) => handleStripFaderChange("aux", selectedBus, position)}
+              />
+            ) : selectedFxStrip ? (
+              <FxStrip
+                fxNumber={selectedBus as 1 | 2}
+                colorId={selectedFxStrip.colorId}
+                channelName={selectedFxStrip.channelName}
+                muted={selectedFxStrip.muted}
+                soloOn={selectedFxStrip.soloOn}
+                faderDb={selectedFxStrip.faderDb}
+                faderPosition={selectedFxStrip.faderPosition}
+                meterDb={selectedFxStrip.meterDb}
+                peakDb={selectedFxStrip.peakDb}
+                clipped={selectedFxStrip.clipUntil > Date.now()}
+                disabled={!isConnected}
+                onToggleMute={() => toggleStripMute("fx", selectedBus)}
+                onToggleSolo={() => toggleStripSolo("fx", selectedBus)}
+                onFaderChange={(position) => handleStripFaderChange("fx", selectedBus, position)}
+              />
+            ) : null}
+          </aside>
+
+          <div
+            style={{
+              position: "absolute",
+              top: 24,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              minWidth: 0,
+              overflow: "hidden",
+              padding: 0,
+              zIndex: 1,
+            }}
+          >
+            <ChannelProcessors
+              activeModule="sends"
+              state={selectedBusProcessorState}
+              disabled={!isConnected}
+              hideGate={true}
+              hideComp={true}
+              hideModuleTabs={true}
+              moduleItems={[
+                { id: "sends", label: isAux ? "AUX MIX" : "SEND MIX" },
+              ]}
+              sends={sendsView}
+              onModuleChange={() => {}}
+              onGateChange={() => {}}
+              onCompChange={() => {}}
+              onEqChange={() => {}}
+              onEqBandChange={() => {}}
+              onSendValueChange={(id, value) =>
+                handleBusInputSendValueChange(kind, selectedBus, id, value)
+              }
+              onSendTapPointToggle={(id) =>
+                handleBusInputSendTapPointToggle(kind, selectedBus, id)
+              }
+              onResetGate={() => {}}
+              onResetComp={() => {}}
+              onResetEq={() => {}}
+            />
+          </div>
         </section>
       </div>
     );
+  }
+
+  function handleMuteGroupsMemberMuteApplied(memberId: string, muted: boolean) {
+    if (memberId.startsWith("CH_")) {
+      const channel = Number(memberId.slice(3));
+      if (Number.isFinite(channel) && channel >= 1 && channel <= 16) {
+        updateChannelState(channel, { muted });
+      }
+      return;
+    }
+
+    if (memberId.startsWith("AUX_")) {
+      const aux = Number(memberId.slice(4));
+      if (Number.isFinite(aux) && aux >= 1 && aux <= 8) {
+        updateAuxStripState(aux, { muted });
+      }
+      return;
+    }
+
+    if (memberId.startsWith("FX_")) {
+      const fx = Number(memberId.slice(3));
+      if (Number.isFinite(fx) && (fx === 1 || fx === 2)) {
+        updateFxStripState(fx, { muted });
+      }
+      return;
+    }
+
+    if (memberId === "MASTER_L") {
+      updateMasterState({ leftMuted: muted });
+      return;
+    }
+
+    if (memberId === "MASTER_R") {
+      updateMasterState({ rightMuted: muted });
+    }
   }
 
   const customizerStrip = customizationView
@@ -5653,7 +5796,7 @@ function App() {
             : mainView === "dcaGroups"
               ? <div className="global-view-shell"><DcaGroupsView client={clientRef.current} isConnected={isConnected} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} dcaNames={dcaNames} /></div>
             : mainView === "muteGroups"
-              ? <div className="global-view-shell"><MuteGroupsView client={clientRef.current} isConnected={isConnected} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} /></div>
+              ? <div className="global-view-shell"><MuteGroupsView client={clientRef.current} isConnected={isConnected} onMemberMuteApplied={handleMuteGroupsMemberMuteApplied} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} /></div>
             : mainView === "scenes"
               ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} /></div>
         : <section className="mixer-layout">
