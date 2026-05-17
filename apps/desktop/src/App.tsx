@@ -29,6 +29,9 @@ import { MasterBus } from "./components/MasterBus";
 import { DuonnIconsSprite, DUONN_CHANNEL_ICONS } from "./components/DuonnIcon";
 import { ChannelCustomizer } from "./components/ChannelCustomizer";
 import { AxHeaderConnectionIp, AxHeaderStatusTag } from "./components/TopNavigation";
+import { DcaGroupsView } from "./components/DcaGroupsView";
+import { MuteGroupsView } from "./components/MuteGroupsView";
+import { ScenesView } from "./components/ScenesView";
 import duonnBrand from "./assets/duonn.brand.webp";
 import {
   ChannelProcessors,
@@ -281,7 +284,7 @@ type DetailView =
   | { type: "fx"; fx: 1 | 2 }
   | { type: "master" }
   | null;
-type MainView = "mixer" | "auxSends" | "fxSends" | "dcaGroups";
+type MainView = "mixer" | "auxSends" | "fxSends" | "dcaGroups" | "muteGroups" | "scenes";
 type StripSection = "inputs" | "aux" | "fx";
 type CustomizationView = { section: StripSection; index: number } | null;
 type PairLinkState = Record<string, boolean>;
@@ -1120,6 +1123,7 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [mainView, setMainView] = useState<MainView>("mixer");
+  const [settingsDropdownOpen, setSettingsDropdownOpen] = useState(false);
   const [detailView, setDetailView] = useState<DetailView>(null);
   const [customizationView, setCustomizationView] = useState<CustomizationView>(null);
   const [channels, setChannels] = useState<ChannelState[]>(
@@ -5531,8 +5535,8 @@ function App() {
             onClick={() => {
               setMainView("mixer");
               setDetailView(null);
+              setSettingsDropdownOpen(false);
             }}
-            data-node-id="73:517"
           >
             MIXER
           </button>
@@ -5542,6 +5546,7 @@ function App() {
             onClick={() => {
               setMainView("auxSends");
               setDetailView(null);
+              setSettingsDropdownOpen(false);
             }}
             data-node-id="73:572"
           >
@@ -5553,6 +5558,7 @@ function App() {
             onClick={() => {
               setMainView("fxSends");
               setDetailView(null);
+              setSettingsDropdownOpen(false);
             }}
             data-node-id="73:576"
           >
@@ -5564,14 +5570,54 @@ function App() {
             onClick={() => {
               setMainView("dcaGroups");
               setDetailView(null);
+              setSettingsDropdownOpen(false);
             }}
             data-node-id="73:2725"
           >
             DCA GROUPS
           </button>
+          <button
+            type="button"
+            className={`top-nav__tab ${!detailView && mainView === "muteGroups" ? "active" : ""}`}
+            onClick={() => {
+              setMainView("muteGroups");
+              setDetailView(null);
+              setSettingsDropdownOpen(false);
+            }}
+          >
+            MUTE GROUPS
+          </button>
         </div>
 
         <div className="top-nav__actions" data-node-id="73:2723">
+          <div className="settings-dropdown-wrap">
+            <button
+              type="button"
+              className={`settings-gear-btn ${settingsDropdownOpen || (!detailView && mainView === "scenes") ? "settings-gear-btn--active" : ""}`}
+              title="Settings"
+              onClick={() => setSettingsDropdownOpen((v) => !v)}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+            </button>
+            {settingsDropdownOpen && (
+              <div className="settings-dropdown">
+                <button
+                  type="button"
+                  className={`settings-dropdown__item ${!detailView && mainView === "scenes" ? "settings-dropdown__item--active" : ""}`}
+                  onClick={() => {
+                    setMainView("scenes");
+                    setDetailView(null);
+                    setSettingsDropdownOpen(false);
+                  }}
+                >
+                  Scenes
+                </button>
+              </div>
+            )}
+          </div>
           <AxHeaderConnectionIp
             ip={ip}
             connected={isConnected}
@@ -5608,11 +5654,11 @@ function App() {
           : mainView === "fxSends"
             ? renderGlobalSendsView("fx")
             : mainView === "dcaGroups"
-              ? renderDetailPlaceholder(
-                  "DCA GROUPS",
-                  "DCA Groups",
-                  "TODO(types): faltam mapeamentos reais de parametros DCA para habilitar esta tela global."
-                )
+              ? <div className="global-view-shell"><DcaGroupsView client={clientRef.current} isConnected={isConnected} channelNames={channels.map((c) => c.channelName)} /></div>
+            : mainView === "muteGroups"
+              ? <div className="global-view-shell"><MuteGroupsView client={clientRef.current} isConnected={isConnected} channelNames={channels.map((c) => c.channelName)} /></div>
+            : mainView === "scenes"
+              ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} /></div>
         : <section className="mixer-layout">
           <section
             className={`channels-scroller mixer-channels ${isChannelsDragging ? "channels-scroller--dragging" : ""}`}

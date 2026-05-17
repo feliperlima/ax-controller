@@ -311,7 +311,7 @@ function getMasterSideParams(side: MasterSide) {
   throw new Error("Lado inválido. Use L/R ou left/right.");
 }
 
-function crc16modbus(bytes: number[]) {
+export function duonnCrc16Modbus(bytes: readonly number[]) {
   let crc = 0xffff;
 
   for (const byte of bytes) {
@@ -325,18 +325,11 @@ function crc16modbus(bytes: number[]) {
   return crc & 0xffff;
 }
 
-function makeCommand(param: number, value: number) {
-  const data = [
-    128,
-    7,
-    3,
-    (param >> 8) & 255,
-    param & 255,
-    (value >> 8) & 255,
-    value & 255,
-  ];
-
-  const crc = crc16modbus(data);
+export function buildRawDuonnPacket(opcode: number, payload: readonly number[] = []) {
+  const normalizedOpcode = Math.max(0, Math.min(255, Math.round(opcode)));
+  const normalizedPayload = payload.map((value) => Math.max(0, Math.min(255, Math.round(value))));
+  const data = [128, 3 + normalizedPayload.length, normalizedOpcode, ...normalizedPayload];
+  const crc = duonnCrc16Modbus(data);
 
   return new Uint8Array([
     ...data,
@@ -345,21 +338,24 @@ function makeCommand(param: number, value: number) {
   ]);
 }
 
+function makeCommand(param: number, value: number) {
+  return buildRawDuonnPacket(3, [
+    (param >> 8) & 255,
+    param & 255,
+    (value >> 8) & 255,
+    value & 255,
+  ]);
+}
+
 function makeReadParamsCommand(params: number[]) {
-  const data = [128, 3 + params.length * 2, 6];
+  const payload: number[] = [];
 
   for (const param of params) {
-    data.push((param >> 8) & 255);
-    data.push(param & 255);
+    payload.push((param >> 8) & 255);
+    payload.push(param & 255);
   }
 
-  const crc = crc16modbus(data);
-
-  return new Uint8Array([
-    ...data,
-    (crc >> 8) & 255,
-    crc & 255,
-  ]);
+  return buildRawDuonnPacket(6, payload);
 }
 
 function decodeParamResponse(buffer: ArrayBuffer) {
@@ -428,14 +424,7 @@ function getNameTargetIndex(target: NameTarget) {
 }
 
 function makeReadNameCommand(targetIndex: number) {
-  const data = [128, 4, 46, targetIndex & 255];
-  const crc = crc16modbus(data);
-
-  return new Uint8Array([
-    ...data,
-    (crc >> 8) & 255,
-    crc & 255,
-  ]);
+  return buildRawDuonnPacket(46, [targetIndex & 255]);
 }
 
 export function toMixerSafeName(name: string) {
@@ -450,14 +439,7 @@ export function toMixerSafeName(name: string) {
 function makeWriteNameCommand(targetIndex: number, displayName: string) {
   const safe = toMixerSafeName(displayName);
   const nameBytes = Array.from(new TextEncoder().encode(safe));
-  const data = [128, 4 + nameBytes.length, 47, targetIndex & 255, ...nameBytes];
-  const crc = crc16modbus(data);
-
-  return new Uint8Array([
-    ...data,
-    (crc >> 8) & 255,
-    crc & 255,
-  ]);
+  return buildRawDuonnPacket(47, [targetIndex & 255, ...nameBytes]);
 }
 
 function faderDbToValue(db: number | "-inf") {
@@ -735,6 +717,14 @@ export class Axios16Client {
     }
 
     const packet = makeCommand(param, value);
+    this.ws.send(packet);
+  }
+
+  sendRaw(packet: Uint8Array) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error("Cliente não conectado.");
+    }
+
     this.ws.send(packet);
   }
 
