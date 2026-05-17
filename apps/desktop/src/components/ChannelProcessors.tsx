@@ -4,6 +4,7 @@ import { Knob } from "./Knob";
 import { MeterBar, MeterScale } from "./Meter";
 import { VerticalFader } from "./VerticalFader";
 import { useCompressorMeters } from "../hooks/useCompressorMeters";
+import { useGateMeters } from "../hooks/useGateMeters";
 
 export type GateState = {
   enabled: boolean;
@@ -420,8 +421,8 @@ function SendsEditor({
       <div
         key={send.id}
         style={{
-          width: 110,
-          minWidth: 110,
+          width: "var(--strip-width)",
+          minWidth: "var(--strip-width)",
           height: "100%",
           position: "relative",
           zIndex: isLinkedPairLeader ? 3 : 1,
@@ -456,8 +457,8 @@ function SendsEditor({
             overflow: "hidden",
             padding: 0,
             borderRadius: "4px",
-            width: 110,
-            minWidth: 110,
+            width: "var(--strip-width)",
+            minWidth: "var(--strip-width)",
             height: "100%",
             backgroundColor: "var(--surface-panel-raised)",
             boxShadow: "0px 4px 2px rgba(0,0,0,0.25)",
@@ -491,8 +492,6 @@ function SendsEditor({
                 height: 32,
                 width: "100%",
                 borderRadius: 8,
-                border: "1px solid #1f2937",
-                background: "#020817",
                 color: "#e2e8f0",
                 display: "inline-flex",
                 alignItems: "center",
@@ -875,7 +874,7 @@ const CHART_THEME = {
   graphBorder: "#1f2937",
   gridMajor: "rgba(255,255,255,0.22)",
   gridMinor: "rgba(255,255,255,0.10)",
-  gridAccent: "rgba(56,189,248,0.45)",
+  gridZero: "rgba(248,250,252,0.72)",
   axisLabel: "#94a3b8",
   curveStroke: "#f8fafc",
   curveFill: "#e2e8f0",
@@ -891,6 +890,8 @@ const PROCESSOR_AXIS_LABEL_OFFSETS = {
   side: 14,
   bottom: 8,
 };
+const ZERO_DB_GRID_LINE_COLOR = "rgba(248,250,252,0.125)";
+const ZERO_DB_GRID_LINE_WIDTH = "1.1";
 const HANDLE_THEME = {
   threshold: "#d946ef",
   ratio: "#94a3b8",
@@ -1193,6 +1194,7 @@ function CompressorMeterScale({
           flex: "1 1 auto",
           minHeight: 0,
           overflow: "hidden",
+          flexDirection: "column",
           justifyContent: "space-between",
           alignItems: "flex-start",
         }}
@@ -1217,10 +1219,16 @@ function CompressorMeterScale({
   );
 }
 
-function CompressorGainReductionMeterBar({ meterDb }: { meterDb: number }) {
+function CompressorGainReductionMeterBar({
+  meterDb,
+  accentColor = MODULE_ACCENTS.comp.color,
+  accentGlow = MODULE_ACCENTS.comp.glow,
+}: {
+  meterDb: number;
+  accentColor?: string;
+  accentGlow?: string;
+}) {
   const normalizedDb = clamp(meterDb, 0, 30);
-  const activeColor = MODULE_ACCENTS.comp.color;
-  const inactiveColor = "rgba(168,85,247,0.12)";
   const activeSegmentCount = COMP_GR_SEGMENTS.reduce((count, segmentDb) => {
     const activationThreshold = segmentDb >= 30 ? 29 : Math.max(1.5, segmentDb - 0.5);
     return normalizedDb >= activationThreshold ? count + 1 : count;
@@ -1263,9 +1271,9 @@ function CompressorGainReductionMeterBar({ meterDb }: { meterDb: number }) {
                 flex: "1 1 auto",
                 minHeight: 2,
                 borderRadius: 1,
-                opacity: isActive ? 0.95 : 0.42,
-                backgroundColor: isActive ? activeColor : inactiveColor,
-                boxShadow: isActive ? `0 0 4px 1px ${MODULE_ACCENTS.comp.glow}` : "none",
+                opacity: isActive ? 0.95 : 0.24,
+                backgroundColor: accentColor,
+                boxShadow: isActive ? `0 0 4px 1px ${accentGlow}` : "none",
               }}
             />
           );
@@ -1798,8 +1806,8 @@ function GateGraph({
             x2={graphX + graphWidth}
             y1={dbToY(db)}
             y2={dbToY(db)}
-            stroke={db === 0 ? CHART_THEME.gridAccent : CHART_THEME.gridMajor}
-            strokeWidth="1"
+            stroke={db === 0 ? ZERO_DB_GRID_LINE_COLOR : CHART_THEME.gridMajor}
+            strokeWidth={db === 0 ? ZERO_DB_GRID_LINE_WIDTH : "1"}
           />
           <text x={graphX - PROCESSOR_AXIS_LABEL_OFFSETS.side} y={dbToY(db) + 4} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="end" fontWeight="500">
             {db}
@@ -1809,8 +1817,9 @@ function GateGraph({
           </text>
         </g>
       ))}
-      {Array.from({ length: 7 }, (_, index) => {
+      {Array.from({ length: 8 }, (_, index) => {
         const x = graphX + (graphWidth / 7) * index;
+        const isEdge = index === 0 || index === 7;
 
         return (
         <line
@@ -1819,9 +1828,9 @@ function GateGraph({
           x2={x}
           y1={graphY}
           y2={graphY + graphHeight}
-          stroke={index % 2 === 0 ? CHART_THEME.gridMajor : CHART_THEME.gridMinor}
-          strokeWidth={index % 2 === 0 ? "1" : "0.9"}
-          strokeDasharray={index % 2 === 0 ? undefined : "4 4"}
+          stroke={isEdge ? CHART_THEME.gridMajor : CHART_THEME.gridMinor}
+          strokeWidth={isEdge ? "1" : "0.9"}
+          strokeDasharray={isEdge ? undefined : "4 4"}
         />
         );
       })}
@@ -2059,8 +2068,8 @@ function CompressorGraph({
             x2={graphX + graphWidth}
             y1={yForDb(db)}
             y2={yForDb(db)}
-            stroke={db === 0 ? CHART_THEME.gridAccent : CHART_THEME.gridMajor}
-            strokeWidth="1"
+            stroke={db === 0 ? ZERO_DB_GRID_LINE_COLOR : CHART_THEME.gridMajor}
+            strokeWidth={db === 0 ? ZERO_DB_GRID_LINE_WIDTH : "1"}
           />
           <text x={graphX - PROCESSOR_AXIS_LABEL_OFFSETS.side} y={yForDb(db) + 4} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="end" fontWeight="500">
             {db}
@@ -2385,6 +2394,7 @@ function EqGraph({
     return `${graphX + (graphWidth / 159) * index},${yForGain(gain)}`;
   }).join(" ");
   const zeroLineY = yForGain(0);
+  const eqFillBaseY = Math.min(graphY + graphHeight, zeroLineY + 1.5);
   const bandOverlays = eq.bands
     .map((band, index) => {
       if (!eq.enabled || !band.enabled || Math.abs(band.gain) < 0.05) {
@@ -2502,14 +2512,16 @@ function EqGraph({
       ))}
       {horizontalMajorDb.map((gain) => (
         <g key={gain}>
-          <line
-            x1={graphX}
-            x2={graphX + graphWidth}
-            y1={yForGain(gain)}
-            y2={yForGain(gain)}
-            stroke={gain === 0 ? "rgba(241,245,249,0.82)" : "rgba(52,83,108,0.42)"}
-            strokeWidth={gain === 0 ? "1.5" : "1"}
-          />
+          {gain !== 0 && (
+            <line
+              x1={graphX}
+              x2={graphX + graphWidth}
+              y1={yForGain(gain)}
+              y2={yForGain(gain)}
+              stroke="rgba(52,83,108,0.42)"
+              strokeWidth="1"
+            />
+          )}
           <text x={graphX - PROCESSOR_AXIS_LABEL_OFFSETS.side} y={yForGainLabel(gain)} fill={CHART_THEME.axisLabel} fontSize="9" textAnchor="end" fontWeight="500">
             {gain > 0 ? `+${gain}` : gain}
           </text>
@@ -2571,9 +2583,17 @@ function EqGraph({
         </g>
       ))}
       <polygon
-        points={`${graphX},${zeroLineY} ${points} ${graphX + graphWidth},${zeroLineY}`}
+        points={`${graphX},${eqFillBaseY} ${points} ${graphX + graphWidth},${eqFillBaseY}`}
         fill="var(--alpha-cyan-16)"
         opacity={eq.enabled ? 0.34 : 0.14}
+      />
+      <line
+        x1={graphX}
+        x2={graphX + graphWidth}
+        y1={zeroLineY}
+        y2={zeroLineY}
+        stroke={ZERO_DB_GRID_LINE_COLOR}
+        strokeWidth={ZERO_DB_GRID_LINE_WIDTH}
       />
       <polyline points={points} fill="none" stroke="var(--primitive-neutral-100)" strokeWidth="2.2" />
       {(["hpf", "lpf"] as const).map((filter) => {
@@ -2679,13 +2699,25 @@ function GateEditor({
   disabled,
   onChange,
   onReset,
+  channelInputDb,
 }: {
   gate: GateState;
   disabled?: boolean;
   onChange: (patch: Partial<GateState>) => void;
   onReset: () => void;
+  channelInputDb?: number;
 }) {
   const controllersDisabled = disabled || !gate.enabled;
+  const metersDisabled = disabled || !gate.enabled;
+  const gateMeterState = useGateMeters({
+    inputDb: channelInputDb,
+    thresholdDb: gate.threshold,
+    attackMs: gate.attack,
+    holdMs: gate.hold,
+    decaySetting: gate.decay,
+    enabled: gate.enabled,
+  });
+  const displayedGateGrDb = metersDisabled ? 0 : gateMeterState.visualGainReductionDb;
   const gateKnobPixelsPerStep = {
     threshold: 3,
     attack: 3,
@@ -2762,7 +2794,7 @@ function GateEditor({
               padding: 32,
               boxSizing: "border-box",
               display: "grid",
-              gridTemplateColumns: "minmax(0, 1fr)",
+              gridTemplateColumns: "minmax(0, 1fr) auto",
               alignItems: "stretch",
               gap: 12,
               borderRadius: 4,
@@ -2776,6 +2808,31 @@ function GateEditor({
               onThresholdChange={(threshold) => onChange({ threshold })}
               onAttackChange={(attack) => onChange({ attack })}
             />
+            <div
+              style={{
+                minHeight: 0,
+                height: "100%",
+                display: "grid",
+                gridTemplateColumns: "auto auto",
+                columnGap: 8,
+                alignItems: "stretch",
+                justifyItems: "center",
+                opacity: metersDisabled ? 0.45 : 1,
+              }}
+            >
+              <div style={{ display: "grid", gridTemplateRows: "18px minmax(0, 1fr)", justifyItems: "center", minHeight: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.4px", color: "var(--text-secondary)" }}>GR</div>
+                <CompressorGainReductionMeterBar
+                  meterDb={displayedGateGrDb}
+                  accentColor={MODULE_ACCENTS.gate.color}
+                  accentGlow={MODULE_ACCENTS.gate.glow}
+                />
+              </div>
+              <div style={{ display: "grid", gridTemplateRows: "18px minmax(0, 1fr)", minHeight: 0 }}>
+                <div />
+                <CompressorMeterScale markers={COMP_GR_SCALE_MARKERS} showClip={false} />
+              </div>
+            </div>
           </div>
         </div>
 
@@ -3639,6 +3696,7 @@ export function ChannelProcessors({
             disabled={disabled}
             onChange={onGateChange}
             onReset={onResetGate}
+            channelInputDb={channelInputDb}
           />
         )}
 

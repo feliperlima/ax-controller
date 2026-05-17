@@ -31,6 +31,8 @@ type ChannelStripProps = {
   onFaderChange: (value: number) => void;
   onPanChange: (value: number) => void;
   onGainChange: (value: number) => void;
+  onToggleLink?: () => void;
+  linkButtonLabel?: string;
   onFooterClick?: () => void;
   onOpenDetail?: (channel: number) => void;
 };
@@ -127,6 +129,8 @@ export function ChannelStrip({
   onFaderChange,
   onPanChange,
   onGainChange,
+  onToggleLink,
+  linkButtonLabel,
   onFooterClick,
   onOpenDetail,
 }: ChannelStripProps) {
@@ -158,6 +162,7 @@ export function ChannelStrip({
   const phaseInverted = !phasePositive;
   const canTogglePhase = typeof onTogglePhase === "function";
   const canOpenDetail = typeof onOpenDetail === "function";
+  const canToggleLink = typeof onToggleLink === "function" && Boolean(linkButtonLabel);
   const isDetailVariant = variant === "detail";
 
   return (
@@ -171,8 +176,8 @@ export function ChannelStrip({
         overflow: "hidden",
         padding: isDetailVariant ? "8px 4px" : 0,
         borderRadius: "4px",
-        width: 110,
-        minWidth: 110,
+        width: "var(--strip-width)",
+        minWidth: "var(--strip-width)",
         height: "100%",
         backgroundColor: "var(--surface-card)",
         boxShadow: "0px 4px 2px rgba(0,0,0,0.25)",
@@ -278,6 +283,47 @@ export function ChannelStrip({
               title={canOpenDetail ? "Open channel detail" : undefined}
             />
           )}
+        </div>
+      )}
+
+      {canToggleLink && (
+        <div
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          style={{
+            width: "100%",
+            paddingLeft: "4px",
+            paddingRight: "4px",
+            boxSizing: "border-box",
+          }}
+        >
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleLink?.();
+            }}
+            style={{
+              width: "100%",
+              height: "30px",
+              borderRadius: "8px",
+              border: isPairLinked ? "1px solid #67e8f9" : "1px solid #334155",
+              background: isPairLinked ? "#164e63" : "#0f172a",
+              color: isPairLinked ? "#f0fdff" : "#64748b",
+              fontWeight: 900,
+              fontSize: "10px",
+              letterSpacing: "0.06em",
+              cursor: disabled ? "not-allowed" : "pointer",
+              opacity: disabled ? 0.5 : 1,
+              boxShadow: isPairLinked ? "0 0 8px rgba(103,232,249,0.35)" : "none",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {`LINK ${linkButtonLabel}`}
+          </button>
         </div>
       )}
 

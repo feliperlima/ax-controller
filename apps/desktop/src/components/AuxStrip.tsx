@@ -21,6 +21,8 @@ type AuxStripProps = {
   eqState?: EqState;
   onToggleMute: () => void;
   onToggleSolo: () => void;
+  onToggleLink?: () => void;
+  linkButtonLabel?: string;
   onFaderChange: (value: number) => void;
   onOpenDetail?: (auxNumber: number) => void;
 };
@@ -100,6 +102,8 @@ export function AuxStrip({
   eqState,
   onToggleMute,
   onToggleSolo,
+  onToggleLink,
+  linkButtonLabel,
   onFaderChange,
   onOpenDetail,
 }: AuxStripProps) {
@@ -110,6 +114,7 @@ export function AuxStrip({
     ? channelName.trim()
     : `Aux ${auxNumber}`;
   const canOpenDetail = typeof onOpenDetail === "function";
+  const canToggleLink = typeof onToggleLink === "function" && Boolean(linkButtonLabel);
 
   const FLAT_EQ: EqState = { enabled: false, hpfEnabled: false, hpfType: "butterworth", hpfSlope: 24, hpfFreq: 20, lpfEnabled: false, lpfType: "butterworth", lpfSlope: 24, lpfFreq: 20000, bands: [] };
   const eqPreview = useMemo(
@@ -129,8 +134,8 @@ export function AuxStrip({
         overflow: "hidden",
         padding: isDetailVariant ? "8px 4px" : 0,
         borderRadius: "4px",
-        width: 110,
-        minWidth: 110,
+        width: "var(--strip-width)",
+        minWidth: "var(--strip-width)",
         height: "100%",
         backgroundColor: "var(--surface-card)",
         boxShadow: "0px 4px 2px rgba(0,0,0,0.25)",
@@ -235,6 +240,47 @@ export function AuxStrip({
               </span>
             </div>
           )}
+        </div>
+      )}
+
+      {canToggleLink && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          style={{
+            width: "100%",
+            paddingLeft: 4,
+            paddingRight: 4,
+            boxSizing: "border-box",
+          }}
+        >
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleLink?.();
+            }}
+            style={{
+              width: "100%",
+              height: "30px",
+              borderRadius: "8px",
+              border: isLinked ? "1px solid #67e8f9" : "1px solid #334155",
+              background: isLinked ? "#164e63" : "#0f172a",
+              color: isLinked ? "#f0fdff" : "#64748b",
+              fontWeight: 900,
+              fontSize: "10px",
+              letterSpacing: "0.06em",
+              cursor: disabled ? "not-allowed" : "pointer",
+              opacity: disabled ? 0.5 : 1,
+              boxShadow: isLinked ? "0 0 8px rgba(103,232,249,0.35)" : "none",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {`LINK ${linkButtonLabel}`}
+          </button>
         </div>
       )}
 

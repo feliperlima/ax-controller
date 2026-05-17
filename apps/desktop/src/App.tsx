@@ -648,6 +648,18 @@ function isLocalDefaultDisplayName(target: NameTarget, displayName: string) {
   return normalized === defaultDisplayNormalized || isDefaultMixerName(target, displayName);
 }
 
+const DCA_NAME_TARGET_INDEXES = [16, 17, 18, 19] as const;
+
+function getDefaultDcaGroupName(index: number) {
+  return `Group ${index + 1}`;
+}
+
+function isDefaultDcaName(index: number, name: string) {
+  const normalized = normalizeMixerName(name);
+  if (!normalized) return true;
+  return normalized === `DCA${index + 1}` || normalized === `GROUP${index + 1}`;
+}
+
 function createVirtualStripsState(count: number, defaultColorId?: number) {
   return Array.from({ length: count }, (_, index) => ({
     ...createDefaultChannelState(),
@@ -1134,6 +1146,9 @@ function App() {
   );
   const [fxStrips, setFxStrips] = useState<ChannelState[]>(() =>
     createVirtualStripsState(2, DEFAULT_FX_COLOR_ID)
+  );
+  const [dcaNames, setDcaNames] = useState<string[]>(() =>
+    Array.from({ length: 4 }, (_, index) => getDefaultDcaGroupName(index))
   );
   const [auxProcessorStates, setAuxProcessorStates] = useState<ProcessorState[]>(() =>
     Array.from({ length: 8 }, () => createDefaultAuxProcessorState())
@@ -1699,10 +1714,15 @@ function App() {
     const client = clientRef.current;
     if (!client) return;
 
-    const [channelNames, auxNames, fxNames] = await Promise.all([
+    const [channelNames, auxNames, fxNames, dcaMixerNames] = await Promise.all([
       client.readChannelNames(600),
       client.readAuxNames(600),
       client.readFxNames(600),
+      Promise.all(
+        DCA_NAME_TARGET_INDEXES.map((targetIndex) =>
+          client.readNameByIndex(targetIndex, 600).catch(() => "")
+        )
+      ),
     ]);
 
     setChannels((current) =>
@@ -1776,6 +1796,24 @@ function App() {
         };
       })
     );
+
+    const nextDcaNames = dcaMixerNames.map((rawName, index) => {
+      const mixerName = rawName.trim();
+      const defaultGroupName = getDefaultDcaGroupName(index);
+
+      if (isDefaultDcaName(index, mixerName)) {
+        try {
+          client.setNameByIndex(DCA_NAME_TARGET_INDEXES[index], defaultGroupName);
+        } catch {
+          // Ignore transient write failures; keep display normalized locally.
+        }
+        return defaultGroupName;
+      }
+
+      return mixerName.length > 0 ? mixerName : defaultGroupName;
+    });
+
+    setDcaNames(nextDcaNames);
   }
 
   async function syncChannelPairVisualState() {
@@ -2613,6 +2651,10 @@ function App() {
         // Ignore transient errors to avoid noisy status churn.
       }
 
+      return;
+    }
+
+    if (detailView.type !== "aux") {
       return;
     }
 
@@ -4367,39 +4409,6 @@ function App() {
                 ›
               </button>
             </div>
-
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
-              <button
-                type="button"
-                disabled={!isConnected}
-                onClick={() => {
-                  toggleChannelLink(channelNumber).catch((error) => {
-                    setStatus(
-                      error instanceof Error
-                        ? error.message
-                        : "Erro ao alternar link de canal"
-                    );
-                  });
-                }}
-                style={{
-                  padding: "5px 10px",
-                  borderRadius: 6,
-                  border: isLinked ? "1px solid #67e8f9" : "1px solid #334155",
-                  background: isLinked ? "#164e63" : "#0f172a",
-                  color: isLinked ? "#f0fdff" : "#64748b",
-                  fontWeight: 900,
-                  fontSize: 12,
-                  letterSpacing: "0.06em",
-                  cursor: !isConnected ? "not-allowed" : "pointer",
-                  opacity: !isConnected ? 0.5 : 1,
-                  boxShadow: isLinked
-                    ? "0 0 8px rgba(103,232,249,0.35)"
-                    : "none",
-                }}
-              >
-                {isLinked ? `LINKED CH${pairOdd}-CH${pairEven}` : `LINK CH${pairOdd}-CH${pairEven}`}
-              </button>
-            </div>
           </div>
 
         </section>
@@ -4408,7 +4417,7 @@ function App() {
           style={{
             minHeight: 0,
             display: "grid",
-            gridTemplateColumns: "110px minmax(0, 1fr)",
+            gridTemplateColumns: "var(--strip-width) minmax(0, 1fr)",
             gap: 4,
             padding: 0,
             overflow: "visible",
@@ -4419,7 +4428,7 @@ function App() {
             style={{
               minWidth: 0,
               minHeight: 0,
-              width: 110,
+              width: "var(--strip-width)",
               display: "flex",
               justifyContent: "stretch",
               justifySelf: "start",
@@ -4457,6 +4466,16 @@ function App() {
               }
               onPanChange={(value) => handlePanChange(channelNumber, value)}
               onGainChange={(value) => handleGainChange(channelNumber, value)}
+              onToggleLink={() => {
+                toggleChannelLink(channelNumber).catch((error) => {
+                  setStatus(
+                    error instanceof Error
+                      ? error.message
+                      : "Erro ao alternar link de canal"
+                  );
+                });
+              }}
+              linkButtonLabel={`${pairOdd}-${pairEven}`}
               onOpenDetail={goToDetailChannel}
             />
           </aside>
@@ -4624,7 +4643,7 @@ function App() {
               </button>
               <span
                 style={{
-                  minWidth: 110,
+                  minWidth: "var(--strip-width)",
                   textAlign: "center",
                   fontFamily: "Inter, system-ui, sans-serif",
                   fontSize: 22,
@@ -4695,47 +4714,15 @@ function App() {
                 ›
               </button>
             </div>
-
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
-              <button
-                type="button"
-                disabled={!isConnected}
-                onClick={() => {
-                  toggleAuxLink(auxNumber).catch((error) => {
-                    setStatus(
-                      error instanceof Error
-                        ? error.message
-                        : "Erro ao alternar link de auxiliar"
-                    );
-                  });
-                }}
-                style={{
-                  padding: "5px 10px",
-                  borderRadius: 6,
-                  border: isLinked ? "1px solid #67e8f9" : "1px solid #334155",
-                  background: isLinked ? "#164e63" : "#0f172a",
-                  color: isLinked ? "#f0fdff" : "#64748b",
-                  fontWeight: 900,
-                  fontSize: 12,
-                  letterSpacing: "0.06em",
-                  cursor: !isConnected ? "not-allowed" : "pointer",
-                  opacity: !isConnected ? 0.5 : 1,
-                  boxShadow: isLinked
-                    ? "0 0 8px rgba(103,232,249,0.35)"
-                    : "none",
-                }}
-              >
-                {isLinked ? `LINKED AUX${pairOdd}-AUX${pairEven}` : `LINK AUX${pairOdd}-AUX${pairEven}`}
-              </button>
-            </div>
           </div>
+
         </section>
 
         <section
           style={{
             minHeight: 0,
             display: "grid",
-            gridTemplateColumns: "110px minmax(0, 1fr)",
+            gridTemplateColumns: "var(--strip-width) minmax(0, 1fr)",
             gap: 4,
             padding: 0,
             overflow: "visible",
@@ -4746,7 +4733,7 @@ function App() {
             style={{
               minWidth: 0,
               minHeight: 0,
-              width: 110,
+              width: "var(--strip-width)",
               display: "flex",
               justifyContent: "stretch",
               justifySelf: "start",
@@ -4772,6 +4759,16 @@ function App() {
               eqState={processorState.eq}
               onToggleMute={() => toggleStripMute("aux", auxNumber)}
               onToggleSolo={() => toggleStripSolo("aux", auxNumber)}
+              onToggleLink={() => {
+                toggleAuxLink(auxNumber).catch((error) => {
+                  setStatus(
+                    error instanceof Error
+                      ? error.message
+                      : "Erro ao alternar link de auxiliar"
+                  );
+                });
+              }}
+              linkButtonLabel={`${pairOdd}-${pairEven}`}
               onFaderChange={(position) => handleStripFaderChange("aux", auxNumber, position)}
               onOpenDetail={goToDetailAux}
             />
@@ -5098,8 +5095,8 @@ function App() {
           </div>
         </section>
 
-        <section style={{ minHeight: 0, display: "grid", gridTemplateColumns: "110px minmax(0, 1fr)", gap: 4, padding: 0, overflow: "visible", position: "relative" }}>
-          <aside style={{ minWidth: 0, minHeight: 0, width: 110, display: "flex", justifyContent: "stretch", justifySelf: "start", overflow: "hidden", position: "relative", zIndex: 3 }}>
+        <section style={{ minHeight: 0, display: "grid", gridTemplateColumns: "var(--strip-width) minmax(0, 1fr)", gap: 4, padding: 0, overflow: "visible", position: "relative" }}>
+          <aside style={{ minWidth: 0, minHeight: 0, width: "var(--strip-width)", display: "flex", justifyContent: "stretch", justifySelf: "start", overflow: "hidden", position: "relative", zIndex: 3 }}>
             <FxStrip
               fxNumber={fxNumber}
               variant="detail"
@@ -5248,8 +5245,8 @@ function App() {
           </div>
         </section>
 
-        <section style={{ minHeight: 0, display: "grid", gridTemplateColumns: "183px minmax(0, 1fr)", gap: 4, padding: 0, overflow: "visible", position: "relative" }}>
-          <aside style={{ minWidth: 0, minHeight: 0, width: 183, display: "flex", justifyContent: "stretch", justifySelf: "start", overflow: "hidden", position: "relative", zIndex: 3 }}>
+        <section style={{ minHeight: 0, display: "grid", gridTemplateColumns: "var(--master-strip-width) minmax(0, 1fr)", gap: 4, padding: 0, overflow: "visible", position: "relative" }}>
+          <aside style={{ minWidth: 0, minHeight: 0, width: "var(--master-strip-width)", display: "flex", justifyContent: "stretch", justifySelf: "start", overflow: "hidden", position: "relative", zIndex: 3 }}>
             <MasterBus
               leftColorId={master.leftColorId}
               rightColorId={master.rightColorId}
@@ -5654,9 +5651,9 @@ function App() {
           : mainView === "fxSends"
             ? renderGlobalSendsView("fx")
             : mainView === "dcaGroups"
-              ? <div className="global-view-shell"><DcaGroupsView client={clientRef.current} isConnected={isConnected} channelNames={channels.map((c) => c.channelName)} /></div>
+              ? <div className="global-view-shell"><DcaGroupsView client={clientRef.current} isConnected={isConnected} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} dcaNames={dcaNames} /></div>
             : mainView === "muteGroups"
-              ? <div className="global-view-shell"><MuteGroupsView client={clientRef.current} isConnected={isConnected} channelNames={channels.map((c) => c.channelName)} /></div>
+              ? <div className="global-view-shell"><MuteGroupsView client={clientRef.current} isConnected={isConnected} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} /></div>
             : mainView === "scenes"
               ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} /></div>
         : <section className="mixer-layout">
