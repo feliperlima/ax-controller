@@ -15,6 +15,14 @@ export type GroupMember =
   | "CH_14"
   | "CH_15"
   | "CH_16"
+  | "CH_17"
+  | "CH_18"
+  | "CH_19"
+  | "CH_20"
+  | "CH_21"
+  | "CH_22"
+  | "CH_23"
+  | "CH_24"
   | "FX_1"
   | "FX_2"
   | "AUX_1"
@@ -53,6 +61,62 @@ export const GROUP_MEMBER_BITS: Readonly<Record<GroupMember, GroupMemberBit | nu
   CH_14: { wordIndex: 0, bit: 13, value: 8192, isConfirmed: true },
   CH_15: { wordIndex: 0, bit: 14, value: 16384, isConfirmed: true },
   CH_16: { wordIndex: 0, bit: 15, value: 32768, isConfirmed: true },
+  CH_17: {
+    wordIndex: 1,
+    bit: 0,
+    value: 1,
+    isConfirmed: false,
+    note: "Derived contiguous CH bit pattern for AX24 (CH17-CH24). Validate on hardware.",
+  },
+  CH_18: {
+    wordIndex: 1,
+    bit: 1,
+    value: 2,
+    isConfirmed: false,
+    note: "Derived contiguous CH bit pattern for AX24 (CH17-CH24). Validate on hardware.",
+  },
+  CH_19: {
+    wordIndex: 1,
+    bit: 2,
+    value: 4,
+    isConfirmed: false,
+    note: "Derived contiguous CH bit pattern for AX24 (CH17-CH24). Validate on hardware.",
+  },
+  CH_20: {
+    wordIndex: 1,
+    bit: 3,
+    value: 8,
+    isConfirmed: false,
+    note: "Derived contiguous CH bit pattern for AX24 (CH17-CH24). Validate on hardware.",
+  },
+  CH_21: {
+    wordIndex: 1,
+    bit: 4,
+    value: 16,
+    isConfirmed: false,
+    note: "Derived contiguous CH bit pattern for AX24 (CH17-CH24). Validate on hardware.",
+  },
+  CH_22: {
+    wordIndex: 1,
+    bit: 5,
+    value: 32,
+    isConfirmed: false,
+    note: "Derived contiguous CH bit pattern for AX24 (CH17-CH24). Validate on hardware.",
+  },
+  CH_23: {
+    wordIndex: 1,
+    bit: 6,
+    value: 64,
+    isConfirmed: false,
+    note: "Derived contiguous CH bit pattern for AX24 (CH17-CH24). Validate on hardware.",
+  },
+  CH_24: {
+    wordIndex: 1,
+    bit: 7,
+    value: 128,
+    isConfirmed: false,
+    note: "Derived contiguous CH bit pattern for AX24 (CH17-CH24). Validate on hardware.",
+  },
   FX_1: { wordIndex: 1, bit: 10, value: 1024, isConfirmed: true },
   FX_2: { wordIndex: 1, bit: 11, value: 2048, isConfirmed: true },
   AUX_1: { wordIndex: 1, bit: 12, value: 4096, isConfirmed: true },

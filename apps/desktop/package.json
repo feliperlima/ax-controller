@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "check:param-overlap": "node scripts/check-param-overlap.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

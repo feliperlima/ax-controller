@@ -19,9 +19,10 @@ type MuteGroupState = {
 
 const MUTE_IDS: MuteGroupId[] = [1, 2, 3, 4];
 
-const CHANNEL_IDS = [
+const CHANNEL_IDS_MAX = [
   "CH_1", "CH_2", "CH_3", "CH_4", "CH_5", "CH_6", "CH_7", "CH_8",
   "CH_9", "CH_10", "CH_11", "CH_12", "CH_13", "CH_14", "CH_15", "CH_16",
+  "CH_17", "CH_18", "CH_19", "CH_20", "CH_21", "CH_22", "CH_23", "CH_24",
 ] as const;
 
 const AUX_IDS = [
@@ -32,9 +33,7 @@ const FX_IDS = ["FX_1", "FX_2"] as const;
 
 const MASTER_IDS = ["MASTER_L", "MASTER_R"] as const;
 
-const ASSIGNABLE_MEMBER_IDS = [...CHANNEL_IDS, ...AUX_IDS, ...FX_IDS, ...MASTER_IDS] as const;
-
-type AssignableMemberId = (typeof ASSIGNABLE_MEMBER_IDS)[number];
+type AssignableMemberId = GroupMember;
 
 type MatrixRow = {
   id: AssignableMemberId;
@@ -70,14 +69,10 @@ function sendMessages(
   }
 }
 
-function isAssignableMember(member: GroupMember): member is AssignableMemberId {
-  return ASSIGNABLE_MEMBER_IDS.includes(member as AssignableMemberId);
-}
-
 function applyMuteToMember(client: Axios16Client, member: AssignableMemberId, shouldMute: boolean) {
   if (member.startsWith("CH_")) {
     const channel = Number(member.slice(3));
-    if (Number.isFinite(channel) && channel >= 1 && channel <= 16) {
+    if (Number.isFinite(channel) && channel >= 1 && channel <= 24) {
       client.setMute(channel, shouldMute);
     }
     return;
@@ -112,6 +107,7 @@ function applyMuteToMember(client: Axios16Client, member: AssignableMemberId, sh
 type MuteGroupsViewProps = {
   client: Axios16Client | null;
   isConnected: boolean;
+  channelCount?: number;
   onMemberMuteApplied?: (memberId: string, muted: boolean) => void;
   channelNames?: string[];
   channelColorIds?: number[];
@@ -125,6 +121,7 @@ type MuteGroupsViewProps = {
 export function MuteGroupsView({
   client,
   isConnected,
+  channelCount = 16,
   onMemberMuteApplied,
   channelNames,
   channelColorIds,
@@ -134,6 +131,9 @@ export function MuteGroupsView({
   fxColorIds,
   masterColorIds,
 }: MuteGroupsViewProps) {
+  const CHANNEL_IDS = CHANNEL_IDS_MAX.slice(0, Math.max(1, Math.min(24, channelCount))) as GroupMember[];
+  const ASSIGNABLE_MEMBER_IDS: AssignableMemberId[] = [...CHANNEL_IDS, ...AUX_IDS, ...FX_IDS, ...MASTER_IDS];
+
   const [groups, setGroups] = useState<MuteGroupState[]>(createInitialMuteState);
   const [selectedGroup, setSelectedGroup] = useState<MuteGroupId>(1);
   const [confirmAllMuted, setConfirmAllMuted] = useState<MuteGroupId | null>(null);
@@ -151,7 +151,7 @@ export function MuteGroupsView({
 
     for (const group of nextGroups) {
       for (const member of group.members) {
-        if (!isAssignableMember(member)) continue;
+        if (!ASSIGNABLE_MEMBER_IDS.includes(member)) continue;
         managedMembersSet.add(member);
         if (group.active) {
           activeMembersSet.add(member);
@@ -210,7 +210,9 @@ export function MuteGroupsView({
             const words = memberParams.map((param) => values.get(param));
 
             const nextMembers = words.every((word) => word !== undefined)
-              ? decodeGroupMembers(words as [number, number, number, number]).filter(isAssignableMember)
+              ? decodeGroupMembers(words as [number, number, number, number]).filter(
+                  (member) => ASSIGNABLE_MEMBER_IDS.includes(member)
+                )
               : group.members;
 
             if (raw === undefined) {

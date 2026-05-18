@@ -31,9 +31,10 @@ const DCA_ACCENT_COLORS: Record<DcaGroupId, string> = {
 const DCA_FADER_INDICATOR_COLOR = "var(--channel-10, #21A7E8)";
 const DCA_FOOTER_FIXED_COLOR = "#7b7b7b";
 
-const CHANNEL_IDS = [
+const CHANNEL_IDS_MAX = [
   "CH_1", "CH_2", "CH_3", "CH_4", "CH_5", "CH_6", "CH_7", "CH_8",
   "CH_9", "CH_10", "CH_11", "CH_12", "CH_13", "CH_14", "CH_15", "CH_16",
+  "CH_17", "CH_18", "CH_19", "CH_20", "CH_21", "CH_22", "CH_23", "CH_24",
 ] as const;
 
 const AUX_IDS = [
@@ -46,14 +47,9 @@ const MASTER_IDS = ["MASTER_L", "MASTER_R"] as const;
 
 const INCLUDE_MASTER_ROWS_IN_DCA = false;
 
-const ASSIGNABLE_MEMBER_IDS = [...CHANNEL_IDS, ...AUX_IDS, ...FX_IDS, ...MASTER_IDS] as const;
-const DCA_VISIBLE_MEMBER_IDS = (
-  INCLUDE_MASTER_ROWS_IN_DCA
-    ? [...CHANNEL_IDS, ...AUX_IDS, ...FX_IDS, ...MASTER_IDS]
-    : [...CHANNEL_IDS, ...AUX_IDS, ...FX_IDS]
-);
+type AssignableMemberId = GroupMember;
 
-type AssignableMemberId = (typeof ASSIGNABLE_MEMBER_IDS)[number];
+
 
 type MatrixRow = {
   id: AssignableMemberId;
@@ -172,6 +168,7 @@ function sendMessages(
 type DcaGroupsViewProps = {
   client: Axios16Client | null;
   isConnected: boolean;
+  channelCount?: number;
   channelNames?: string[];
   channelColorIds?: number[];
   auxNames?: string[];
@@ -185,6 +182,7 @@ type DcaGroupsViewProps = {
 export function DcaGroupsView({
   client,
   isConnected,
+  channelCount = 16,
   channelNames,
   channelColorIds,
   auxNames,
@@ -194,6 +192,14 @@ export function DcaGroupsView({
   masterColorIds,
   dcaNames,
 }: DcaGroupsViewProps) {
+  const CHANNEL_IDS = CHANNEL_IDS_MAX.slice(0, Math.max(1, Math.min(24, channelCount))) as GroupMember[];
+  const ASSIGNABLE_MEMBER_IDS: AssignableMemberId[] = [...CHANNEL_IDS, ...AUX_IDS, ...FX_IDS, ...MASTER_IDS];
+  const DCA_VISIBLE_MEMBER_IDS = (
+    INCLUDE_MASTER_ROWS_IN_DCA
+      ? [...CHANNEL_IDS, ...AUX_IDS, ...FX_IDS, ...MASTER_IDS]
+      : [...CHANNEL_IDS, ...AUX_IDS, ...FX_IDS]
+  ) as AssignableMemberId[];
+
   const [groups, setGroups] = useState<DcaGroupState[]>(createInitialDcaState);
   const [selectedGroup, setSelectedGroup] = useState<DcaGroupId>(1);
   const matrixColumnsRef = useRef<HTMLDivElement | null>(null);
@@ -354,7 +360,7 @@ export function DcaGroupsView({
   const selectedAssignableMembers = DCA_VISIBLE_MEMBER_IDS.filter((member) => selectedGroupState.members.includes(member));
   const selectedSet = new Set(selectedAssignableMembers);
   const selectedNonAssignableMembers = selectedGroupState.members.filter(
-    (member) => !DCA_VISIBLE_MEMBER_IDS.includes(member as (typeof DCA_VISIBLE_MEMBER_IDS)[number])
+    (member) => !DCA_VISIBLE_MEMBER_IDS.includes(member as AssignableMemberId)
   );
   const matrixRows: MatrixRow[] = [
     ...CHANNEL_IDS.map((id, index) => {
@@ -405,13 +411,13 @@ export function DcaGroupsView({
       disabled: !isMemberSelectable("MASTER_R"),
     },
   ];
-  const visibleRows = matrixRows.filter((row) => DCA_VISIBLE_MEMBER_IDS.includes(row.id as (typeof DCA_VISIBLE_MEMBER_IDS)[number]));
+  const visibleRows = matrixRows.filter((row) => DCA_VISIBLE_MEMBER_IDS.includes(row.id as AssignableMemberId));
   const selectableVisibleMemberIds = DCA_VISIBLE_MEMBER_IDS.filter((member) => isMemberSelectable(member as AssignableMemberId));
   const channelRows = visibleRows.filter((row) => row.id.startsWith("CH_"));
   const outputRows = visibleRows.filter((row) => row.id.startsWith("AUX_") || row.id.startsWith("FX_") || row.id.startsWith("MASTER_"));
 
   function renderMatrixRow(row: MatrixRow) {
-    const selected = selectedSet.has(row.id as (typeof DCA_VISIBLE_MEMBER_IDS)[number]);
+    const selected = selectedSet.has(row.id as AssignableMemberId);
     const isDisabled = !isConnected || Boolean(row.disabled);
 
     return (
@@ -422,7 +428,7 @@ export function DcaGroupsView({
         disabled={isDisabled}
         onClick={() => {
           if (row.disabled) return;
-          if (!DCA_VISIBLE_MEMBER_IDS.includes(row.id as (typeof DCA_VISIBLE_MEMBER_IDS)[number])) return;
+          if (!DCA_VISIBLE_MEMBER_IDS.includes(row.id as AssignableMemberId)) return;
           handleToggleAssignableMember(selectedGroup, row.id);
         }}
       >

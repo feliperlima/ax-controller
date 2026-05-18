@@ -37,6 +37,7 @@ import { DeviceSelectionScreen } from "./components/DeviceSelectionScreen";
 import axControlBrand from "./assets/AX-control-Brand-vert.svg";
 import { useMixerDiscovery } from "./hooks/useMixerDiscovery";
 import { type DiscoveredMixer } from "./services/mixerDiscovery";
+import { getMixerCompatibility } from "./lib/mixerCompatibility";
 import {
   ChannelProcessors,
   type CompressorState,
@@ -116,6 +117,17 @@ type MonitorSoloMeterState = {
   rightLevel: number;
 };
 
+const DEFAULT_CHANNEL_COUNT = 16;
+const AX24_CHANNEL_COUNT = 24;
+
+function normalizeSupportedChannelCount(channels?: number) {
+  if (channels && channels >= AX24_CHANNEL_COUNT) {
+    return AX24_CHANNEL_COUNT;
+  }
+
+  return DEFAULT_CHANNEL_COUNT;
+}
+
 function faderPositionToDb(position: number) {
   const points = [
     { pos: 0, db: -120 },
@@ -192,8 +204,8 @@ function createDefaultChannelState(): ChannelState {
   };
 }
 
-function createInitialChannelsState() {
-  return Array.from({ length: 16 }, () => createDefaultChannelState());
+function createInitialChannelsState(channelCount = DEFAULT_CHANNEL_COUNT) {
+  return Array.from({ length: channelCount }, () => createDefaultChannelState());
 }
 
 function createDefaultMasterState(): MasterState {
@@ -541,17 +553,17 @@ function createDefaultSendTapPoints(): SendTapPointState {
   };
 }
 
-function createDefaultChannelInputSendValues(): ChannelInputSendValues {
+function createDefaultChannelInputSendValues(channelCount = DEFAULT_CHANNEL_COUNT): ChannelInputSendValues {
   const next: ChannelInputSendValues = {};
-  for (let channel = 1; channel <= 16; channel++) {
+  for (let channel = 1; channel <= channelCount; channel++) {
     next[`ch${channel}`] = 1200;
   }
   return next;
 }
 
-function createDefaultChannelInputSendTapPoints(): ChannelInputSendTapPointState {
+function createDefaultChannelInputSendTapPoints(channelCount = DEFAULT_CHANNEL_COUNT): ChannelInputSendTapPointState {
   const next: ChannelInputSendTapPointState = {};
-  for (let channel = 1; channel <= 16; channel++) {
+  for (let channel = 1; channel <= channelCount; channel++) {
     next[`ch${channel}`] = "post";
   }
   return next;
@@ -655,7 +667,9 @@ function isLocalDefaultDisplayName(target: NameTarget, displayName: string) {
   return normalized === defaultDisplayNormalized || isDefaultMixerName(target, displayName);
 }
 
-const DCA_NAME_TARGET_INDEXES = [16, 17, 18, 19] as const;
+function getDcaNameTargetIndexes(channelCount: number): [number, number, number, number] {
+  return [channelCount, channelCount + 1, channelCount + 2, channelCount + 3];
+}
 
 function getDefaultDcaGroupName(index: number) {
   return `Group ${index + 1}`;
@@ -802,8 +816,8 @@ function createDefaultAuxProcessorState(): ProcessorState {
   };
 }
 
-function createInitialProcessorStates() {
-  return Array.from({ length: 16 }, () => createDefaultProcessorState());
+function createInitialProcessorStates(channelCount = DEFAULT_CHANNEL_COUNT) {
+  return Array.from({ length: channelCount }, () => createDefaultProcessorState());
 }
 
 function processorParams(channelNumber: number) {
@@ -1137,6 +1151,7 @@ function computeNextPeakState(
 }
 
 function App() {
+  const [channelCount, setChannelCount] = useState(DEFAULT_CHANNEL_COUNT);
   const [appStage, setAppStage] = useState<AppStage>("splash");
   const [ip, setIp] = useState(DEFAULT_MIXER_IP);
   const [status, setStatus] = useState("Desconectado");
@@ -1421,6 +1436,19 @@ function App() {
     return fxStrips;
   }
 
+  function applyMixerChannelProfile(nextChannelCount: number) {
+    setChannelCount(nextChannelCount);
+    setChannels(createInitialChannelsState(nextChannelCount));
+    setProcessorStates(createInitialProcessorStates(nextChannelCount));
+    setChannelLinks({});
+    setChannelSendValues(createDefaultSendValues());
+    setSendTapPoints(createDefaultSendTapPoints());
+    setAuxInputSendValues({});
+    setAuxInputSendTapPoints({});
+    setFxInputSendValues({});
+    setFxInputSendTapPoints({});
+  }
+
   // Removed setSelectedForSection - no longer used in new component structure
 
   function updateProcessorState(
@@ -1683,7 +1711,7 @@ function App() {
       setIsSyncing(true);
       setStatus("Sincronizando canais...");
 
-      for (let channel = 1; channel <= 16; channel++) {
+      for (let channel = 1; channel <= channelCount; channel++) {
         await syncChannelState(channel);
         await syncChannelProcessorState(channel);
       }
@@ -1710,7 +1738,7 @@ function App() {
     if (!client) return;
 
     const eqEnabledParams = Array.from(
-      { length: 16 },
+      { length: channelCount },
       (_, index) => processorParams(index + 1).eqEnabled
     );
     const response = await client.readParams(eqEnabledParams, 1400);
@@ -1739,12 +1767,13 @@ function App() {
     const client = clientRef.current;
     if (!client) return;
 
+    const dcaNameTargetIndexes = getDcaNameTargetIndexes(channelCount);
     const [channelNames, auxNames, fxNames, dcaMixerNames] = await Promise.all([
-      client.readChannelNames(600),
+      client.readChannelNames(channelCount, 600),
       client.readAuxNames(600),
       client.readFxNames(600),
       Promise.all(
-        DCA_NAME_TARGET_INDEXES.map((targetIndex) =>
+        dcaNameTargetIndexes.map((targetIndex) =>
           client.readNameByIndex(targetIndex, 600).catch(() => "")
         )
       ),
@@ -1828,7 +1857,7 @@ function App() {
 
       if (isDefaultDcaName(index, mixerName)) {
         try {
-          client.setNameByIndex(DCA_NAME_TARGET_INDEXES[index], defaultGroupName);
+          client.setNameByIndex(dcaNameTargetIndexes[index], defaultGroupName);
         } catch {
           // Ignore transient write failures; keep display normalized locally.
         }
@@ -1847,7 +1876,9 @@ function App() {
 
     const params: number[] = [];
 
-    for (let odd = 1; odd <= 15; odd += 2) {
+    const maxPairOdd = Math.max(1, channelCount - 1);
+
+    for (let odd = 1; odd <= maxPairOdd; odd += 2) {
       params.push(channelParam(odd, 75));
       params.push(channelParam(odd + 1, 75));
       params.push(channelColorParam(odd));
@@ -1859,7 +1890,7 @@ function App() {
 
     const linksFromMesa: PairLinkState = {};
 
-    for (let odd = 1; odd <= 15; odd += 2) {
+    for (let odd = 1; odd <= maxPairOdd; odd += 2) {
       const even = odd + 1;
       const key = pairKey(odd, even);
       const oddPan = valueToPan(values.get(channelParam(odd, 75)) ?? 100);
@@ -1876,7 +1907,7 @@ function App() {
     setChannels((current) => {
       const next = [...current];
 
-      for (let odd = 1; odd <= 15; odd += 2) {
+      for (let odd = 1; odd <= maxPairOdd; odd += 2) {
         const even = odd + 1;
         const key = pairKey(odd, even);
         const oddPan = valueToPan(values.get(channelParam(odd, 75)) ?? 100);
@@ -2085,16 +2116,16 @@ function App() {
     if (!client) return;
 
     const mappedSendId = `${busType}${busNumber}` as SendStripId;
-    const params = Array.from({ length: 16 }, (_, index) =>
+    const params = Array.from({ length: channelCount }, (_, index) =>
       sendIdToParam(index + 1, mappedSendId)
     );
     const response = await client.readParams(params, 2200);
     const valuesByParam = new Map(response.map((item) => [item.param, item.value]));
 
-    const nextValues = createDefaultChannelInputSendValues();
-    const nextTapPoints = createDefaultChannelInputSendTapPoints();
+    const nextValues = createDefaultChannelInputSendValues(channelCount);
+    const nextTapPoints = createDefaultChannelInputSendTapPoints(channelCount);
 
-    for (let channel = 1; channel <= 16; channel++) {
+    for (let channel = 1; channel <= channelCount; channel++) {
       const id = `ch${channel}`;
       const param = sendIdToParam(channel, mappedSendId);
       const decoded = decodeSendRawValue(valuesByParam.get(param));
@@ -2127,7 +2158,7 @@ function App() {
   function channelFromInputSendId(id: SendStripId) {
     if (!id.startsWith("ch")) return null;
     const channel = Number(id.slice(2));
-    if (!Number.isInteger(channel) || channel < 1 || channel > 16) return null;
+    if (!Number.isInteger(channel) || channel < 1 || channel > channelCount) return null;
     return channel;
   }
 
@@ -2157,7 +2188,7 @@ function App() {
         const next = { ...current };
         busTargets.forEach((target) => {
           next[target] = {
-            ...(next[target] ?? createDefaultChannelInputSendValues()),
+            ...(next[target] ?? createDefaultChannelInputSendValues(channelCount)),
             ...channelTargets.reduce<Record<string, number>>((acc, channelTarget) => {
               acc[channelTarget] = clampedValue;
               return acc;
@@ -2170,7 +2201,7 @@ function App() {
       setFxInputSendValues((current) => ({
         ...current,
         [busNumber]: {
-          ...(current[busNumber] ?? createDefaultChannelInputSendValues()),
+          ...(current[busNumber] ?? createDefaultChannelInputSendValues(channelCount)),
           ...channelTargets.reduce<Record<string, number>>((acc, channelTarget) => {
             acc[channelTarget] = clampedValue;
             return acc;
@@ -2211,7 +2242,7 @@ function App() {
           const currentTap = current[target]?.[sendId] ?? "post";
           const toggled = currentTap === "post" ? "pre" : "post";
           next[target] = {
-            ...(next[target] ?? createDefaultChannelInputSendTapPoints()),
+            ...(next[target] ?? createDefaultChannelInputSendTapPoints(channelCount)),
             ...channelTargets.reduce<Record<string, SendTapPoint>>((acc, channelTarget) => {
               acc[channelTarget] = toggled;
               return acc;
@@ -2233,7 +2264,7 @@ function App() {
         return {
           ...current,
           [busNumber]: {
-            ...(current[busNumber] ?? createDefaultChannelInputSendTapPoints()),
+            ...(current[busNumber] ?? createDefaultChannelInputSendTapPoints(channelCount)),
             ...channelTargets.reduce<Record<string, SendTapPoint>>((acc, channelTarget) => {
               acc[channelTarget] = toggled;
               return acc;
@@ -2510,9 +2541,9 @@ function App() {
     const client = clientRef.current;
     if (!client) return;
 
-    // Read solo left+right params for all 16 channels (base=87, stride=62)
+    // Read solo left+right params for all visible channels (base=87, stride=62)
     const channelParams: number[] = [];
-    for (let ch = 1; ch <= 16; ch++) {
+    for (let ch = 1; ch <= channelCount; ch++) {
       channelParams.push(channelParam(ch, 87));
       channelParams.push(channelParam(ch, 88));
     }
@@ -2530,7 +2561,7 @@ function App() {
 
       setChannels((current) => {
         const next = [...current];
-        for (let ch = 1; ch <= 16; ch++) {
+        for (let ch = 1; ch <= channelCount; ch++) {
           const leftVal = chValues.get(channelParam(ch, 87)) ?? 0;
           const rightVal = chValues.get(channelParam(ch, 88)) ?? 0;
           const soloOn = leftVal > 0 || rightVal > 0;
@@ -2938,7 +2969,7 @@ function App() {
       }
 
       function updateOneChannel(channelNumber: number, channelDb: number) {
-        if (channelNumber < 1 || channelNumber > 16) return;
+        if (channelNumber < 1 || channelNumber > channelCount) return;
 
         const index = channelNumber - 1;
         const previous = (next ?? current)[index];
@@ -3179,6 +3210,16 @@ function App() {
   }
 
   function handlePreconnectMixerSelection(mixer: DiscoveredMixer) {
+    const compatibility = getMixerCompatibility(mixer);
+
+    if (!compatibility.supported) {
+      setConnectionError(compatibility.reason);
+      setStatus(compatibility.reason);
+      return;
+    }
+
+    applyMixerChannelProfile(normalizeSupportedChannelCount(mixer.channels));
+    setConnectionError(null);
     void connectToMixer(mixer.ip);
   }
 
@@ -4047,7 +4088,7 @@ function App() {
 
 
   function goToDetailChannel(channelNumber: number) {
-    const nextChannel = Math.max(1, Math.min(16, channelNumber));
+    const nextChannel = Math.max(1, Math.min(channelCount, channelNumber));
 
     setMainView("mixer");
     clearScheduledSendWrites();
@@ -5656,7 +5697,7 @@ function App() {
   function handleMuteGroupsMemberMuteApplied(memberId: string, muted: boolean) {
     if (memberId.startsWith("CH_")) {
       const channel = Number(memberId.slice(3));
-      if (Number.isFinite(channel) && channel >= 1 && channel <= 16) {
+      if (Number.isFinite(channel) && channel >= 1 && channel <= channelCount) {
         updateChannelState(channel, { muted });
       }
       return;
@@ -5878,9 +5919,9 @@ function App() {
           : mainView === "fxSends"
             ? renderGlobalSendsView("fx")
             : mainView === "dcaGroups"
-              ? <div className="global-view-shell"><DcaGroupsView client={clientRef.current} isConnected={isConnected} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} dcaNames={dcaNames} /></div>
+              ? <div className="global-view-shell"><DcaGroupsView client={clientRef.current} isConnected={isConnected} channelCount={channelCount} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} dcaNames={dcaNames} /></div>
             : mainView === "muteGroups"
-              ? <div className="global-view-shell"><MuteGroupsView client={clientRef.current} isConnected={isConnected} onMemberMuteApplied={handleMuteGroupsMemberMuteApplied} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} /></div>
+              ? <div className="global-view-shell"><MuteGroupsView client={clientRef.current} isConnected={isConnected} channelCount={channelCount} onMemberMuteApplied={handleMuteGroupsMemberMuteApplied} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} /></div>
             : mainView === "scenes"
               ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} /></div>
         : <section className="mixer-layout">

@@ -881,10 +881,11 @@ export class Axios16Client {
     this.setName({ type: "fx", fx }, displayName);
   }
 
-  async readChannelNames(timeoutMs = 1200) {
+  async readChannelNames(channelCount = 16, timeoutMs = 1200) {
     const result: Record<number, string> = {};
+    const safeChannelCount = Math.max(1, Math.min(32, Math.round(channelCount)));
 
-    for (let channel = 1; channel <= 16; channel++) {
+    for (let channel = 1; channel <= safeChannelCount; channel++) {
       result[channel] = await this.readChannelName(channel, timeoutMs);
     }
 
@@ -1203,7 +1204,7 @@ export class Axios16Client {
     const odd = Math.round(oddChannel);
     const even = odd + 1;
 
-    if (odd % 2 === 0 || odd < 1 || even > 16) {
+    if (odd % 2 === 0 || odd < 1 || even > 32) {
       throw new Error("Par de canal inválido para solo. Use o canal ímpar inicial do par.");
     }
 
