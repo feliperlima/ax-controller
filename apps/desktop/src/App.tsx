@@ -32,7 +32,11 @@ import { AxHeaderConnectionIp, AxHeaderStatusTag } from "./components/TopNavigat
 import { DcaGroupsView } from "./components/DcaGroupsView";
 import { MuteGroupsView } from "./components/MuteGroupsView";
 import { ScenesView } from "./components/ScenesView";
-import duonnBrand from "./assets/duonn.brand.webp";
+import { SplashScreen } from "./components/SplashScreen";
+import { DeviceSelectionScreen } from "./components/DeviceSelectionScreen";
+import axControlBrand from "./assets/AX-control-Brand-vert.svg";
+import { useMixerDiscovery } from "./hooks/useMixerDiscovery";
+import { type DiscoveredMixer } from "./services/mixerDiscovery";
 import {
   ChannelProcessors,
   type CompressorState,
@@ -284,6 +288,7 @@ type DetailView =
   | { type: "fx"; fx: 1 | 2 }
   | { type: "master" }
   | null;
+type AppStage = "splash" | "device-selection" | "mixer";
 type MainView = "mixer" | "auxSends" | "fxSends" | "dcaGroups" | "muteGroups" | "scenes";
 type StripSection = "inputs" | "aux" | "fx";
 type CustomizationView = { section: StripSection; index: number } | null;
@@ -372,6 +377,8 @@ const AUX_BLOCK_SIZE = 109;
 const DEFAULT_AUX_COLOR_ID = 8;
 const DEFAULT_FX_COLOR_ID = 7;
 const MASTER_FIXED_COLOR_ID = 10;
+const DEFAULT_MIXER_IP = "192.168.1.20";
+const SPLASH_MIN_DURATION_MS = 2000;
 
 type ColorScope = "input" | "aux" | "fx" | "master";
 
@@ -1130,10 +1137,12 @@ function computeNextPeakState(
 }
 
 function App() {
-  const [ip, setIp] = useState("192.168.1.20");
+  const [appStage, setAppStage] = useState<AppStage>("splash");
+  const [ip, setIp] = useState(DEFAULT_MIXER_IP);
   const [status, setStatus] = useState("Desconectado");
   const [isConnected, setIsConnected] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [mainView, setMainView] = useState<MainView>("mixer");
   const [settingsDropdownOpen, setSettingsDropdownOpen] = useState(false);
   const [detailView, setDetailView] = useState<DetailView>(null);
@@ -1212,6 +1221,22 @@ function App() {
     suppressClick: false,
   });
   const [isChannelsDragging, setIsChannelsDragging] = useState(false);
+  const {
+    mixers: discoveredMixers,
+    isLoading: isDiscoveringMixers,
+    error: discoveryError,
+    refresh: refreshMixerDiscovery,
+  } = useMixerDiscovery(true);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setAppStage((current) => (current === "splash" ? "device-selection" : current));
+    }, SPLASH_MIN_DURATION_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, []);
 
   useEffect(() => {
     isChannelsDraggingRef.current = isChannelsDragging;
@@ -3063,11 +3088,22 @@ function App() {
     meterBusyRef.current = false;
   }
 
-  async function handleConnect() {
-    try {
-      setStatus("Conectando...");
+  async function connectToMixer(targetIp: string) {
+    const normalizedIp = targetIp.trim();
 
-      const client = new Axios16Client(ip);
+    if (!normalizedIp) {
+      const message = "Confirme o endereco IP e tente novamente.";
+      setConnectionError(message);
+      setStatus(message);
+      return false;
+    }
+
+    try {
+      setConnectionError(null);
+      setStatus("Conectando...");
+      setIp(normalizedIp);
+
+      const client = new Axios16Client(normalizedIp);
       await client.connect();
 
       client.setOnDisconnect(() => {
@@ -3082,7 +3118,8 @@ function App() {
 
       clientRef.current = client;
       setIsConnected(true);
-      setStatus(`Conectado em ${ip}`);
+      setStatus(`Conectado em ${normalizedIp}`);
+      setAppStage("mixer");
 
       // Sync operations with better error isolation
       try {
@@ -3113,12 +3150,21 @@ function App() {
       }
 
       startMeterPolling();
+      return true;
     } catch (error) {
       stopMeterPolling();
       setIsConnected(false);
       setStatus(error instanceof Error ? error.message : "Erro ao conectar");
+      setConnectionError(
+        "Nao foi possivel conectar a mesa. Verifique se a mesa esta ligada e na mesma rede."
+      );
       clientRef.current = null;
+      return false;
     }
+  }
+
+  async function handleConnect() {
+    await connectToMixer(ip);
   }
 
   function handleDisconnect() {
@@ -3128,7 +3174,12 @@ function App() {
     clientRef.current?.disconnect();
     clientRef.current = null;
     setIsConnected(false);
+    setConnectionError(null);
     setStatus("Desconectado");
+  }
+
+  function handlePreconnectMixerSelection(mixer: DiscoveredMixer) {
+    void connectToMixer(mixer.ip);
   }
 
   function toggleMute(channelNumber: number) {
@@ -5654,6 +5705,39 @@ function App() {
     });
   }, [detailView, isConnected]);
 
+  if (appStage === "splash") {
+    return <SplashScreen version="1.0.0" />;
+  }
+
+  if (appStage === "device-selection") {
+    return (
+      <DeviceSelectionScreen
+        mixers={discoveredMixers}
+        discoveryLoading={isDiscoveringMixers}
+        discoveryError={discoveryError}
+        connectBusy={!isConnected && status.startsWith("Conectando")}
+        connectionStatus={status === "Desconectado" ? "" : status}
+        connectionError={connectionError}
+        manualIp={ip}
+        version="1.0.0"
+        onManualIpChange={(value) => {
+          setIp(value);
+          if (connectionError) {
+            setConnectionError(null);
+          }
+        }}
+        onRefresh={() => {
+          setConnectionError(null);
+          void refreshMixerDiscovery();
+        }}
+        onConnectManual={() => {
+          void connectToMixer(ip);
+        }}
+        onConnectMixer={handlePreconnectMixerSelection}
+      />
+    );
+  }
+
   return (
     <main
       className={`app-shell ${detailView ? "app-shell--detail" : ""} ${isChannelsDragging ? "app-shell--dragging" : ""}`}
@@ -5665,7 +5749,7 @@ function App() {
 
       <nav className="top-nav" data-node-id="18:438">
         <div className="top-nav__brand" data-node-id="73:2724">
-          <img className="brand-logo" src={duonnBrand} alt="Duonn" />
+          <img className="brand-logo brand-logo--wordmark" src={axControlBrand} alt="AX Control" />
         </div>
 
         <div className="top-nav__tabs" data-node-id="73:575">
@@ -5706,6 +5790,17 @@ function App() {
           </button>
           <button
             type="button"
+            className={`top-nav__tab ${!detailView && mainView === "muteGroups" ? "active" : ""}`}
+            onClick={() => {
+              setMainView("muteGroups");
+              setDetailView(null);
+              setSettingsDropdownOpen(false);
+            }}
+          >
+            MUTE GROUPS
+          </button>
+          <button
+            type="button"
             className={`top-nav__tab ${!detailView && mainView === "dcaGroups" ? "active" : ""}`}
             onClick={() => {
               setMainView("dcaGroups");
@@ -5715,17 +5810,6 @@ function App() {
             data-node-id="73:2725"
           >
             DCA GROUPS
-          </button>
-          <button
-            type="button"
-            className={`top-nav__tab ${!detailView && mainView === "muteGroups" ? "active" : ""}`}
-            onClick={() => {
-              setMainView("muteGroups");
-              setDetailView(null);
-              setSettingsDropdownOpen(false);
-            }}
-          >
-            MUTE GROUPS
           </button>
         </div>
 
