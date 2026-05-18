@@ -22,6 +22,11 @@ import {
   valueToPan,
   toMixerSafeName,
 } from "./lib/axios16Client";
+import {
+  type FxPresetId,
+  validateFxPresetId,
+  getFxPresetConfig,
+} from "./protocol/duonn/fxPresets";
 import { ChannelStrip } from "./components/ChannelStrip";
 import { AuxStrip } from "./components/AuxStrip";
 import { FxStrip } from "./components/FxStrip";
@@ -32,6 +37,7 @@ import { AxHeaderConnectionIp, AxHeaderStatusTag } from "./components/TopNavigat
 import { DcaGroupsView } from "./components/DcaGroupsView";
 import { MuteGroupsView } from "./components/MuteGroupsView";
 import { ScenesView } from "./components/ScenesView";
+import { FxPresetGrid, FxPresetControlPanel } from "./components/FxPresetPanel";
 import { SplashScreen } from "./components/SplashScreen";
 import { DeviceSelectionScreen } from "./components/DeviceSelectionScreen";
 import axControlBrand from "./assets/AX-control-Brand-vert.svg";
@@ -1212,6 +1218,9 @@ function App() {
   const [, setMonitorSoloMeter] = useState<MonitorSoloMeterState>(
     createDefaultMonitorSoloMeterState
   );
+  const [fxActivePresetId, setFxActivePresetId] = useState<FxPresetId>(1);
+  const [fxControlAValue, setFxControlAValue] = useState(0);
+  const [fxControlBValue, setFxControlBValue] = useState(0);
 
   const clientRef = useRef<Axios16Client | null>(null);
   const meterTimerRef = useRef<number | null>(null);
@@ -1219,6 +1228,8 @@ function App() {
   const auxLinkBusyRef = useRef(false);
   const meterUpdateLastAtRef = useRef(0);
   const isChannelsDraggingRef = useRef(false);
+  const mixerChannelsScrollerRef = useRef<HTMLElement | null>(null);
+  const mixerChannelsScrollLeftRef = useRef(0);
   const dragScrollRafRef = useRef<number | null>(null);
   const pendingDragScrollLeftRef = useRef<number | null>(null);
   const sendWriteTimersRef = useRef<Map<number, number>>(new Map());
@@ -1278,6 +1289,21 @@ function App() {
 
       scrollerElement.scrollLeft = nextScrollLeft;
     });
+  }
+
+  function attachMixerChannelsScroller(element: HTMLElement | null) {
+    mixerChannelsScrollerRef.current = element;
+
+    if (!element) return;
+
+    const targetScrollLeft = Math.max(0, mixerChannelsScrollLeftRef.current);
+    if (element.scrollLeft !== targetScrollLeft) {
+      element.scrollLeft = targetScrollLeft;
+    }
+  }
+
+  function handleMixerChannelsScroll(event: React.UIEvent<HTMLElement>) {
+    mixerChannelsScrollLeftRef.current = event.currentTarget.scrollLeft;
   }
 
   function cancelPendingDragScrollFrame() {
@@ -1718,6 +1744,7 @@ function App() {
 
       await syncChannelPairVisualState();
       await syncFxColors();
+      await syncFxPresetState();
       await syncMasterState();
       await syncLinkStates();
       await syncAllAux();
@@ -2005,6 +2032,35 @@ function App() {
         };
       })
     );
+  }
+
+  async function syncFxPresetState() {
+    const client = clientRef.current;
+    if (!client) return;
+
+    try {
+      const response = await client.readParams([3097, 2940, 2941], 1200);
+      const values = new Map(response.map((item) => [item.param, item.value]));
+
+      const presetRaw = values.get(3097) ?? 1;
+      const controlARaw = values.get(2940) ?? 0;
+      const controlBRaw = values.get(2941) ?? 0;
+
+      const presetId = validateFxPresetId(presetRaw);
+      if (presetId === null) {
+        setFxActivePresetId(1);
+      } else {
+        setFxActivePresetId(presetId);
+      }
+
+      setFxControlAValue(Math.max(0, Math.min(127, controlARaw)));
+      setFxControlBValue(Math.max(0, Math.min(127, controlBRaw)));
+    } catch {
+      // Inicializar com valores padrão se houver erro na leitura
+      setFxActivePresetId(1);
+      setFxControlAValue(0);
+      setFxControlBValue(0);
+    }
   }
 
   async function syncLinkStates() {
@@ -3151,6 +3207,10 @@ function App() {
       setIsConnected(true);
       setStatus(`Conectado em ${normalizedIp}`);
       setAppStage("mixer");
+      mixerChannelsScrollLeftRef.current = 0;
+      if (mixerChannelsScrollerRef.current) {
+        mixerChannelsScrollerRef.current.scrollLeft = 0;
+      }
 
       // Sync operations with better error isolation
       try {
@@ -4141,8 +4201,60 @@ function App() {
   function goToDetailFx(fxNumber: number) {
     const nextFx = fxNumber === 2 ? 2 : 1;
     setMainView("mixer");
-    setActiveProcessorModule("eq");
+    setActiveProcessorModule("presets");
     setDetailView({ type: "fx", fx: nextFx });
+  }
+
+  function handleFxPresetChange(presetId: FxPresetId) {
+    const client = clientRef.current;
+    if (!client) return;
+
+    setFxActivePresetId(presetId);
+
+    // Enviar novo preset para a mesa
+    client.sendParam(3097, presetId);
+
+    // Sincronizar valores dos controles do hardware
+    client
+      .readParams([2940, 2941])
+      .then((commands) => {
+        for (const cmd of commands) {
+          if (cmd.param === 2940) {
+            setFxControlAValue(cmd.value);
+          } else if (cmd.param === 2941) {
+            setFxControlBValue(cmd.value);
+          }
+        }
+      })
+      .catch(() => {
+        // Se falhar na leitura, reseta para 0
+        setFxControlAValue(0);
+        setFxControlBValue(0);
+      });
+  }
+
+  function handleFxControlAChange(rawValue: number) {
+    if (!fxActivePresetId) return;
+    const client = clientRef.current;
+    if (!client) return;
+    const controlConfig = getFxPresetConfig(fxActivePresetId).controls[0];
+    const clamped = Math.max(controlConfig.rawMin, rawValue);
+    const isSeconds = controlConfig.unit === "s";
+    const nextValue = isSeconds ? clamped : Math.round(clamped);
+    setFxControlAValue(nextValue);
+    client.sendParam(controlConfig.param, Math.min(nextValue, controlConfig.rawMax));
+  }
+
+  function handleFxControlBChange(rawValue: number) {
+    if (!fxActivePresetId) return;
+    const client = clientRef.current;
+    if (!client) return;
+    const controlConfig = getFxPresetConfig(fxActivePresetId).controls[1];
+    const clamped = Math.max(controlConfig.rawMin, Math.min(controlConfig.rawMax, rawValue));
+    const isSeconds = controlConfig.unit === "s";
+    const nextValue = isSeconds ? clamped : Math.round(clamped);
+    setFxControlBValue(nextValue);
+    client.sendParam(controlConfig.param, nextValue);
   }
 
   function goToDetailMaster() {
@@ -4174,6 +4286,79 @@ function App() {
         isLinked: Boolean(channelLinks[linkKey]),
       };
     });
+  }
+
+  function renderFxPresetsContent() {
+    return (
+      <div
+        style={{
+          minHeight: 0,
+          height: "100%",
+          display: "grid",
+          gridTemplateRows: "44px minmax(0, 1fr)",
+          gap: 4,
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            padding: "0 12px",
+            borderRadius: 4,
+            background: "var(--surface-panel-raised)",
+          }}
+        >
+          <div style={{ color: "var(--text-primary)", fontWeight: 700, letterSpacing: "1.2px", fontSize: 10 }}>
+            PRESETS
+          </div>
+        </div>
+
+        <div
+          style={{
+            minHeight: 0,
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1.4fr) minmax(360px, 0.9fr)",
+            gap: 4,
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              minHeight: 0,
+              height: "100%",
+              borderRadius: 4,
+              background: "var(--surface-panel-raised)",
+              padding: "24px 32px",
+              overflow: "hidden",
+            }}
+          >
+            <FxPresetGrid
+              activePresetId={fxActivePresetId}
+              disabled={!isConnected}
+              onPresetSelect={handleFxPresetChange}
+            />
+          </div>
+
+          <div
+            style={{
+              minHeight: 0,
+              height: "100%",
+              overflow: "hidden",
+            }}
+          >
+            <FxPresetControlPanel
+              presetId={fxActivePresetId}
+              controlAValue={fxControlAValue}
+              controlBValue={fxControlBValue}
+              disabled={!isConnected}
+              onControlAChange={handleFxControlAChange}
+              onControlBChange={handleFxControlBChange}
+            />
+          </div>
+        </div>
+      </div>
+    );
   }
 
   function renderDetailPlaceholder(moduleLabel: string, title: string, description: string) {
@@ -5230,16 +5415,12 @@ function App() {
               hideComp={true}
               hideGate={true}
               moduleItems={[
-                { id: "eq", label: "EQ" },
                 { id: "presets", label: "PRESETS" },
+                { id: "eq", label: "EQ" },
                 { id: "sends", label: "SEND MIX" },
               ]}
               customModuleContent={{
-                presets: renderDetailPlaceholder(
-                  "PRESETS",
-                  "Presets de Efeitos",
-                  "A interface de presets de FX sera mapeada na proxima etapa com o protocolo real."
-                ),
+                presets: renderFxPresetsContent(),
               }}
               sends={sendsView}
               onModuleChange={setActiveProcessorModule}
@@ -5653,12 +5834,12 @@ function App() {
             style={{
               position: "absolute",
               top: 24,
-              left: 0,
+              left: "var(--strip-width)",
               right: 0,
               bottom: 0,
               minWidth: 0,
               overflow: "hidden",
-              padding: 0,
+              paddingLeft: 4,
               zIndex: 1,
             }}
           >
@@ -5926,7 +6107,9 @@ function App() {
               ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} /></div>
         : <section className="mixer-layout">
           <section
+            ref={attachMixerChannelsScroller}
             className={`channels-scroller mixer-channels ${isChannelsDragging ? "channels-scroller--dragging" : ""}`}
+            onScroll={handleMixerChannelsScroll}
             onPointerDownCapture={handleChannelsPointerDown}
             onPointerMoveCapture={handleChannelsPointerMove}
             onPointerUpCapture={handleChannelsPointerUp}

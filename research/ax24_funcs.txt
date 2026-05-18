@@ -1,0 +1,33 @@
+CHARSET_ENCODING
+CHARSET_REGISTRY
+_lv_txt_set_text_vfmt
+edit_cont
+edit_dca
+edit_efx
+edit_input
+edit_output
+lv_dropdown_set_options
+lv_event_set_ext_draw_size
+lv_gradient_set_cache_size
+lv_img_cache_set_size
+lv_img_set_src
+lv_img_set_src: unknown image type
+lv_img_set_src: unknown type
+lv_label_set_dot_tmp
+lv_label_set_text
+lv_label_set_text_fmt
+lv_menu_set_page
+lv_obj_set_parent
+lv_style_set_prop_internal
+lv_textarea_set_text
+set_copy
+set_demo
+set_input
+set_monitor
+set_mute_group
+set_output
+set_phantom_group
+set_phones
+set_record
+set_scene
+set_sys

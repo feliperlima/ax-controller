@@ -1,0 +1,8 @@
+AUX1-8
+AXIOS24E
+DCA1-4
+F:\zebond\Project\axios24e\code\ui\platform\msvc\Release\ui.pdb
+Fx8*+1
+STEREO-FX-AUX%d
+fX6,5
+wfx3

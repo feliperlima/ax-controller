@@ -12,7 +12,9 @@ type KnobProps = {
   valueStep?: number;
   velocityResponsive?: boolean;
   discreteStepMode?: boolean;
+  continuous?: boolean;
   accentColor?: string;
+  railColor?: string;
   glowColor?: string;
   disabled?: boolean;
   onChange: (value: number) => void;
@@ -63,7 +65,9 @@ export function Knob({
   valueStep = 1,
   
   discreteStepMode = false,
+  continuous = false,
   accentColor,
+  railColor,
   glowColor,
   disabled = false,
   onChange,
@@ -92,6 +96,7 @@ export function Knob({
   let activeArcPath = "";
   const arcColor = accentColor ?? "var(--knob-arc-active)";
   const knobGlowColor = glowColor ?? accentColor ?? "#38bdf8";
+  const knobRailColor = railColor ?? "var(--knob-arc-base)";
 
   if (variant === "gain") {
     if (angleDeg > MIN_DEG) {
@@ -140,7 +145,7 @@ export function Knob({
 
     const steps = deltaY / Math.max(0.0001, pixelsPerStep);
     const rawValue = drag.startValue + steps * valueStep;
-    const nextValue = clampValue(snapToStep(rawValue, min, valueStep));
+    const nextValue = continuous ? clampValue(rawValue) : clampValue(snapToStep(rawValue, min, valueStep));
 
     if (nextValue !== value) onChange(nextValue);
   }
@@ -152,21 +157,25 @@ export function Knob({
     dragRef.current = null;
   }
 
+  const hasLabel = label.trim().length > 0;
+  const hasValue = displayValue.trim().length > 0;
+  const gridRows = [hasLabel && "auto", "auto", hasValue && "auto"].filter(Boolean).join(" ");
+
   return (
     <div
       style={{
         textAlign: "center",
         opacity: disabled ? 0.5 : 1,
         display: "grid",
-        gridTemplateRows: "12px auto 12px",
+        gridTemplateRows: gridRows,
         alignItems: "center",
         justifyItems: "center",
-        rowGap: "8px",
+        rowGap: hasLabel || hasValue ? "8px" : "0",
         width: size,
         minWidth: size,
-        height: size + 40,
+        minHeight: size,
         boxSizing: "border-box",
-        padding: "4px 0",
+        padding: hasLabel || hasValue ? "4px 0" : "0",
       }}
     >
       <div
@@ -177,6 +186,7 @@ export function Knob({
           fontWeight: 700,
           textTransform: "uppercase",
           letterSpacing: "1.2px",
+          whiteSpace: "nowrap",
         }}
       >
         {label}
@@ -262,7 +272,7 @@ export function Knob({
         <path
           d={bgArcPath}
           fill="none"
-          stroke="var(--knob-arc-base)"
+          stroke={knobRailColor}
           strokeWidth={strokeW}
           strokeLinecap="round"
         />

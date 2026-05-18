@@ -1,0 +1,10 @@
+Recurso | AX16 | AX24 | AX32 | Observação
+---------|------|------|------|------------
+Modelo | AXIOS16E | AXIOS24E | AXIOS32 | Identificação interna strings
+Entradas (canais) | sem faixa explicita em string | CH17-24 (confirmado) | CH15-28 e CH29-FX (confirmado) | Evidência textual de faixas maiores nos modelos 24/32
+AUX | 1-8 | 1-8 | 1-14 | AX32 possui referências a 10 e 14 AUXs
+DCA | 1-4 | 1-4 | 1-8 | AX32 duplica capacidade de DCA
+FX (algoritmos/tipo) | ST-FX,DIGI-FX,wfx3 | ST-FX,DIGI-FX,wfx3 | ST-FX,DIGI-FX,wfx3 | Mesmo conjunto-base de labels de FX nos 3 binários
+FX (quantidade de motores) | nao explicito em string | nao explicito em string | nao explicito em string | Sem confirmação direta 2 vs 4 apenas por strings
+Funções | Igual | Igual | Igual | Conjunto de 'set_' e 'edit_' idêntico
+PDB Path | axios16e | axios24e | axios32 | Caminhos de build distintos

@@ -1,0 +1,10 @@
+AUX1-10
+AUX1-14
+AUX1-8
+AXIOS32
+DCA1-8
+F:\zebond\Project\axios32\code\ui\platform\msvc\Release\ui.pdb
+Fx8*+1
+STEREO-FX-AUX%d
+fX6,5
+wfx3
