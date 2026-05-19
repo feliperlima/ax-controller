@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Axios16Client,
   type NameTarget,
@@ -33,7 +34,7 @@ import { FxStrip } from "./components/FxStrip";
 import { MasterBus } from "./components/MasterBus";
 import { DuonnIconsSprite, DUONN_CHANNEL_ICONS } from "./components/DuonnIcon";
 import { ChannelCustomizer } from "./components/ChannelCustomizer";
-import { AxHeaderConnectionIp, AxHeaderStatusTag } from "./components/TopNavigation";
+import { AxHeaderStatusTag } from "./components/TopNavigation";
 import { DcaGroupsView } from "./components/DcaGroupsView";
 import { MuteGroupsView } from "./components/MuteGroupsView";
 import { ScenesView } from "./components/ScenesView";
@@ -395,8 +396,136 @@ const AUX_BLOCK_SIZE = 109;
 const DEFAULT_AUX_COLOR_ID = 8;
 const DEFAULT_FX_COLOR_ID = 7;
 const MASTER_FIXED_COLOR_ID = 10;
-const DEFAULT_MIXER_IP = "192.168.1.20";
+const DEFAULT_MIXER_IP = "";
 const SPLASH_MIN_DURATION_MS = 2000;
+const APP_VERSION = "1.0.0";
+const INSTALLATION_ID_STORAGE_KEY = "ax_installation_id";
+const LICENSE_VALIDATED_STORAGE_KEY = "ax_license_validated";
+const LICENSE_ACTIVATED_ONCE_STORAGE_KEY = "ax_license_activated_once";
+const LICENSE_STATUS_STORAGE_KEY = "ax_license_status";
+const LICENSE_KEY_STORAGE_KEY = "ax_license_key_last";
+const LICENSE_REVALIDATE_INTERVAL_DAYS = 30;
+const LICENSE_REVALIDATE_WARNING_DAYS = 5;
+const LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS = 2 * 60 * 1000;
+
+type CachedLicenseStatus = {
+  installationId: string;
+  code: string;
+  validatedAt: string;
+  nextRevalidationAt: string;
+  expiryDate: string | null;
+  message: string;
+};
+
+function formatLicenseDiagnostic(code: string, checkedAtIso: string) {
+  if (!code) return "LIC SEM CHECK";
+
+  if (!checkedAtIso) {
+    return `LIC ${code}`;
+  }
+
+  const parsed = Date.parse(checkedAtIso);
+  if (Number.isNaN(parsed)) {
+    return `LIC ${code}`;
+  }
+
+  const timeLabel = new Date(parsed).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  return `LIC ${code} ${timeLabel}`;
+}
+
+function normalizeApiDateToIso(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const parsedDirect = Date.parse(trimmed);
+  if (!Number.isNaN(parsedDirect)) {
+    return new Date(parsedDirect).toISOString();
+  }
+
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(trimmed)) {
+    const normalized = `${trimmed.replace(" ", "T")}Z`;
+    const parsedNormalized = Date.parse(normalized);
+    if (!Number.isNaN(parsedNormalized)) {
+      return new Date(parsedNormalized).toISOString();
+    }
+  }
+
+  return null;
+}
+
+function addDaysToIso(isoDate: string, days: number) {
+  return new Date(Date.parse(isoDate) + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function readCachedLicenseStatus(): CachedLicenseStatus | null {
+  const raw = localStorage.getItem(LICENSE_STATUS_STORAGE_KEY);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<CachedLicenseStatus>;
+
+    if (
+      typeof parsed.installationId !== "string" ||
+      typeof parsed.code !== "string" ||
+      typeof parsed.validatedAt !== "string" ||
+      typeof parsed.nextRevalidationAt !== "string" ||
+      typeof parsed.message !== "string"
+    ) {
+      return null;
+    }
+
+    return {
+      installationId: parsed.installationId,
+      code: parsed.code,
+      validatedAt: parsed.validatedAt,
+      nextRevalidationAt: parsed.nextRevalidationAt,
+      expiryDate: typeof parsed.expiryDate === "string" ? parsed.expiryDate : null,
+      message: parsed.message,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildLicenseRevalidationHint(
+  cached: CachedLicenseStatus | null,
+  installationId: string,
+  online: boolean,
+  nowMs = Date.now()
+) {
+  if (!cached || cached.installationId !== installationId) return "";
+
+  const dueAtMs = Date.parse(cached.nextRevalidationAt);
+  if (Number.isNaN(dueAtMs)) return "";
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  const daysUntilDue = Math.ceil((dueAtMs - nowMs) / dayMs);
+
+  if (daysUntilDue > LICENSE_REVALIDATE_WARNING_DAYS) {
+    return "";
+  }
+
+  if (daysUntilDue >= 0) {
+    if (daysUntilDue === 0) {
+      return "Revalidacao da licenca vence hoje. Se possivel, valide com internet.";
+    }
+
+    return `Revalidacao da licenca em ${daysUntilDue} dia(s).`;
+  }
+
+  const overdueDays = Math.abs(daysUntilDue);
+  if (online) {
+    return `Revalidacao da licenca pendente ha ${overdueDays} dia(s). Conecte-se a internet e valide quando possivel.`;
+  }
+
+  return `Sem internet. Uso offline liberado, mas a revalidacao esta pendente ha ${overdueDays} dia(s).`;
+}
 
 type ColorScope = "input" | "aux" | "fx" | "master";
 
@@ -438,6 +567,34 @@ function resolveMesaColorByScope(
   }
 
   return normalizeColorByScope(scope, clamped);
+}
+
+function generateInstallationId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function getPlatformLabel() {
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes("android")) return "android";
+  if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios")) return "ios";
+  if (ua.includes("mac")) return "macos";
+  if (ua.includes("win")) return "windows";
+  if (ua.includes("linux")) return "linux";
+  return "unknown";
+}
+
+function getDeviceNameLabel() {
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes("ipad")) return "iPad";
+  if (ua.includes("iphone")) return "iPhone";
+  if (ua.includes("mac")) return "Mac";
+  if (ua.includes("win")) return "Windows PC";
+  if (ua.includes("android")) return "Android Device";
+  return "Desktop Device";
 }
 
 function normalizeAuxColorId(colorId: number) {
@@ -1161,9 +1318,27 @@ function App() {
   const [appStage, setAppStage] = useState<AppStage>("splash");
   const [ip, setIp] = useState(DEFAULT_MIXER_IP);
   const [status, setStatus] = useState("Desconectado");
+  const [connectingSource, setConnectingSource] = useState<"manual" | "discovered" | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [licenseModalOpen, setLicenseModalOpen] = useState(false);
+  const [licenseModalMandatory, setLicenseModalMandatory] = useState(false);
+  const [installationId, setInstallationId] = useState("");
+  const [licenseKeyInput, setLicenseKeyInput] = useState("");
+  const [licenseValidationBusy, setLicenseValidationBusy] = useState(false);
+  const [licenseValidationMessage, setLicenseValidationMessage] = useState<{ kind: "idle" | "success" | "error"; text: string }>({
+    kind: "idle",
+    text: "",
+  });
+  const [isLicenseValidated, setIsLicenseValidated] = useState(false);
+  const [hasLicenseActivatedOnce, setHasLicenseActivatedOnce] = useState(false);
+  const [licenseRevalidationHint, setLicenseRevalidationHint] = useState("");
+  const [licenseLastApiCode, setLicenseLastApiCode] = useState("");
+  const [licenseLastCheckedAt, setLicenseLastCheckedAt] = useState("");
+  const [isOnline, setIsOnline] = useState(() =>
+    typeof navigator !== "undefined" ? navigator.onLine : true
+  );
   const [mainView, setMainView] = useState<MainView>("mixer");
   const [settingsDropdownOpen, setSettingsDropdownOpen] = useState(false);
   const [detailView, setDetailView] = useState<DetailView>(null);
@@ -1235,6 +1410,8 @@ function App() {
   const sendWriteTimersRef = useRef<Map<number, number>>(new Map());
   const sendWriteLastAtRef = useRef<Map<number, number>>(new Map());
   const sendWritePendingRef = useRef<Map<number, number>>(new Map());
+  const backgroundLicenseRevalidationBusyRef = useRef(false);
+  const lastBackgroundRevalidationAtRef = useRef(0);
   const dragScrollStateRef = useRef<DragScrollState>({
     pointerId: null,
     pointerType: "",
@@ -1263,6 +1440,77 @@ function App() {
       window.clearTimeout(timer);
     };
   }, []);
+
+  useEffect(() => {
+    const storedInstallationId = localStorage.getItem(INSTALLATION_ID_STORAGE_KEY);
+    const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY);
+    const nextInstallationId = storedInstallationId && storedInstallationId.trim().length > 0
+      ? storedInstallationId
+      : generateInstallationId();
+
+    if (!storedInstallationId) {
+      localStorage.setItem(INSTALLATION_ID_STORAGE_KEY, nextInstallationId);
+    }
+
+    setInstallationId(nextInstallationId);
+    if (storedLicenseKey && storedLicenseKey.trim().length > 0) {
+      setLicenseKeyInput(storedLicenseKey);
+    }
+    const legacyValidated = localStorage.getItem(LICENSE_VALIDATED_STORAGE_KEY) === "1";
+    const activatedOnce = localStorage.getItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY) === "1";
+    const cached = readCachedLicenseStatus();
+    const cacheValidated = cached?.installationId === nextInstallationId && cached.code === "LICENSE_VALID";
+    const nextValidated = legacyValidated || cacheValidated;
+
+    if (cacheValidated && !legacyValidated) {
+      localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
+    }
+
+    if (nextValidated && !activatedOnce) {
+      localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+    }
+
+    if (cached?.installationId === nextInstallationId) {
+      setLicenseLastApiCode(cached.code);
+      setLicenseLastCheckedAt(cached.validatedAt);
+    }
+
+    setHasLicenseActivatedOnce(activatedOnce || nextValidated);
+    setIsLicenseValidated(nextValidated);
+    setLicenseRevalidationHint(
+      nextValidated
+        ? buildLicenseRevalidationHint(cached, nextInstallationId, typeof navigator !== "undefined" ? navigator.onLine : true)
+        : ""
+    );
+  }, []);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isLicenseValidated || !installationId) {
+      setLicenseRevalidationHint("");
+      return;
+    }
+
+    const cached = readCachedLicenseStatus();
+    setLicenseRevalidationHint(buildLicenseRevalidationHint(cached, installationId, isOnline));
+  }, [installationId, isLicenseValidated, isOnline]);
+
+  useEffect(() => {
+    if (!isOnline || !isLicenseValidated || !installationId) return;
+    void runBackgroundLicenseRevalidation();
+  }, [isOnline, isLicenseValidated, installationId]);
 
   useEffect(() => {
     isChannelsDraggingRef.current = isChannelsDragging;
@@ -3175,20 +3423,24 @@ function App() {
     meterBusyRef.current = false;
   }
 
-  async function connectToMixer(targetIp: string) {
+  async function connectToMixer(targetIp: string, source: "manual" | "discovered") {
     const normalizedIp = targetIp.trim();
 
     if (!normalizedIp) {
       const message = "Confirme o endereco IP e tente novamente.";
       setConnectionError(message);
       setStatus(message);
+      setConnectingSource(null);
       return false;
     }
 
     try {
+      setConnectingSource(source);
       setConnectionError(null);
       setStatus("Conectando...");
-      setIp(normalizedIp);
+      if (source === "manual") {
+        setIp(normalizedIp);
+      }
 
       const client = new Axios16Client(normalizedIp);
       await client.connect();
@@ -3205,8 +3457,29 @@ function App() {
 
       clientRef.current = client;
       setIsConnected(true);
-      setStatus(`Conectado em ${normalizedIp}`);
+      const connectedStatus = licenseRevalidationHint
+        ? `Conectado em ${normalizedIp} - ${licenseRevalidationHint}`
+        : `Conectado em ${normalizedIp}`;
+
+      setStatus(connectedStatus);
       setAppStage("mixer");
+
+      if (isOnline && hasLicenseActivatedOnce) {
+        await runBackgroundLicenseRevalidation(true);
+
+        const stillValidated = localStorage.getItem(LICENSE_VALIDATED_STORAGE_KEY) === "1";
+        if (!stillValidated) {
+          setStatus("Licenca pendente/suspensa. Acesso bloqueado.");
+          setConnectingSource(null);
+          setLicenseModalMandatory(true);
+          setLicenseModalOpen(true);
+        }
+      }
+
+      if (!hasLicenseActivatedOnce) {
+        setLicenseModalMandatory(true);
+        setLicenseModalOpen(true);
+      }
       mixerChannelsScrollLeftRef.current = 0;
       if (mixerChannelsScrollerRef.current) {
         mixerChannelsScrollerRef.current.scrollLeft = 0;
@@ -3241,6 +3514,7 @@ function App() {
       }
 
       startMeterPolling();
+      setConnectingSource(null);
       return true;
     } catch (error) {
       stopMeterPolling();
@@ -3250,12 +3524,13 @@ function App() {
         "Nao foi possivel conectar a mesa. Verifique se a mesa esta ligada e na mesma rede."
       );
       clientRef.current = null;
+      setConnectingSource(null);
       return false;
     }
   }
 
   async function handleConnect() {
-    await connectToMixer(ip);
+    await connectToMixer(ip, "manual");
   }
 
   function handleDisconnect() {
@@ -3267,6 +3542,364 @@ function App() {
     setIsConnected(false);
     setConnectionError(null);
     setStatus("Desconectado");
+    setDetailView(null);
+    setMainView("mixer");
+    setSettingsDropdownOpen(false);
+    setAppStage("device-selection");
+    setConnectingSource(null);
+    setLicenseModalOpen(false);
+    setLicenseModalMandatory(false);
+  }
+
+  function openLicenseModal(mandatory = false) {
+    setLicenseModalMandatory(mandatory);
+    setLicenseValidationMessage({ kind: "idle", text: "" });
+    setLicenseModalOpen(true);
+    setSettingsDropdownOpen(false);
+  }
+
+  function closeLicenseModal() {
+    if (licenseModalMandatory) return;
+    setLicenseModalOpen(false);
+  }
+
+  async function handleCopyInstallationId() {
+    if (!installationId) return;
+    try {
+      await navigator.clipboard.writeText(installationId);
+      setLicenseValidationMessage({ kind: "success", text: "UUID copiado para a area de transferencia." });
+    } catch {
+      setLicenseValidationMessage({ kind: "error", text: "Nao foi possivel copiar o UUID." });
+    }
+  }
+
+  async function handleValidateLicense() {
+    const licenseValue = licenseKeyInput.trim();
+
+    if (!licenseValue) {
+      setLicenseValidationMessage({ kind: "error", text: "Informe a chave da licenca." });
+      return;
+    }
+
+    if (!installationId) {
+      setLicenseValidationMessage({ kind: "error", text: "UUID da instalacao indisponivel." });
+      return;
+    }
+
+    localStorage.setItem(LICENSE_KEY_STORAGE_KEY, licenseValue);
+
+    setLicenseValidationBusy(true);
+    setLicenseValidationMessage({ kind: "idle", text: "" });
+
+    try {
+      const response = await invoke<{ statusCode: number; body: Record<string, unknown> }>("validate_license", {
+        payload: {
+          licenseKey: licenseValue,
+          series: licenseValue,
+          deviceId: installationId,
+          deviceName: getDeviceNameLabel(),
+          platform: getPlatformLabel(),
+          appVersion: APP_VERSION,
+        },
+      });
+
+      const body = response.body ?? {};
+      const nested = body.data;
+      const scoped = nested && typeof nested === "object"
+        ? (nested as Record<string, unknown>)
+        : body;
+
+      const toBooleanish = (value: unknown): boolean | undefined => {
+        if (typeof value === "boolean") return value;
+        if (typeof value === "number") {
+          if (value === 1) return true;
+          if (value === 0) return false;
+          return undefined;
+        }
+        if (typeof value === "string") {
+          const normalized = value.trim().toLowerCase();
+          if (["1", "true", "yes", "sim", "ok", "valid", "active", "ativo", "valida", "aprovada", "approved", "success"].includes(normalized)) {
+            return true;
+          }
+          if (["0", "false", "no", "nao", "invalid", "inactive", "inativo", "invalida", "expirada", "revoked", "blocked", "error", "erro"].includes(normalized)) {
+            return false;
+          }
+        }
+        return undefined;
+      };
+
+      const statusValue = String(scoped.status ?? body.status ?? "").trim().toLowerCase();
+      const codeValue = String(scoped.code ?? body.code ?? "").trim().toUpperCase();
+      const messageValue = String(scoped.message ?? body.message ?? "").trim();
+      const successValue = toBooleanish(scoped.success ?? body.success);
+
+      const validValues: unknown[] = [
+        scoped.valid,
+        scoped.is_valid,
+        scoped.license_valid,
+        body.valid,
+        body.is_valid,
+        body.license_valid,
+      ];
+
+      const activeValues: unknown[] = [
+        scoped.active,
+        scoped.is_active,
+        scoped.license_active,
+        body.active,
+        body.is_active,
+        body.license_active,
+      ];
+
+      const validFlag = validValues.some((value) => toBooleanish(value) === true);
+      const activeFlag = activeValues.some((value) => toBooleanish(value) === true);
+      const invalidFlag = validValues.some((value) => toBooleanish(value) === false);
+      const inactiveFlag = activeValues.some((value) => toBooleanish(value) === false);
+
+      const approvedByStatus = ["valid", "active", "approved", "ok", "success", "valida", "ativo", "aprovada"].includes(statusValue);
+      const rejectedByStatus = ["invalid", "inactive", "error", "expired", "blocked", "revoked", "invalida", "inativo", "expirada"].includes(statusValue);
+
+      const messageLower = messageValue.toLowerCase();
+      const approvedByMessage = ["licenca valida", "licenca ativa", "license valid", "license active", "validada com sucesso"].some((token) =>
+        messageLower.includes(token)
+      );
+      const rejectedByMessage = ["licenca invalida", "licenca inativa", "expirada", "bloqueada", "invalid", "inactive", "expired", "revoked"].some((token) =>
+        messageLower.includes(token)
+      );
+
+      const hasSuccessSignal = validFlag || activeFlag || approvedByStatus || approvedByMessage;
+      const hasRejectSignal = invalidFlag || inactiveFlag || rejectedByStatus || rejectedByMessage;
+
+      const approvedByCode = codeValue === "LICENSE_VALID";
+      const approved =
+        response.statusCode >= 200 &&
+        response.statusCode < 300 &&
+        successValue !== false &&
+        approvedByCode &&
+        hasSuccessSignal &&
+        !hasRejectSignal;
+
+      const knownRejectCodes = new Set([
+        "LICENSE_NOT_FOUND",
+        "LICENSE_INACTIVE",
+        "LICENSE_EXPIRED",
+        "ACTIVATION_LIMIT_REACHED",
+        "LICENSE_PENDING",
+        "LICENSE_SUSPENDED",
+        "LICENSE_BLOCKED",
+      ]);
+
+      const codeMessageMap: Record<string, string> = {
+        LICENSE_VALID: "Licenca valida.",
+        LICENSE_NOT_FOUND: "Licenca nao encontrada.",
+        LICENSE_INACTIVE: "Licenca inativa.",
+        LICENSE_EXPIRED: "Licenca expirada.",
+        ACTIVATION_LIMIT_REACHED: "Limite de ativacoes atingido.",
+      };
+
+      const licenseObject = scoped.license && typeof scoped.license === "object"
+        ? (scoped.license as Record<string, unknown>)
+        : body.license && typeof body.license === "object"
+          ? (body.license as Record<string, unknown>)
+          : null;
+
+      const serverTimeIso = normalizeApiDateToIso(scoped.server_time ?? body.server_time);
+      const validatedAt = serverTimeIso ?? new Date().toISOString();
+      const nextRevalidationAt = addDaysToIso(validatedAt, LICENSE_REVALIDATE_INTERVAL_DAYS);
+      const expiryDate = normalizeApiDateToIso(licenseObject?.expiry_date ?? null);
+
+      const feedbackMessage = messageValue || codeMessageMap[codeValue] || "Nao foi possivel validar a licenca.";
+
+      if (approved) {
+        const cache: CachedLicenseStatus = {
+          installationId,
+          code: codeValue || "LICENSE_VALID",
+          validatedAt,
+          nextRevalidationAt,
+          expiryDate,
+          message: feedbackMessage,
+        };
+
+        localStorage.setItem(LICENSE_STATUS_STORAGE_KEY, JSON.stringify(cache));
+        localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
+        localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+        setHasLicenseActivatedOnce(true);
+        setIsLicenseValidated(true);
+        setLicenseLastApiCode(codeValue || "LICENSE_VALID");
+        setLicenseLastCheckedAt(validatedAt);
+        setLicenseRevalidationHint(buildLicenseRevalidationHint(cache, installationId, isOnline));
+        setLicenseModalOpen(false);
+        setLicenseModalMandatory(false);
+        setLicenseValidationMessage({ kind: "success", text: feedbackMessage || "Licenca validada com sucesso." });
+        return;
+      }
+
+      const isPendingByMessage = messageValue.toLowerCase().includes("pendente");
+
+      if (knownRejectCodes.has(codeValue) || isPendingByMessage) {
+        localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+        localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
+        setIsLicenseValidated(false);
+        setLicenseLastApiCode(codeValue);
+        setLicenseLastCheckedAt(new Date().toISOString());
+        setLicenseRevalidationHint("");
+        setLicenseModalMandatory(true);
+        setLicenseModalOpen(true);
+      }
+
+      setLicenseValidationMessage({
+        kind: "error",
+        text: feedbackMessage,
+      });
+    } catch {
+      setLicenseValidationMessage({ kind: "error", text: "Falha ao consultar o endpoint de licenca." });
+    } finally {
+      setLicenseValidationBusy(false);
+    }
+  }
+
+  async function runBackgroundLicenseRevalidation(force = false) {
+    if (backgroundLicenseRevalidationBusyRef.current) return;
+
+    const now = Date.now();
+    if (!force && now - lastBackgroundRevalidationAtRef.current < LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS) {
+      return;
+    }
+
+    const cached = readCachedLicenseStatus();
+    if (!force) {
+      if (!cached || cached.installationId !== installationId || cached.code !== "LICENSE_VALID") {
+        return;
+      }
+
+      const dueAtMs = Date.parse(cached.nextRevalidationAt);
+      if (!Number.isNaN(dueAtMs) && now < dueAtMs) {
+        return;
+      }
+    } else if (cached && cached.installationId !== installationId) {
+      return;
+    }
+
+    const licenseValue = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    if (!licenseValue) return;
+
+    backgroundLicenseRevalidationBusyRef.current = true;
+    lastBackgroundRevalidationAtRef.current = now;
+
+    try {
+      const response = await invoke<{ statusCode: number; body: Record<string, unknown> }>("validate_license", {
+        payload: {
+          licenseKey: licenseValue,
+          series: licenseValue,
+          deviceId: installationId,
+          deviceName: getDeviceNameLabel(),
+          platform: getPlatformLabel(),
+          appVersion: APP_VERSION,
+        },
+      });
+
+      const body = response.body ?? {};
+      const nested = body.data;
+      const scoped = nested && typeof nested === "object"
+        ? (nested as Record<string, unknown>)
+        : body;
+
+      const toBooleanish = (value: unknown): boolean | undefined => {
+        if (typeof value === "boolean") return value;
+        if (typeof value === "number") {
+          if (value === 1) return true;
+          if (value === 0) return false;
+          return undefined;
+        }
+        if (typeof value === "string") {
+          const normalized = value.trim().toLowerCase();
+          if (["1", "true", "yes", "sim", "ok", "success"].includes(normalized)) return true;
+          if (["0", "false", "no", "nao", "error", "erro"].includes(normalized)) return false;
+        }
+        return undefined;
+      };
+
+      const codeValue = String(scoped.code ?? body.code ?? "").trim().toUpperCase();
+      const messageValue = String(scoped.message ?? body.message ?? "").trim();
+      const successValue = toBooleanish(scoped.success ?? body.success);
+      const validValue = toBooleanish(scoped.valid ?? body.valid ?? scoped.is_valid ?? body.is_valid);
+
+      const approved =
+        response.statusCode >= 200 &&
+        response.statusCode < 300 &&
+        successValue !== false &&
+        validValue === true &&
+        codeValue === "LICENSE_VALID";
+
+      if (approved) {
+        const licenseObject = scoped.license && typeof scoped.license === "object"
+          ? (scoped.license as Record<string, unknown>)
+          : body.license && typeof body.license === "object"
+            ? (body.license as Record<string, unknown>)
+            : null;
+
+        const serverTimeIso = normalizeApiDateToIso(scoped.server_time ?? body.server_time);
+        const validatedAt = serverTimeIso ?? new Date().toISOString();
+        const nextRevalidationAt = addDaysToIso(validatedAt, LICENSE_REVALIDATE_INTERVAL_DAYS);
+        const expiryDate = normalizeApiDateToIso(licenseObject?.expiry_date ?? null);
+
+        const refreshedCache: CachedLicenseStatus = {
+          installationId,
+          code: "LICENSE_VALID",
+          validatedAt,
+          nextRevalidationAt,
+          expiryDate,
+          message: messageValue || "Licenca valida.",
+        };
+
+        localStorage.setItem(LICENSE_STATUS_STORAGE_KEY, JSON.stringify(refreshedCache));
+        localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
+        setIsLicenseValidated(true);
+        setLicenseLastApiCode("LICENSE_VALID");
+        setLicenseLastCheckedAt(validatedAt);
+        setLicenseRevalidationHint(buildLicenseRevalidationHint(refreshedCache, installationId, isOnline));
+        return;
+      }
+
+      const rejectCodes = new Set([
+        "LICENSE_NOT_FOUND",
+        "LICENSE_INACTIVE",
+        "LICENSE_EXPIRED",
+        "ACTIVATION_LIMIT_REACHED",
+        "LICENSE_PENDING",
+        "LICENSE_SUSPENDED",
+        "LICENSE_BLOCKED",
+      ]);
+
+      const isPendingByMessage = messageValue.toLowerCase().includes("pendente");
+
+      if (rejectCodes.has(codeValue) || isPendingByMessage) {
+        localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+        localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
+        setIsLicenseValidated(false);
+        setLicenseLastApiCode(codeValue);
+        setLicenseLastCheckedAt(new Date().toISOString());
+        setLicenseRevalidationHint("");
+        const rejectMessageMap: Record<string, string> = {
+          LICENSE_EXPIRED: "Licenca expirada. Fale com o suporte para regularizar.",
+          LICENSE_SUSPENDED: "Licenca suspensa. Fale com o suporte para reativacao.",
+          LICENSE_PENDING: "Licenca pendente de ativacao no servidor.",
+          LICENSE_INACTIVE: "Licenca inativa. Fale com o suporte.",
+          LICENSE_BLOCKED: "Licenca bloqueada. Fale com o suporte.",
+        };
+        setLicenseValidationMessage({
+          kind: "error",
+          text: messageValue || rejectMessageMap[codeValue] || "Licenca suspensa ou invalida. Revalide para continuar.",
+        });
+        setLicenseModalMandatory(true);
+        setLicenseModalOpen(true);
+        setStatus(messageValue || "Licenca suspensa/invalida na API. Acesso bloqueado.");
+      }
+    } catch {
+      // Em erro de rede mantemos o acesso local (offline-first).
+    } finally {
+      backgroundLicenseRevalidationBusyRef.current = false;
+    }
   }
 
   function handlePreconnectMixerSelection(mixer: DiscoveredMixer) {
@@ -3280,7 +3913,7 @@ function App() {
 
     applyMixerChannelProfile(normalizeSupportedChannelCount(mixer.channels));
     setConnectionError(null);
-    void connectToMixer(mixer.ip);
+    void connectToMixer(mixer.ip, "discovered");
   }
 
   function toggleMute(channelNumber: number) {
@@ -5082,16 +5715,8 @@ function App() {
             moduleItems={[
               { id: "eq", label: "EQ" },
               { id: "comp", label: "COMP" },
-              { id: "delay", label: "DELAY" },
               { id: "sends", label: "AUX MIX" },
             ]}
-            customModuleContent={{
-              delay: renderDetailPlaceholder(
-                "DELAY",
-                "Delay do AUX",
-                "A interface de Delay sera mapeada em seguida com os parametros reais da mesa."
-              ),
-            }}
             sends={sendsView}
             onModuleChange={setActiveProcessorModule}
             onGateChange={() => {}}
@@ -5393,6 +6018,7 @@ function App() {
               variant="detail"
               colorId={fxState.colorId}
               channelName={fxState.channelName}
+              eqState={processorState.eq}
               muted={fxState.muted}
               soloOn={fxState.soloOn}
               faderDb={fxState.faderDb}
@@ -5579,16 +6205,8 @@ function App() {
               moduleItems={[
                 { id: "eq", label: "EQ" },
                 { id: "comp", label: "COMP" },
-                { id: "delay", label: "DELAY" },
                 { id: "sends", label: "SENDS" },
               ]}
-              customModuleContent={{
-                delay: renderDetailPlaceholder(
-                  "DELAY",
-                  "Delay do Master",
-                  "A interface de Delay do Master sera mapeada com os parametros reais da mesa."
-                ),
-              }}
               sends={sendsView}
               onModuleChange={setActiveProcessorModule}
               onGateChange={() => {}}
@@ -5815,6 +6433,7 @@ function App() {
                 fxNumber={selectedBus as 1 | 2}
                 colorId={selectedFxStrip.colorId}
                 channelName={selectedFxStrip.channelName}
+                eqState={selectedBusProcessorState.eq}
                 muted={selectedFxStrip.muted}
                 soloOn={selectedFxStrip.soloOn}
                 faderDb={selectedFxStrip.faderDb}
@@ -5928,7 +6547,7 @@ function App() {
   }, [detailView, isConnected]);
 
   if (appStage === "splash") {
-    return <SplashScreen version="1.0.0" />;
+    return <SplashScreen version={APP_VERSION} />;
   }
 
   if (appStage === "device-selection") {
@@ -5937,11 +6556,12 @@ function App() {
         mixers={discoveredMixers}
         discoveryLoading={isDiscoveringMixers}
         discoveryError={discoveryError}
-        connectBusy={!isConnected && status.startsWith("Conectando")}
+        connectBusy={connectingSource === "discovered"}
+        manualConnectBusy={connectingSource === "manual"}
         connectionStatus={status === "Desconectado" ? "" : status}
         connectionError={connectionError}
         manualIp={ip}
-        version="1.0.0"
+        version={APP_VERSION}
         onManualIpChange={(value) => {
           setIp(value);
           if (connectionError) {
@@ -5953,7 +6573,7 @@ function App() {
           void refreshMixerDiscovery();
         }}
         onConnectManual={() => {
-          void connectToMixer(ip);
+          void connectToMixer(ip, "manual");
         }}
         onConnectMixer={handlePreconnectMixerSelection}
       />
@@ -6036,6 +6656,18 @@ function App() {
         </div>
 
         <div className="top-nav__actions" data-node-id="73:2723">
+          <div className="top-nav__license-diagnostic" title="Ultimo retorno da API de licenca">
+            {formatLicenseDiagnostic(licenseLastApiCode, licenseLastCheckedAt)}
+          </div>
+          <AxHeaderStatusTag
+            status={
+              isConnected
+                ? "connected"
+                : status.startsWith("Conectando")
+                  ? "connecting"
+                  : "disconnected"
+            }
+          />
           <div className="settings-dropdown-wrap">
             <button
               type="button"
@@ -6061,29 +6693,27 @@ function App() {
                 >
                   Scenes
                 </button>
+                <button
+                  type="button"
+                  className="settings-dropdown__item"
+                  onClick={() => openLicenseModal(false)}
+                >
+                  Device ID / License
+                </button>
+                <button
+                  type="button"
+                  className="settings-dropdown__item settings-dropdown__item--danger"
+                  disabled={!isConnected}
+                  onClick={() => {
+                    handleDisconnect();
+                    setSettingsDropdownOpen(false);
+                  }}
+                >
+                  Disconnect
+                </button>
               </div>
             )}
           </div>
-          <AxHeaderConnectionIp
-            ip={ip}
-            connected={isConnected}
-            onIpChange={setIp}
-            onSubmit={() => {
-              if (!isConnected) {
-                void handleConnect();
-              }
-            }}
-            onDisconnect={handleDisconnect}
-          />
-          <AxHeaderStatusTag
-            status={
-              isConnected
-                ? "connected"
-                : status.startsWith("Conectando")
-                  ? "connecting"
-                  : "disconnected"
-            }
-          />
         </div>
       </nav>
 
@@ -6125,6 +6755,10 @@ function App() {
               const pair = getChannelPair(stripNumber);
               const pairKeyValue = pairKey(pair[0], pair[1]);
               const pairLinked = Boolean(channelLinks[pairKeyValue]);
+              const displayChannelName =
+                pairLinked && channelState.channelName.trim().length > 0
+                  ? `${stripLinkedNameSuffix(channelState.channelName)} ${stripNumber === pair[0] ? "L" : "R"}`
+                  : channelState.channelName;
               const wrapperMarginRight = index === channels.length - 1 ? 0 : 4;
 
               return (
@@ -6159,7 +6793,7 @@ function App() {
 
                   <ChannelStrip
                     channel={stripNumber}
-                    channelName={channelState.channelName}
+                    channelName={displayChannelName}
                     section="inputs"
                     isPairLinked={pairLinked}
                     muted={channelState.muted}
@@ -6225,6 +6859,7 @@ function App() {
                     fxNumber={fxNumber}
                     colorId={fxState.colorId}
                     channelName={fxState.channelName}
+                    eqState={fxProcessorStates[index].eq}
                     muted={fxState.muted}
                     soloOn={fxState.soloOn}
                     faderDb={fxState.faderDb}
@@ -6262,6 +6897,10 @@ function App() {
               const [odd, even] = getAuxPair(auxNumber);
               const key = pairKey(odd, even);
               const isLinked = Boolean(auxLinks[key]);
+              const displayAuxName =
+                isLinked && auxState.channelName.trim().length > 0
+                  ? `${stripLinkedNameSuffix(auxState.channelName)} ${auxNumber === odd ? "L" : "R"}`
+                  : auxState.channelName;
               return (
                 <div
                   key={`aux-${auxNumber}`}
@@ -6295,7 +6934,7 @@ function App() {
                   <AuxStrip
                     auxNumber={auxNumber}
                     colorId={auxState.colorId}
-                    channelName={auxState.channelName}
+                    channelName={displayAuxName}
                     muted={auxState.muted}
                     soloOn={auxState.soloOn}
                     faderDb={auxState.faderDb}
@@ -6398,6 +7037,107 @@ function App() {
           }
           onClose={closeChannelCustomizer}
         />
+      )}
+
+      {licenseModalOpen && (
+        <div
+          className="settings-modal-backdrop"
+          onClick={() => {
+            if (!licenseModalMandatory) {
+              closeLicenseModal();
+            }
+          }}
+        >
+          <section
+            className="settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="License Validation"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="settings-modal__header">
+              <div>
+                <h2>Device ID / License</h2>
+                <p>
+                  {licenseModalMandatory
+                    ? "Validacao obrigatoria para liberar o mixer."
+                    : "Consulte e valide a licenca para esta instalacao."}
+                </p>
+                {licenseRevalidationHint && <p>{licenseRevalidationHint}</p>}
+              </div>
+            </div>
+
+            <div className="settings-modal__row">
+              <label htmlFor="settings-installation-id">Installation UUID</label>
+              <div className="settings-modal__inline">
+                <input
+                  id="settings-installation-id"
+                  className="settings-modal__input"
+                  value={installationId}
+                  readOnly
+                />
+                <button
+                  type="button"
+                  className="startup-button startup-button--secondary settings-modal__copy"
+                  onClick={handleCopyInstallationId}
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+
+            <div className="settings-modal__row">
+              <label htmlFor="settings-license-key">License Key / Series</label>
+              <input
+                id="settings-license-key"
+                className="settings-modal__input"
+                value={licenseKeyInput}
+                onChange={(event) => setLicenseKeyInput(event.target.value)}
+                placeholder="Digite sua licenca"
+                disabled={licenseValidationBusy}
+              />
+            </div>
+
+            {licenseValidationMessage.kind !== "idle" && (
+              <div
+                className={`settings-modal__result ${licenseValidationMessage.kind === "success" ? "settings-modal__result--success" : "settings-modal__result--error"}`}
+              >
+                {licenseValidationMessage.text}
+              </div>
+            )}
+
+            <div className="settings-modal__actions">
+              <button
+                type="button"
+                className="startup-button startup-button--primary"
+                disabled={licenseValidationBusy}
+                onClick={() => {
+                  void handleValidateLicense();
+                }}
+              >
+                {licenseValidationBusy ? "Validando..." : "Validate License"}
+              </button>
+              {!licenseModalMandatory && (
+                <button
+                  type="button"
+                  className="startup-button startup-button--secondary"
+                  onClick={closeLicenseModal}
+                >
+                  Close
+                </button>
+              )}
+              {licenseModalMandatory && (
+                <button
+                  type="button"
+                  className="startup-button startup-button--secondary"
+                  onClick={handleDisconnect}
+                >
+                  Disconnect
+                </button>
+              )}
+            </div>
+          </section>
+        </div>
       )}
     </main>
   );
