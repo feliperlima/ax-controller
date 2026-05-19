@@ -65,6 +65,7 @@ type ChannelState = {
   soloOn: boolean;
   phantomOn: boolean;
   hiZOn: boolean;
+  usbInputOn: boolean;
   phasePositive: boolean;
   colorId: number;
   iconId: number;
@@ -193,6 +194,7 @@ function createDefaultChannelState(): ChannelState {
     soloOn: false,
     phantomOn: false,
     hiZOn: false,
+    usbInputOn: false,
     phasePositive: true,
     colorId: 1,
     iconId: 0,
@@ -417,26 +419,6 @@ type CachedLicenseStatus = {
   expiryDate: string | null;
   message: string;
 };
-
-function formatLicenseDiagnostic(code: string, checkedAtIso: string) {
-  if (!code) return "LIC SEM CHECK";
-
-  if (!checkedAtIso) {
-    return `LIC ${code}`;
-  }
-
-  const parsed = Date.parse(checkedAtIso);
-  if (Number.isNaN(parsed)) {
-    return `LIC ${code}`;
-  }
-
-  const timeLabel = new Date(parsed).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-  return `LIC ${code} ${timeLabel}`;
-}
 
 function normalizeApiDateToIso(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -1389,8 +1371,6 @@ function App() {
   const [isLicenseValidated, setIsLicenseValidated] = useState(false);
   const [hasLicenseActivatedOnce, setHasLicenseActivatedOnce] = useState(false);
   const [licenseRevalidationHint, setLicenseRevalidationHint] = useState("");
-  const [licenseLastApiCode, setLicenseLastApiCode] = useState("");
-  const [licenseLastCheckedAt, setLicenseLastCheckedAt] = useState("");
   const [isOnline, setIsOnline] = useState(() =>
     typeof navigator !== "undefined" ? navigator.onLine : true
   );
@@ -1528,8 +1508,7 @@ function App() {
     }
 
     if (cached?.installationId === nextInstallationId) {
-      setLicenseLastApiCode(cached.code);
-      setLicenseLastCheckedAt(cached.validatedAt);
+      // License cached state verified
     }
 
     setHasLicenseActivatedOnce(activatedOnce || Boolean(storedLicenseKey));
@@ -1635,8 +1614,6 @@ function App() {
       localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
       localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
       setIsLicenseValidated(false);
-      setLicenseLastApiCode("LICENSE_EXPIRED");
-      setLicenseLastCheckedAt(new Date().toISOString());
       setLicenseRevalidationHint("");
       setLicenseValidationMessage({
         kind: "error",
@@ -2025,6 +2002,7 @@ function App() {
 
     const params = {
       hiZ: channelParam(channelNumber, 64),
+      inputSource: 2846 + channelNumber,
       phantom: channelParam(channelNumber, 65),
       gain: channelParam(channelNumber, 72),
       phase: channelParam(channelNumber, 73),
@@ -2043,6 +2021,7 @@ function App() {
 
     updateChannelState(channelNumber, {
       hiZOn: valueToBoolean(values.get(params.hiZ) ?? 0),
+      usbInputOn: (values.get(2846 + channelNumber) ?? 0) === 0,
       phantomOn: valueToBoolean(values.get(params.phantom) ?? 0),
       gain: valueToGain(values.get(params.gain) ?? 0),
       phasePositive: valueToBoolean(values.get(params.phase) ?? 1),
@@ -3949,8 +3928,7 @@ function App() {
         localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
         setHasLicenseActivatedOnce(true);
         setIsLicenseValidated(true);
-        setLicenseLastApiCode(codeValue || "LICENSE_VALID");
-        setLicenseLastCheckedAt(validatedAt);
+        // License validated
         const expiryHint = buildLicenseExpiryHint(cache, installationId);
         const revalidationHint = buildLicenseRevalidationHint(cache, installationId, isOnline);
         setLicenseRevalidationHint(expiryHint || revalidationHint);
@@ -3964,8 +3942,7 @@ function App() {
         localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
         localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
         setIsLicenseValidated(false);
-        setLicenseLastApiCode("LICENSE_EXPIRED");
-        setLicenseLastCheckedAt(validatedAt);
+        // License expired
         setLicenseRevalidationHint("");
         setLicenseModalMandatory(true);
         setLicenseModalOpen(true);
@@ -3982,8 +3959,6 @@ function App() {
         localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
         localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
         setIsLicenseValidated(false);
-        setLicenseLastApiCode(codeValue);
-        setLicenseLastCheckedAt(new Date().toISOString());
         setLicenseRevalidationHint("");
         setLicenseModalMandatory(true);
         setLicenseModalOpen(true);
@@ -4108,8 +4083,6 @@ function App() {
           localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
           localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
           setIsLicenseValidated(false);
-          setLicenseLastApiCode("LICENSE_EXPIRED");
-          setLicenseLastCheckedAt(validatedAt);
           setLicenseRevalidationHint("");
           setLicenseValidationMessage({
             kind: "error",
@@ -4131,8 +4104,6 @@ function App() {
         localStorage.setItem(LICENSE_STATUS_STORAGE_KEY, JSON.stringify(refreshedCache));
         localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
         setIsLicenseValidated(true);
-        setLicenseLastApiCode("LICENSE_VALID");
-        setLicenseLastCheckedAt(validatedAt);
         const expiryHint = buildLicenseExpiryHint(refreshedCache, installationId);
         const revalidationHint = buildLicenseRevalidationHint(refreshedCache, installationId, isOnline);
         setLicenseRevalidationHint(expiryHint || revalidationHint);
@@ -4155,8 +4126,6 @@ function App() {
         localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
         localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
         setIsLicenseValidated(false);
-        setLicenseLastApiCode(codeValue);
-        setLicenseLastCheckedAt(new Date().toISOString());
         setLicenseRevalidationHint("");
         const rejectMessageMap: Record<string, string> = {
           LICENSE_EXPIRED: "Periodo de teste/licenca expirado. Entre em contato para adquirir.",
@@ -4247,6 +4216,13 @@ function App() {
       clientRef.current?.setPhantom(target, nextValue);
       updateChannelState(target, { phantomOn: nextValue });
     });
+  }
+
+  function toggleInputSource(channelNumber: number) {
+    const current = channels[channelNumber - 1];
+    const nextValue = !current.usbInputOn;
+    clientRef.current?.setInputSource(channelNumber, nextValue ? "usb" : "input");
+    updateChannelState(channelNumber, { usbInputOn: nextValue });
   }
 
   function handleFaderChange(channelNumber: number, position: number) {
@@ -5624,6 +5600,7 @@ function App() {
               soloOn={channelState.soloOn}
               phantomOn={channelState.phantomOn}
               phasePositive={channelState.phasePositive}
+              usbInputOn={channelState.usbInputOn}
               colorId={channelState.colorId}
               eqState={processorState.eq}
               faderDb={channelState.faderDb}
@@ -5638,6 +5615,7 @@ function App() {
               onToggleSolo={() => toggleChannelSolo(channelNumber)}
               onTogglePhantom={() => togglePhantom(channelNumber)}
               onTogglePhase={() => togglePhase(channelNumber)}
+              onToggleInputSource={() => toggleInputSource(channelNumber)}
               onFaderChange={(position) =>
                 handleFaderChange(channelNumber, position)
               }
@@ -6917,9 +6895,6 @@ function App() {
         </div>
 
         <div className="top-nav__actions" data-node-id="73:2723">
-          <div className="top-nav__license-diagnostic" title="Ultimo retorno da API de licenca">
-            {formatLicenseDiagnostic(licenseLastApiCode, licenseLastCheckedAt)}
-          </div>
           <AxHeaderStatusTag
             status={
               isConnected

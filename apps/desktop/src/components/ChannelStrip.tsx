@@ -28,6 +28,8 @@ type ChannelStripProps = {
   onToggleSolo: () => void;
   onTogglePhantom: () => void;
   onTogglePhase?: () => void;
+  usbInputOn?: boolean;
+  onToggleInputSource?: () => void;
   onFaderChange: (value: number) => void;
   onPanChange: (value: number) => void;
   onGainChange: (value: number) => void;
@@ -126,6 +128,8 @@ export function ChannelStrip({
   onToggleSolo,
   onTogglePhantom,
   onTogglePhase,
+  usbInputOn = false,
+  onToggleInputSource,
   onFaderChange,
   onPanChange,
   onGainChange,
@@ -163,6 +167,7 @@ export function ChannelStrip({
   const canTogglePhase = typeof onTogglePhase === "function";
   const canOpenDetail = typeof onOpenDetail === "function";
   const canToggleLink = typeof onToggleLink === "function" && Boolean(linkButtonLabel);
+  const canToggleInputSource = typeof onToggleInputSource === "function" && section === "inputs";
   const isDetailVariant = variant === "detail";
 
   return (
@@ -294,6 +299,66 @@ export function ChannelStrip({
               title={canOpenDetail ? "Open channel detail" : undefined}
             />
           )}
+        </div>
+      )}
+
+      {canToggleInputSource && (
+        <div
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          style={{
+            width: "100%",
+            paddingLeft: 0,
+            paddingRight: 0,
+            boxSizing: "border-box",
+          }}
+        >
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleInputSource?.();
+            }}
+            style={{
+              height: 32,
+              width: "100%",
+              borderRadius: 8,
+              border: usbInputOn ? "1px solid #22d3ee" : "1px solid #facc15",
+              background: usbInputOn
+                ? "linear-gradient(180deg, rgba(34,211,238,0.2) 0%, rgba(14,116,144,0.26) 100%)"
+                : "linear-gradient(180deg, rgba(250,204,21,0.2) 0%, rgba(161,98,7,0.26) 100%)",
+              color: "#e2e8f0",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.09em",
+              cursor: disabled ? "not-allowed" : "pointer",
+              opacity: disabled ? 0.55 : 1,
+              boxShadow: usbInputOn
+                ? "0 0 12px rgba(34,211,238,0.18)"
+                : "0 0 12px rgba(250,204,21,0.18)",
+            }}
+          >
+            <span
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: "999px",
+                background: usbInputOn ? "#22d3ee" : "#facc15",
+                boxShadow: usbInputOn
+                  ? "0 0 7px rgba(34,211,238,0.5)"
+                  : "0 0 7px rgba(250,204,21,0.5)",
+                flexShrink: 0,
+              }}
+            />
+            <span style={{ fontSize: 11, lineHeight: "11px" }}>
+              {usbInputOn ? "USB" : "INPUT"}
+            </span>
+          </button>
         </div>
       )}
 

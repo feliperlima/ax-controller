@@ -1010,6 +1010,13 @@ export class Axios16Client {
     this.sendParam(chParam(channel, BASE.phantom), enabled ? 1 : 0);
   }
 
+  setInputSource(channel: number, source: "input" | "usb") {
+    if (channel < 1 || channel > 16) {
+      throw new Error("Canal inválido. Use de 1 a 16.");
+    }
+    this.sendParam(2846 + channel, source === "usb" ? 0 : 1);
+  }
+
   setHiZ(channel: number, enabled: boolean) {
     if (channel !== 1 && channel !== 2) {
       throw new Error("Hi-Z disponível apenas nos canais 1 e 2.");
