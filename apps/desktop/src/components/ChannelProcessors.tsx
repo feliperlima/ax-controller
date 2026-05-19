@@ -712,23 +712,6 @@ function SendsEditor({
             >
               {send.name}
             </span>
-            {send.contextLabel && (
-              <span
-                style={{
-                  marginTop: 2,
-                  alignSelf: "flex-start",
-                  fontSize: "9px",
-                  lineHeight: "11px",
-                  fontWeight: 800,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "rgba(0,0,0,0.62)",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {send.contextLabel}
-              </span>
-            )}
           </div>
         </div>
       </div>
