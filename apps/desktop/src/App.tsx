@@ -22,6 +22,7 @@ import {
   valueToMute,
   valueToPan,
   toMixerSafeName,
+  buildRawDuonnPacket,
 } from "./lib/axios16Client";
 import {
   type FxPresetId,
@@ -1270,35 +1271,35 @@ function filterTypeSlopeToRaw(
 }
 
 function inferHpfEnabledFromRaw(rawValue: number, currentEnabled = true) {
+  void currentEnabled;
   if (rawValue === 0) return false;
-
-  if (valueToFrequency(rawValue) <= DEFAULT_EQ.hpfFreq) {
-    return currentEnabled;
-  }
-
-  return true;
+  return valueToFrequency(rawValue) > DEFAULT_EQ.hpfFreq;
 }
 
 function inferLpfEnabledFromRaw(rawValue: number, currentEnabled = true) {
+  void currentEnabled;
   if (rawValue === 0) return false;
-
-  if (valueToFrequency(rawValue) >= DEFAULT_EQ.lpfFreq) {
-    return currentEnabled;
-  }
-
-  return true;
+  return valueToFrequency(rawValue) < DEFAULT_EQ.lpfFreq;
 }
 
 function shouldKeepCachedHpfFreq(rawValue: number | undefined) {
-  if (rawValue === undefined || rawValue === 0) return true;
-
-  return valueToFrequency(rawValue) <= DEFAULT_EQ.hpfFreq;
+  return rawValue === undefined;
 }
 
 function shouldKeepCachedLpfFreq(rawValue: number | undefined) {
-  if (rawValue === undefined || rawValue === 0) return true;
+  return rawValue === undefined;
+}
 
-  return valueToFrequency(rawValue) >= DEFAULT_EQ.lpfFreq;
+function resolveHpfFreqFromRaw(rawValue: number | undefined, fallback: number) {
+  if (rawValue === undefined) return fallback;
+  if (rawValue === 0) return DEFAULT_EQ.hpfFreq;
+  return valueToFrequency(rawValue);
+}
+
+function resolveLpfFreqFromRaw(rawValue: number | undefined, fallback: number) {
+  if (rawValue === undefined) return fallback;
+  if (rawValue === 0) return DEFAULT_EQ.lpfFreq;
+  return valueToFrequency(rawValue);
 }
 
 function meterByteToDb(byte: number) {
@@ -1462,6 +1463,7 @@ function App() {
   const [fxActivePresetId, setFxActivePresetId] = useState<FxPresetId>(1);
   const [fxControlAValue, setFxControlAValue] = useState(0);
   const [fxControlBValue, setFxControlBValue] = useState(0);
+  const [sceneUiRefreshNonce, setSceneUiRefreshNonce] = useState(0);
 
   const clientRef = useRef<Axios16Client | null>(null);
   const meterTimerRef = useRef<number | null>(null);
@@ -1493,6 +1495,7 @@ function App() {
   const lastBackgroundRevalidationAtRef = useRef(0);
   const strictStartupValidationDoneRef = useRef(false);
   const lastAppliedMuteGroupsSignatureRef = useRef("");
+  const sceneRefreshQueueRef = useRef<Promise<void>>(Promise.resolve());
   const dragScrollStateRef = useRef<DragScrollState>({
     pointerId: null,
     pointerType: "",
@@ -1951,6 +1954,71 @@ function App() {
     return assignableMemberIds.filter((member) => expanded.has(member));
   }
 
+  async function syncAllGroupStates() {
+    const client = clientRef.current;
+    if (!client || !isConnected) {
+      lastAppliedMuteGroupsSignatureRef.current = "";
+      return;
+    }
+
+    const params = [
+      ...DCA_IDS.flatMap((id) => [
+        getDcaOnOffParam(id),
+        getDcaFaderParam(id),
+        ...getDcaMemberParams(id),
+      ]),
+      ...MUTE_IDS.flatMap((id) => [
+        getMuteGroupActiveParam(id),
+        ...getMuteGroupMemberParams(id),
+      ]),
+    ];
+    const response = await client.readParams(params, 1000);
+    const values = new Map(response.map((item) => [item.param, item.value]));
+
+    setDcaGroups((current) =>
+      current.map((group, index) => {
+        const id = DCA_IDS[index];
+        const rawEnabled = values.get(getDcaOnOffParam(id));
+        const rawFader = values.get(getDcaFaderParam(id));
+        const words = getDcaMemberParams(id).map((param) => values.get(param));
+        const nextMembers = words.every((word) => word !== undefined)
+          ? decodeGroupMembers(words as [number, number, number, number]).filter(
+              (member): member is AssignableMemberId => assignableMemberIds.includes(member as AssignableMemberId)
+            )
+          : group.members;
+
+        return {
+          ...group,
+          enabled: rawEnabled === undefined ? group.enabled : rawEnabled > 0,
+          faderPosition: rawFader === undefined ? group.faderPosition : dcaValueToPosition(rawFader),
+          members: nextMembers,
+        };
+      })
+    );
+
+    setMuteGroups((current) => {
+      const next = current.map((group, index) => {
+        const id = MUTE_IDS[index];
+        const rawActive = values.get(getMuteGroupActiveParam(id));
+        const words = getMuteGroupMemberParams(id).map((param) => values.get(param));
+        const nextMembers = words.every((word) => word !== undefined)
+          ? decodeGroupMembers(words as [number, number, number, number]).filter(
+              (member): member is AssignableMemberId => assignableMemberIds.includes(member as AssignableMemberId)
+            )
+          : group.members;
+
+        return {
+          ...group,
+          active: rawActive === undefined ? group.active : rawActive > 0,
+          members: nextMembers,
+        };
+      });
+
+      applyManagedMutes(next);
+      return next;
+    });
+  }
+
   function applyManagedMutes(nextGroups: MuteGroupState[]) {
     const client = clientRef.current;
     if (!client || !isConnected) {
@@ -2000,64 +2068,7 @@ function App() {
 
     const syncGroupStates = async () => {
       try {
-        const params = [
-          ...DCA_IDS.flatMap((id) => [
-            getDcaOnOffParam(id),
-            getDcaFaderParam(id),
-            ...getDcaMemberParams(id),
-          ]),
-          ...MUTE_IDS.flatMap((id) => [
-            getMuteGroupActiveParam(id),
-            ...getMuteGroupMemberParams(id),
-          ]),
-        ];
-        const response = await client.readParams(params, 1000);
-        const values = new Map(response.map((item) => [item.param, item.value]));
-
-        if (disposed) return;
-
-        setDcaGroups((current) =>
-          current.map((group, index) => {
-            const id = DCA_IDS[index];
-            const rawEnabled = values.get(getDcaOnOffParam(id));
-            const rawFader = values.get(getDcaFaderParam(id));
-            const words = getDcaMemberParams(id).map((param) => values.get(param));
-            const nextMembers = words.every((word) => word !== undefined)
-              ? decodeGroupMembers(words as [number, number, number, number]).filter(
-                  (member): member is AssignableMemberId => assignableMemberIds.includes(member as AssignableMemberId)
-                )
-              : group.members;
-
-            return {
-              ...group,
-              enabled: rawEnabled === undefined ? group.enabled : rawEnabled > 0,
-              faderPosition: rawFader === undefined ? group.faderPosition : dcaValueToPosition(rawFader),
-              members: nextMembers,
-            };
-          })
-        );
-
-        setMuteGroups((current) => {
-          const next = current.map((group, index) => {
-            const id = MUTE_IDS[index];
-            const rawActive = values.get(getMuteGroupActiveParam(id));
-            const words = getMuteGroupMemberParams(id).map((param) => values.get(param));
-            const nextMembers = words.every((word) => word !== undefined)
-              ? decodeGroupMembers(words as [number, number, number, number]).filter(
-                  (member): member is AssignableMemberId => assignableMemberIds.includes(member as AssignableMemberId)
-                )
-              : group.members;
-
-            return {
-              ...group,
-              active: rawActive === undefined ? group.active : rawActive > 0,
-              members: nextMembers,
-            };
-          });
-
-          applyManagedMutes(next);
-          return next;
-        });
+        await syncAllGroupStates();
       } catch {
         // Ignore transient read failures.
       }
@@ -2151,6 +2162,78 @@ function App() {
     updateDcaGroupState(id, { members: normalizedMembers });
   }
 
+  function normalizeMuteGroupMembersForLinkedTargets(
+    currentMembers: GroupMember[],
+    proposedMembers: GroupMember[]
+  ): GroupMember[] {
+    const currentSet = new Set(currentMembers);
+    const nextMembers = new Set(proposedMembers);
+
+    for (let odd = 1; odd < channelCount; odd += 2) {
+      const even = odd + 1;
+      const key = pairKey(odd, even);
+      if (!channelLinks[key]) continue;
+
+      const oddMember = `CH_${odd}` as GroupMember;
+      const evenMember = `CH_${even}` as GroupMember;
+      const prevBothSelected = currentSet.has(oddMember) && currentSet.has(evenMember);
+      const nextOddSelected = nextMembers.has(oddMember);
+      const nextEvenSelected = nextMembers.has(evenMember);
+
+      if (nextOddSelected !== nextEvenSelected) {
+        if (prevBothSelected) {
+          nextMembers.delete(oddMember);
+          nextMembers.delete(evenMember);
+        } else {
+          nextMembers.add(oddMember);
+          nextMembers.add(evenMember);
+        }
+      }
+    }
+
+    for (let odd = 1; odd < 8; odd += 2) {
+      const even = odd + 1;
+      const key = pairKey(odd, even);
+      if (!auxLinks[key]) continue;
+
+      const oddMember = `AUX_${odd}` as GroupMember;
+      const evenMember = `AUX_${even}` as GroupMember;
+      const prevBothSelected = currentSet.has(oddMember) && currentSet.has(evenMember);
+      const nextOddSelected = nextMembers.has(oddMember);
+      const nextEvenSelected = nextMembers.has(evenMember);
+
+      if (nextOddSelected !== nextEvenSelected) {
+        if (prevBothSelected) {
+          nextMembers.delete(oddMember);
+          nextMembers.delete(evenMember);
+        } else {
+          nextMembers.add(oddMember);
+          nextMembers.add(evenMember);
+        }
+      }
+    }
+
+    if (masterLinked) {
+      const leftMember = "MASTER_L" as GroupMember;
+      const rightMember = "MASTER_R" as GroupMember;
+      const prevBothSelected = currentSet.has(leftMember) && currentSet.has(rightMember);
+      const nextLeftSelected = nextMembers.has(leftMember);
+      const nextRightSelected = nextMembers.has(rightMember);
+
+      if (nextLeftSelected !== nextRightSelected) {
+        if (prevBothSelected) {
+          nextMembers.delete(leftMember);
+          nextMembers.delete(rightMember);
+        } else {
+          nextMembers.add(leftMember);
+          nextMembers.add(rightMember);
+        }
+      }
+    }
+
+    return assignableMemberIds.filter((member) => nextMembers.has(member));
+  }
+
   function handleDcaGroupClear(id: DcaGroupId) {
     const client = clientRef.current;
     if (!client || !isConnected) return;
@@ -2184,14 +2267,17 @@ function App() {
     const client = clientRef.current;
     if (!client || !isConnected) return;
 
+    const currentMembers = muteGroups[id - 1]?.members ?? [];
+    const normalizedMembers = normalizeMuteGroupMembersForLinkedTargets(currentMembers, members);
+
     try {
-      sendGroupMessages(client, buildSetMuteGroupMembersMessages(id, members));
+      sendGroupMessages(client, buildSetMuteGroupMembersMessages(id, normalizedMembers));
     } catch (error) {
       console.error("[Mute] members error:", error);
       return;
     }
 
-    updateMuteGroupState(id, { members });
+    updateMuteGroupState(id, { members: normalizedMembers });
   }
 
   function handleMuteGroupClear(id: MuteGroupId) {
@@ -2463,7 +2549,7 @@ function App() {
         hpfFreq:
           shouldKeepCachedHpfFreq(rawHpfFreq)
             ? current.eq.hpfFreq
-            : valueToFrequency(rawHpfFreq),
+            : resolveHpfFreqFromRaw(rawHpfFreq, current.eq.hpfFreq),
         lpfEnabled: nextLpfEnabled,
         lpfType: valueToLpfTypeSlope(
           getValue(params.lpfTypeSlope, 13)
@@ -2474,7 +2560,7 @@ function App() {
         lpfFreq:
           shouldKeepCachedLpfFreq(rawLpfFreq)
             ? current.eq.lpfFreq
-            : valueToFrequency(rawLpfFreq),
+            : resolveLpfFreqFromRaw(rawLpfFreq, current.eq.lpfFreq),
         bands: [
           {
             enabled: true,
@@ -2564,9 +2650,10 @@ function App() {
     );
   }
 
-  async function syncAllStripNames() {
+  async function syncAllStripNames(options?: { forceFromMixer?: boolean }) {
     const client = clientRef.current;
     if (!client) return;
+    const forceFromMixer = options?.forceFromMixer === true;
 
     const [channelNames, auxNames, fxNames] = await Promise.all([
       client.readChannelNames(channelCount, 600),
@@ -2584,7 +2671,7 @@ function App() {
         const hasUserLocalName =
           localName.length > 0 && !isLocalDefaultDisplayName(target, localName);
         const displayName =
-          hasUserLocalName
+          !forceFromMixer && hasUserLocalName
             ? channelState.channelName
             : mixerName.length > 0 && !mixerIsDefault
               ? mixerName
@@ -2608,7 +2695,7 @@ function App() {
         const hasUserLocalName =
           localName.length > 0 && !isLocalDefaultDisplayName(target, localName);
         const displayName =
-          hasUserLocalName
+          !forceFromMixer && hasUserLocalName
             ? strip.channelName
             : mixerName.length > 0 && !mixerIsDefault
               ? mixerName
@@ -2632,7 +2719,7 @@ function App() {
         const hasUserLocalName =
           localName.length > 0 && !isLocalDefaultDisplayName(target, localName);
         const displayName =
-          hasUserLocalName
+          !forceFromMixer && hasUserLocalName
             ? strip.channelName
             : mixerName.length > 0 && !mixerIsDefault
               ? mixerName
@@ -3304,7 +3391,7 @@ function App() {
         hpfFreq:
           shouldKeepCachedHpfFreq(values.get(params.hpfFreq))
             ? current.eq.hpfFreq
-            : valueToFrequency(values.get(params.hpfFreq) as number),
+            : resolveHpfFreqFromRaw(values.get(params.hpfFreq), current.eq.hpfFreq),
         lpfEnabled: nextLpfEnabled,
         lpfType:
           values.get(params.lpfTypeSlope) === undefined
@@ -3317,7 +3404,7 @@ function App() {
         lpfFreq:
           shouldKeepCachedLpfFreq(values.get(params.lpfFreq))
             ? current.eq.lpfFreq
-            : valueToFrequency(values.get(params.lpfFreq) as number),
+            : resolveLpfFreqFromRaw(values.get(params.lpfFreq), current.eq.lpfFreq),
         bands: [
           {
             enabled: true,
@@ -3429,6 +3516,159 @@ function App() {
     }
   }
 
+  async function syncVisibleSendsState() {
+    if (!isConnected) return;
+
+    if (detailView && activeProcessorModule === "sends") {
+      if (detailView.type === "channel") {
+        await syncChannelSendsState(detailView.channel);
+        return;
+      }
+
+      if (detailView.type === "aux") {
+        await syncBusInputSendsState("aux", detailView.aux);
+        return;
+      }
+
+      if (detailView.type === "fx") {
+        await syncBusInputSendsState("fx", detailView.fx);
+      }
+
+      return;
+    }
+
+    if (detailView) return;
+
+    if (mainView === "auxSends") {
+      await syncBusInputSendsState("aux", selectedAuxSendsTarget);
+      return;
+    }
+
+    if (mainView === "fxSends") {
+      await syncBusInputSendsState("fx", selectedFxSendsTarget);
+    }
+  }
+
+  async function refreshMixerStateAfterSceneAction(action: "call" | "save") {
+    const waitMs = action === "call" ? 520 : 140;
+
+    setStatus(action === "call" ? "Aplicando cena e sincronizando mesa..." : "Salvando cena e sincronizando mesa...");
+
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, waitMs);
+    });
+
+    const failures: string[] = [];
+
+    const runFullSyncPass = async (forceNamesFromMixer: boolean) => {
+      await syncAllChannels();
+      await syncChannelEqPreviewStates();
+      await syncAllStripNames({ forceFromMixer: forceNamesFromMixer });
+      await syncAllSoloStates();
+      await syncAllGroupStates();
+      await syncVisibleSendsState();
+    };
+
+    if (action === "call") {
+      let callSynced = false;
+
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          await runFullSyncPass(true);
+          callSynced = true;
+          break;
+        } catch {
+          if (attempt < 2) {
+            await new Promise<void>((resolve) => {
+              window.setTimeout(resolve, 180);
+            });
+          }
+        }
+      }
+
+      if (!callSynced) {
+        failures.push("sincronizacao completa de cena");
+      }
+    } else {
+      const followUpSteps: Array<[string, () => Promise<void>]> = [
+        ["previews de EQ", syncChannelEqPreviewStates],
+        ["nomes", () => syncAllStripNames({ forceFromMixer: false })],
+        ["solos", syncAllSoloStates],
+        ["grupos", syncAllGroupStates],
+        ["sends visiveis", syncVisibleSendsState],
+      ];
+
+      await Promise.all([
+        (async () => {
+          try {
+            await syncAllChannels();
+          } catch {
+            failures.push("canais/processadores");
+          }
+        })(),
+        ...followUpSteps.map(([label, task]) =>
+          (async () => {
+            try {
+              await task();
+            } catch {
+              failures.push(label);
+            }
+          })()
+        ),
+      ]);
+    }
+
+    if (failures.length > 0) {
+      if (action === "call") {
+        setSceneUiRefreshNonce((current) => current + 1);
+      }
+      setStatus(`Cena aplicada com sincronizacao parcial (${failures.join(", ")})`);
+      return;
+    }
+
+    if (action === "call") {
+      setSceneUiRefreshNonce((current) => current + 1);
+    }
+    setStatus(action === "call" ? "Cena carregada e app sincronizado" : "Cena salva e app sincronizado");
+  }
+
+  async function handleSceneCall(slot: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12) {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    // Firmware variants differ: some call with opcode 1 + slot, others with opcode 1 and no payload.
+    client.sendRaw(buildRawDuonnPacket(1, [slot]));
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 70);
+    });
+    client.sendRaw(buildRawDuonnPacket(1, []));
+
+    const refreshTask = sceneRefreshQueueRef.current
+      .then(() => refreshMixerStateAfterSceneAction("call"))
+      .catch(() => {
+        // Keep queue alive for future refreshes.
+      });
+
+    sceneRefreshQueueRef.current = refreshTask;
+    await refreshTask;
+  }
+
+  async function handleSceneSave(slot: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12) {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    client.sendRaw(buildRawDuonnPacket(17, [slot]));
+
+    const refreshTask = sceneRefreshQueueRef.current
+      .then(() => refreshMixerStateAfterSceneAction("save"))
+      .catch(() => {
+        // Keep queue alive for future refreshes.
+      });
+
+    sceneRefreshQueueRef.current = refreshTask;
+    await refreshTask;
+  }
+
 
   async function syncBypassFlagsFromMesa() {
     const client = clientRef.current;
@@ -3522,7 +3762,7 @@ function App() {
                 hpfFreq:
                   shouldKeepCachedHpfFreq(rawHpfFreq)
                     ? state.eq.hpfFreq
-                    : valueToFrequency(rawHpfFreq as number),
+                    : resolveHpfFreqFromRaw(rawHpfFreq, state.eq.hpfFreq),
                 lpfEnabled: nextLpfEnabled,
                 lpfType:
                   rawLpfTypeSlope === undefined
@@ -3535,7 +3775,7 @@ function App() {
                 lpfFreq:
                   shouldKeepCachedLpfFreq(rawLpfFreq)
                     ? state.eq.lpfFreq
-                    : valueToFrequency(rawLpfFreq as number),
+                    : resolveLpfFreqFromRaw(rawLpfFreq, state.eq.lpfFreq),
               },
             };
           })
@@ -3616,7 +3856,7 @@ function App() {
               hpfFreq:
                 shouldKeepCachedHpfFreq(rawHpfFreq)
                   ? state.eq.hpfFreq
-                  : valueToFrequency(rawHpfFreq as number),
+                  : resolveHpfFreqFromRaw(rawHpfFreq, state.eq.hpfFreq),
               lpfEnabled: nextLpfEnabled,
               lpfType:
                 rawLpfTypeSlope === undefined
@@ -3629,7 +3869,7 @@ function App() {
               lpfFreq:
                 shouldKeepCachedLpfFreq(rawLpfFreq)
                   ? state.eq.lpfFreq
-                  : valueToFrequency(rawLpfFreq as number),
+                  : resolveLpfFreqFromRaw(rawLpfFreq, state.eq.lpfFreq),
             },
           };
         })
@@ -7250,6 +7490,7 @@ function App() {
 
   return (
     <main
+      key={`scene-ui-refresh-${sceneUiRefreshNonce}`}
       className={`app-shell ${detailView ? "app-shell--detail" : ""} ${isChannelsDragging ? "app-shell--dragging" : ""}`}
     >
       <DuonnIconsSprite />
@@ -7399,7 +7640,7 @@ function App() {
             : mainView === "muteGroups"
                 ? <div className="global-view-shell"><MuteGroupsView isConnected={isConnected} channelCount={channelCount} groups={muteGroups} onToggleActive={handleMuteGroupToggleActive} onMembersChange={handleMuteGroupMembersChange} onClear={handleMuteGroupClear} onAllMuted={handleMuteGroupAllMuted} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} /></div>
             : mainView === "scenes"
-              ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} /></div>
+              ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} onCallScene={handleSceneCall} onSaveScene={handleSceneSave} /></div>
         : <section className="mixer-layout">
           <section
             ref={attachMixerChannelsScroller}

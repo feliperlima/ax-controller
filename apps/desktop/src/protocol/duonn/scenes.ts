@@ -34,7 +34,7 @@ export const SCENE_OPCODES = {
   transferEnd: 106,
 } as const;
 
-// Captured on AXIOS16E web UI (SYSTEM/SCENE): CALL uses opcode 1 with no slot payload.
+// Firmware behavior differs by build: some require slot payload, others trigger call with empty payload.
 const SCENE_CALL_USES_SLOT_PAYLOAD = false;
 
 export function validateSceneSlot(slot: number): asserts slot is SceneSlot {
@@ -71,6 +71,12 @@ export function normalizeSceneNameToAscii(name: string) {
 export function buildCallScenePacket(slot: SceneSlot) {
   const payload = SCENE_CALL_USES_SLOT_PAYLOAD ? [slot] : [];
   return buildRawDuonnPacket(SCENE_OPCODES.call, payload);
+}
+
+export function buildCallScenePacketSequence(slot: SceneSlot) {
+  const withSlot = buildRawDuonnPacket(SCENE_OPCODES.call, [slot]);
+  const withoutSlot = buildRawDuonnPacket(SCENE_OPCODES.call, []);
+  return [withSlot, withoutSlot] as const;
 }
 
 export function buildSaveScenePacket(slot: SceneSlot) {

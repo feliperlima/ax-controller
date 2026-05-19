@@ -2,17 +2,16 @@ import { useState, useRef } from "react";
 import type { Axios16Client } from "../lib/axios16Client";
 import type { SceneItem, SceneSlot } from "../protocol/duonn/scenes";
 import {
-  buildCallScenePacket,
-  buildSaveScenePacket,
   buildRenameScenePacket,
   createDefaultSceneList,
   normalizeSceneNameToAscii,
-  validateSceneSlot,
 } from "../protocol/duonn/scenes";
 
 type ScenesViewProps = {
   client: Axios16Client | null;
   isConnected: boolean;
+  onCallScene: (slot: SceneSlot) => Promise<void> | void;
+  onSaveScene: (slot: SceneSlot) => Promise<void> | void;
 };
 
 type ConfirmAction =
@@ -20,11 +19,64 @@ type ConfirmAction =
   | { type: "save"; slot: SceneSlot }
   | null;
 
-export function ScenesView({ client, isConnected }: ScenesViewProps) {
-  const [scenes, setScenes] = useState<SceneItem[]>(createDefaultSceneList);
+const SCENE_NAMES_STORAGE_KEY = "ax_scene_names";
+
+function loadStoredScenes(): SceneItem[] {
+  const defaults = createDefaultSceneList();
+
+  if (typeof window === "undefined") {
+    return defaults;
+  }
+
+  try {
+    const raw = localStorage.getItem(SCENE_NAMES_STORAGE_KEY);
+    if (!raw) {
+      return defaults;
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return defaults;
+    }
+
+    const storedNames = new Map<number, string>();
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const slot = (item as { slot?: unknown }).slot;
+      const name = (item as { name?: unknown }).name;
+      if (!Number.isInteger(slot) || typeof name !== "string") continue;
+      if (slot < 1 || slot > 12) continue;
+      const trimmed = name.trim();
+      if (!trimmed) continue;
+      storedNames.set(slot, trimmed);
+    }
+
+    return defaults.map((scene) => {
+      const storedName = storedNames.get(scene.slot);
+      return storedName
+        ? { ...scene, name: storedName, isNameLoaded: true }
+        : scene;
+    });
+  } catch {
+    return defaults;
+  }
+}
+
+function persistStoredScenes(scenes: SceneItem[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const serialized = scenes.map((scene) => ({ slot: scene.slot, name: scene.name }));
+  localStorage.setItem(SCENE_NAMES_STORAGE_KEY, JSON.stringify(serialized));
+}
+
+export function ScenesView({ client, isConnected, onCallScene, onSaveScene }: ScenesViewProps) {
+  const [scenes, setScenes] = useState<SceneItem[]>(loadStoredScenes);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [renamingSlot, setRenamingSlot] = useState<SceneSlot | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [actionBusy, setActionBusy] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   function sendRaw(packet: Uint8Array) {
@@ -32,25 +84,28 @@ export function ScenesView({ client, isConnected }: ScenesViewProps) {
     client.sendRaw(packet);
   }
 
-  function handleCall(slot: SceneSlot) {
+  async function handleCall(slot: SceneSlot) {
     if (!client || !isConnected) return;
     try {
-      validateSceneSlot(slot);
-      sendRaw(buildCallScenePacket(slot));
+      setActionBusy(true);
+      await onCallScene(slot);
     } catch (e) {
       console.error("[Scenes] call error:", e);
+    } finally {
+      setActionBusy(false);
     }
     setConfirmAction(null);
-    // TODO(protocol): optionally trigger a refresh (opcode 6 mass read) after scene call.
   }
 
-  function handleSave(slot: SceneSlot) {
+  async function handleSave(slot: SceneSlot) {
     if (!client || !isConnected) return;
     try {
-      validateSceneSlot(slot);
-      sendRaw(buildSaveScenePacket(slot));
+      setActionBusy(true);
+      await onSaveScene(slot);
     } catch (e) {
       console.error("[Scenes] save error:", e);
+    } finally {
+      setActionBusy(false);
     }
     setConfirmAction(null);
   }
@@ -84,11 +139,13 @@ export function ScenesView({ client, isConnected }: ScenesViewProps) {
       return;
     }
 
-    setScenes((prev) =>
-      prev.map((s) =>
+    setScenes((prev) => {
+      const next = prev.map((s) =>
         s.slot === slot ? { ...s, name: safeName, isNameLoaded: true } : s
-      )
-    );
+      );
+      persistStoredScenes(next);
+      return next;
+    });
     setRenamingSlot(null);
   }
 
@@ -110,6 +167,7 @@ export function ScenesView({ client, isConnected }: ScenesViewProps) {
                   <button
                     type="button"
                     className="groups-view__action-btn groups-view__action-btn--primary"
+                    disabled={actionBusy}
                     onClick={() => handleCall(confirmAction.slot)}
                   >
                     RECALL
@@ -117,6 +175,7 @@ export function ScenesView({ client, isConnected }: ScenesViewProps) {
                   <button
                     type="button"
                     className="groups-view__action-btn"
+                    disabled={actionBusy}
                     onClick={() => setConfirmAction(null)}
                   >
                     CANCELAR
@@ -135,6 +194,7 @@ export function ScenesView({ client, isConnected }: ScenesViewProps) {
                   <button
                     type="button"
                     className="groups-view__action-btn groups-view__action-btn--primary"
+                    disabled={actionBusy}
                     onClick={() => handleSave(confirmAction.slot)}
                   >
                     SALVAR
@@ -142,6 +202,7 @@ export function ScenesView({ client, isConnected }: ScenesViewProps) {
                   <button
                     type="button"
                     className="groups-view__action-btn"
+                    disabled={actionBusy}
                     onClick={() => setConfirmAction(null)}
                   >
                     CANCELAR
@@ -234,7 +295,7 @@ export function ScenesView({ client, isConnected }: ScenesViewProps) {
               <button
                 type="button"
                 className="scene-card__btn scene-card__btn--call"
-                disabled={!isConnected}
+                disabled={!isConnected || actionBusy}
                 title={`Recall Scene ${scene.slot}`}
                 onClick={() =>
                   setConfirmAction({ type: "call", slot: scene.slot })
@@ -245,7 +306,7 @@ export function ScenesView({ client, isConnected }: ScenesViewProps) {
               <button
                 type="button"
                 className="scene-card__btn scene-card__btn--save"
-                disabled={!isConnected}
+                disabled={!isConnected || actionBusy}
                 title={`Save to Scene ${scene.slot}`}
                 onClick={() =>
                   setConfirmAction({ type: "save", slot: scene.slot })

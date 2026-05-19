@@ -44,47 +44,6 @@ function channelBadgeColorFromId(colorId: number | undefined): string {
   return `var(--channel-${String(normalized).padStart(2, "0")}, #7b7b7b)`;
 }
 
-function SectionIcon({ kind }: { kind: "inputs" | "aux" | "fx" | "master" }) {
-  if (kind === "inputs") {
-    return (
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <path d="M2 7h10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <path d="M4 3v8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" opacity="0.8" />
-        <path d="M7 5v4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <path d="M10 2v10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" opacity="0.75" />
-      </svg>
-    );
-  }
-
-  if (kind === "aux") {
-    return (
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <path d="M2 4.5h10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <path d="M7 2v10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <path d="M9.5 2.8 12 4.5 9.5 6.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-
-  if (kind === "fx") {
-    return (
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <path d="M7 1.5v3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <path d="M7 9.5v3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <path d="M1.5 7h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <path d="M9.5 7h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <circle cx="7" cy="7" r="1.8" fill="currentColor" />
-      </svg>
-    );
-  }
-
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-      <path d="M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 export function MuteGroupsView({
   isConnected,
   channelCount = 16,
@@ -297,10 +256,8 @@ export function MuteGroupsView({
         </div>
 
         <div className="groups-matrix-card">
-          {/* INPUT CHANNELS — 2-column grid */}
           <div className="groups-matrix-col groups-matrix-col--channels">
             <div className="groups-matrix-col__header">
-              <span className="groups-matrix-col__icon"><SectionIcon kind="inputs" /></span>
               <span className="groups-matrix-col__title">Input Channels</span>
             </div>
             <div className="groups-matrix-col__split">
@@ -313,10 +270,8 @@ export function MuteGroupsView({
             </div>
           </div>
 
-          {/* AUX / BUSSES */}
           <div className="groups-matrix-col">
             <div className="groups-matrix-col__header">
-              <span className="groups-matrix-col__icon"><SectionIcon kind="aux" /></span>
               <span className="groups-matrix-col__title">Aux / Busses</span>
             </div>
             <div className="groups-matrix-col__list">
@@ -324,10 +279,8 @@ export function MuteGroupsView({
             </div>
           </div>
 
-          {/* FX RETURNS */}
           <div className="groups-matrix-col">
             <div className="groups-matrix-col__header">
-              <span className="groups-matrix-col__icon"><SectionIcon kind="fx" /></span>
               <span className="groups-matrix-col__title">FX Returns</span>
             </div>
             <div className="groups-matrix-col__list">
@@ -335,10 +288,8 @@ export function MuteGroupsView({
             </div>
           </div>
 
-          {/* MASTER */}
           <div className="groups-matrix-col">
             <div className="groups-matrix-col__header">
-              <span className="groups-matrix-col__icon"><SectionIcon kind="master" /></span>
               <span className="groups-matrix-col__title">Master</span>
             </div>
             <div className="groups-matrix-col__list">
