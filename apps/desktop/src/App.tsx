@@ -407,6 +407,7 @@ const LICENSE_KEY_STORAGE_KEY = "ax_license_key_last";
 const LICENSE_REVALIDATE_INTERVAL_DAYS = 30;
 const LICENSE_REVALIDATE_WARNING_DAYS = 5;
 const LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS = 2 * 60 * 1000;
+const LICENSE_STRICT_SERVER_VALIDATION = true;
 
 type CachedLicenseStatus = {
   installationId: string;
@@ -493,6 +494,35 @@ function readCachedLicenseStatus(): CachedLicenseStatus | null {
   }
 }
 
+function isCacheValidForInstallation(cached: CachedLicenseStatus | null, installationId: string) {
+  if (!cached) return false;
+  if (cached.installationId !== installationId) return false;
+  return cached.code === "LICENSE_VALID";
+}
+
+function isLicenseExpiredByDate(expiryIso: string | null, nowMs = Date.now()) {
+  if (!expiryIso) return false;
+
+  const expiryMs = Date.parse(expiryIso);
+  if (Number.isNaN(expiryMs)) return false;
+
+  return nowMs >= expiryMs;
+}
+
+function isLicenseCacheExpired(
+  cached: CachedLicenseStatus | null,
+  installationId: string,
+  nowMs = Date.now()
+) {
+  if (!cached) return true;
+  if (!isCacheValidForInstallation(cached, installationId)) return true;
+
+  const dueAtMs = Date.parse(cached.nextRevalidationAt);
+  if (Number.isNaN(dueAtMs)) return true;
+
+  return nowMs > dueAtMs;
+}
+
 function buildLicenseRevalidationHint(
   cached: CachedLicenseStatus | null,
   installationId: string,
@@ -521,10 +551,35 @@ function buildLicenseRevalidationHint(
 
   const overdueDays = Math.abs(daysUntilDue);
   if (online) {
-    return `Revalidacao da licenca pendente ha ${overdueDays} dia(s). Conecte-se a internet e valide quando possivel.`;
+    return `Revalidacao obrigatoria pendente ha ${overdueDays} dia(s). Conecte-se a internet para evitar bloqueio.`;
   }
 
-  return `Sem internet. Uso offline liberado, mas a revalidacao esta pendente ha ${overdueDays} dia(s).`;
+  return `Sem internet. Revalidacao pendente ha ${overdueDays} dia(s).`;
+}
+
+function buildLicenseExpiryHint(cached: CachedLicenseStatus | null, installationId: string, nowMs = Date.now()) {
+  if (!cached || cached.installationId !== installationId) return "";
+  if (!cached.expiryDate) return "";
+
+  const expiryMs = Date.parse(cached.expiryDate);
+  if (Number.isNaN(expiryMs)) return "";
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  const daysUntilExpiry = Math.ceil((expiryMs - nowMs) / dayMs);
+
+  if (daysUntilExpiry < 0) {
+    return "Periodo de teste expirado. Entre em contato para adquirir a licenca.";
+  }
+
+  if (daysUntilExpiry === 0) {
+    return "Periodo de teste expira hoje.";
+  }
+
+  if (daysUntilExpiry <= LICENSE_REVALIDATE_WARNING_DAYS) {
+    return `Periodo de teste expira em ${daysUntilExpiry} dia(s).`;
+  }
+
+  return "";
 }
 
 type ColorScope = "input" | "aux" | "fx" | "master";
@@ -1412,6 +1467,7 @@ function App() {
   const sendWritePendingRef = useRef<Map<number, number>>(new Map());
   const backgroundLicenseRevalidationBusyRef = useRef(false);
   const lastBackgroundRevalidationAtRef = useRef(0);
+  const strictStartupValidationDoneRef = useRef(false);
   const dragScrollStateRef = useRef<DragScrollState>({
     pointerId: null,
     pointerType: "",
@@ -1456,18 +1512,19 @@ function App() {
     if (storedLicenseKey && storedLicenseKey.trim().length > 0) {
       setLicenseKeyInput(storedLicenseKey);
     }
-    const legacyValidated = localStorage.getItem(LICENSE_VALIDATED_STORAGE_KEY) === "1";
     const activatedOnce = localStorage.getItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY) === "1";
     const cached = readCachedLicenseStatus();
-    const cacheValidated = cached?.installationId === nextInstallationId && cached.code === "LICENSE_VALID";
-    const nextValidated = legacyValidated || cacheValidated;
+    const hasValidCache = isCacheValidForInstallation(cached, nextInstallationId);
+    const cacheExpired = isLicenseCacheExpired(cached, nextInstallationId);
+    const licenseExpiredByDate = isLicenseExpiredByDate(cached?.expiryDate ?? null);
+    const nextValidated = hasValidCache && !cacheExpired && !licenseExpiredByDate;
 
-    if (cacheValidated && !legacyValidated) {
-      localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
+    if (storedLicenseKey && !activatedOnce) {
+      localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
     }
 
-    if (nextValidated && !activatedOnce) {
-      localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+    if (LICENSE_STRICT_SERVER_VALIDATION) {
+      localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
     }
 
     if (cached?.installationId === nextInstallationId) {
@@ -1475,14 +1532,72 @@ function App() {
       setLicenseLastCheckedAt(cached.validatedAt);
     }
 
-    setHasLicenseActivatedOnce(activatedOnce || nextValidated);
+    setHasLicenseActivatedOnce(activatedOnce || Boolean(storedLicenseKey));
     setIsLicenseValidated(nextValidated);
-    setLicenseRevalidationHint(
-      nextValidated
-        ? buildLicenseRevalidationHint(cached, nextInstallationId, typeof navigator !== "undefined" ? navigator.onLine : true)
-        : ""
-    );
+    if (hasValidCache) {
+      const expiryHint = buildLicenseExpiryHint(cached, nextInstallationId);
+      const revalidationHint = buildLicenseRevalidationHint(
+        cached,
+        nextInstallationId,
+        typeof navigator !== "undefined" ? navigator.onLine : true
+      );
+      setLicenseRevalidationHint(expiryHint || revalidationHint);
+    } else {
+      setLicenseRevalidationHint("");
+    }
   }, []);
+
+  useEffect(() => {
+    if (!LICENSE_STRICT_SERVER_VALIDATION) return;
+    if (!installationId || strictStartupValidationDoneRef.current) return;
+
+    const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    const cached = readCachedLicenseStatus();
+    const hasValidCache = isCacheValidForInstallation(cached, installationId);
+    const cacheExpired = isLicenseCacheExpired(cached, installationId);
+    const licenseExpiredByDate = isLicenseExpiredByDate(cached?.expiryDate ?? null);
+
+    if (!storedLicenseKey) {
+      setLicenseValidationMessage({
+        kind: "error",
+        text: "Informe e valide a chave para liberar este dispositivo.",
+      });
+      setLicenseModalMandatory(true);
+      setLicenseModalOpen(true);
+      strictStartupValidationDoneRef.current = true;
+      return;
+    }
+
+    if (hasValidCache && !cacheExpired && !licenseExpiredByDate) {
+      setIsLicenseValidated(true);
+      const expiryHint = buildLicenseExpiryHint(cached, installationId);
+      const revalidationHint = buildLicenseRevalidationHint(cached, installationId, isOnline);
+      setLicenseRevalidationHint(expiryHint || revalidationHint);
+      strictStartupValidationDoneRef.current = true;
+
+      if (isOnline) {
+        void runBackgroundLicenseRevalidation(true, false);
+      }
+      return;
+    }
+
+    if (!isOnline) {
+      setLicenseValidationMessage({
+        kind: "error",
+        text: hasValidCache && licenseExpiredByDate
+          ? "Periodo de teste expirado. Conecte-se e entre em contato para adquirir a licenca."
+          : hasValidCache && cacheExpired
+            ? "Revalidacao da licenca expirou. Conecte-se a internet para continuar."
+            : "Conecte-se a internet para validar a licenca deste dispositivo.",
+      });
+      setLicenseModalMandatory(true);
+      setLicenseModalOpen(true);
+      return;
+    }
+
+    strictStartupValidationDoneRef.current = true;
+    void runBackgroundLicenseRevalidation(true, true);
+  }, [installationId, isOnline]);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -1504,13 +1619,63 @@ function App() {
     }
 
     const cached = readCachedLicenseStatus();
-    setLicenseRevalidationHint(buildLicenseRevalidationHint(cached, installationId, isOnline));
+    const expiryHint = buildLicenseExpiryHint(cached, installationId);
+    const revalidationHint = buildLicenseRevalidationHint(cached, installationId, isOnline);
+    setLicenseRevalidationHint(expiryHint || revalidationHint);
   }, [installationId, isLicenseValidated, isOnline]);
 
   useEffect(() => {
-    if (!isOnline || !isLicenseValidated || !installationId) return;
+    if (!installationId) return;
+
+    const checkExpiryFromCache = () => {
+      const cached = readCachedLicenseStatus();
+      if (!cached || !isCacheValidForInstallation(cached, installationId)) return;
+      if (!isLicenseExpiredByDate(cached.expiryDate)) return;
+
+      localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+      localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
+      setIsLicenseValidated(false);
+      setLicenseLastApiCode("LICENSE_EXPIRED");
+      setLicenseLastCheckedAt(new Date().toISOString());
+      setLicenseRevalidationHint("");
+      setLicenseValidationMessage({
+        kind: "error",
+        text: "Periodo de teste expirado. Entre em contato para adquirir a licenca.",
+      });
+      enforceLicenseBlock("Periodo de teste expirado. Entre em contato para adquirir a licenca.");
+    };
+
+    checkExpiryFromCache();
+    const timer = window.setInterval(checkExpiryFromCache, 60 * 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [installationId]);
+
+  useEffect(() => {
+    if (!isOnline || !installationId) return;
+
+    const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    if (!storedLicenseKey) return;
+
     void runBackgroundLicenseRevalidation();
-  }, [isOnline, isLicenseValidated, installationId]);
+  }, [isOnline, installationId]);
+
+  useEffect(() => {
+    if (!isOnline || !installationId) return;
+
+    const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    if (!storedLicenseKey) return;
+
+    const timer = window.setInterval(() => {
+      void runBackgroundLicenseRevalidation();
+    }, LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [isOnline, installationId]);
 
   useEffect(() => {
     isChannelsDraggingRef.current = isChannelsDragging;
@@ -3442,6 +3607,61 @@ function App() {
         setIp(normalizedIp);
       }
 
+      if (LICENSE_STRICT_SERVER_VALIDATION) {
+        const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+        const cached = readCachedLicenseStatus();
+        const hasValidCache = isCacheValidForInstallation(cached, installationId);
+        const cacheExpired = isLicenseCacheExpired(cached, installationId);
+        const licenseExpiredByDate = isLicenseExpiredByDate(cached?.expiryDate ?? null);
+        const firstActivationPending = !hasValidCache;
+
+        if (!storedLicenseKey) {
+          setStatus("Licenca obrigatoria antes da conexao.");
+          setLicenseValidationMessage({ kind: "error", text: "Informe e valide a chave antes de conectar." });
+          setLicenseModalMandatory(true);
+          setLicenseModalOpen(true);
+          setConnectingSource(null);
+          return false;
+        }
+
+        if (licenseExpiredByDate) {
+          setStatus("Periodo de teste expirado.");
+          setLicenseValidationMessage({
+            kind: "error",
+            text: "Periodo de teste expirado. Entre em contato para adquirir a licenca.",
+          });
+          setLicenseModalMandatory(true);
+          setLicenseModalOpen(true);
+          setConnectingSource(null);
+          return false;
+        }
+
+        if (firstActivationPending || cacheExpired) {
+          if (!isOnline) {
+            setStatus("Sem internet para validar a licenca.");
+            setLicenseValidationMessage({
+              kind: "error",
+              text: firstActivationPending
+                ? "Primeira ativacao exige internet. Conecte-se para validar esta chave."
+                : "Revalidacao de 30 dias expirou. Conecte-se a internet para continuar.",
+            });
+            setLicenseModalMandatory(true);
+            setLicenseModalOpen(true);
+            setConnectingSource(null);
+            return false;
+          }
+
+          const validatedNow = await runBackgroundLicenseRevalidation(true, true);
+          if (!validatedNow) {
+            setStatus("Licenca invalida ou nao validada para este dispositivo.");
+            setConnectingSource(null);
+            return false;
+          }
+        } else if (isOnline) {
+          void runBackgroundLicenseRevalidation(true, false);
+        }
+      }
+
       const client = new Axios16Client(normalizedIp);
       await client.connect();
 
@@ -3464,19 +3684,7 @@ function App() {
       setStatus(connectedStatus);
       setAppStage("mixer");
 
-      if (isOnline && hasLicenseActivatedOnce) {
-        await runBackgroundLicenseRevalidation(true);
-
-        const stillValidated = localStorage.getItem(LICENSE_VALIDATED_STORAGE_KEY) === "1";
-        if (!stillValidated) {
-          setStatus("Licenca pendente/suspensa. Acesso bloqueado.");
-          setConnectingSource(null);
-          setLicenseModalMandatory(true);
-          setLicenseModalOpen(true);
-        }
-      }
-
-      if (!hasLicenseActivatedOnce) {
+      if (!hasLicenseActivatedOnce && !LICENSE_STRICT_SERVER_VALIDATION) {
         setLicenseModalMandatory(true);
         setLicenseModalOpen(true);
       }
@@ -3529,10 +3737,6 @@ function App() {
     }
   }
 
-  async function handleConnect() {
-    await connectToMixer(ip, "manual");
-  }
-
   function handleDisconnect() {
     stopMeterPolling();
     clearScheduledSendWrites();
@@ -3549,6 +3753,25 @@ function App() {
     setConnectingSource(null);
     setLicenseModalOpen(false);
     setLicenseModalMandatory(false);
+  }
+
+  function enforceLicenseBlock(message: string) {
+    stopMeterPolling();
+    clearScheduledSendWrites();
+
+    clientRef.current?.disconnect();
+    clientRef.current = null;
+
+    setIsConnected(false);
+    setConnectionError(message);
+    setStatus(message);
+    setConnectingSource(null);
+    setDetailView(null);
+    setMainView("mixer");
+    setSettingsDropdownOpen(false);
+    setAppStage("device-selection");
+    setLicenseModalMandatory(true);
+    setLicenseModalOpen(true);
   }
 
   function openLicenseModal(mandatory = false) {
@@ -3707,10 +3930,11 @@ function App() {
       const validatedAt = serverTimeIso ?? new Date().toISOString();
       const nextRevalidationAt = addDaysToIso(validatedAt, LICENSE_REVALIDATE_INTERVAL_DAYS);
       const expiryDate = normalizeApiDateToIso(licenseObject?.expiry_date ?? null);
+      const isExpiredByDate = isLicenseExpiredByDate(expiryDate, Date.parse(validatedAt));
 
       const feedbackMessage = messageValue || codeMessageMap[codeValue] || "Nao foi possivel validar a licenca.";
 
-      if (approved) {
+      if (approved && !isExpiredByDate) {
         const cache: CachedLicenseStatus = {
           installationId,
           code: codeValue || "LICENSE_VALID",
@@ -3727,10 +3951,28 @@ function App() {
         setIsLicenseValidated(true);
         setLicenseLastApiCode(codeValue || "LICENSE_VALID");
         setLicenseLastCheckedAt(validatedAt);
-        setLicenseRevalidationHint(buildLicenseRevalidationHint(cache, installationId, isOnline));
+        const expiryHint = buildLicenseExpiryHint(cache, installationId);
+        const revalidationHint = buildLicenseRevalidationHint(cache, installationId, isOnline);
+        setLicenseRevalidationHint(expiryHint || revalidationHint);
         setLicenseModalOpen(false);
         setLicenseModalMandatory(false);
         setLicenseValidationMessage({ kind: "success", text: feedbackMessage || "Licenca validada com sucesso." });
+        return;
+      }
+
+      if (approved && isExpiredByDate) {
+        localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+        localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
+        setIsLicenseValidated(false);
+        setLicenseLastApiCode("LICENSE_EXPIRED");
+        setLicenseLastCheckedAt(validatedAt);
+        setLicenseRevalidationHint("");
+        setLicenseModalMandatory(true);
+        setLicenseModalOpen(true);
+        setLicenseValidationMessage({
+          kind: "error",
+          text: "Periodo de teste expirado. Entre em contato para adquirir a licenca.",
+        });
         return;
       }
 
@@ -3758,30 +4000,48 @@ function App() {
     }
   }
 
-  async function runBackgroundLicenseRevalidation(force = false) {
-    if (backgroundLicenseRevalidationBusyRef.current) return;
+  async function runBackgroundLicenseRevalidation(force = false, strict = false): Promise<boolean> {
+    if (backgroundLicenseRevalidationBusyRef.current) return false;
 
     const now = Date.now();
-    if (!force && now - lastBackgroundRevalidationAtRef.current < LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS) {
-      return;
+    if (!force && !strict && now - lastBackgroundRevalidationAtRef.current < LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS) {
+      return false;
     }
 
     const cached = readCachedLicenseStatus();
-    if (!force) {
+    if (!force && !strict) {
       if (!cached || cached.installationId !== installationId || cached.code !== "LICENSE_VALID") {
-        return;
-      }
-
-      const dueAtMs = Date.parse(cached.nextRevalidationAt);
-      if (!Number.isNaN(dueAtMs) && now < dueAtMs) {
-        return;
+        return false;
       }
     } else if (cached && cached.installationId !== installationId) {
-      return;
+      return false;
+    }
+
+    if (strict && !isOnline) {
+      localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+      setIsLicenseValidated(false);
+      setLicenseRevalidationHint("");
+      setLicenseValidationMessage({
+        kind: "error",
+        text: "Validacao online obrigatoria. Conecte-se a internet para continuar.",
+      });
+      setLicenseModalMandatory(true);
+      setLicenseModalOpen(true);
+      return false;
     }
 
     const licenseValue = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
-    if (!licenseValue) return;
+    if (!licenseValue) {
+      if (strict) {
+        localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+        setIsLicenseValidated(false);
+        setLicenseRevalidationHint("");
+        setLicenseValidationMessage({ kind: "error", text: "Chave de licenca nao encontrada neste dispositivo." });
+        setLicenseModalMandatory(true);
+        setLicenseModalOpen(true);
+      }
+      return false;
+    }
 
     backgroundLicenseRevalidationBusyRef.current = true;
     lastBackgroundRevalidationAtRef.current = now;
@@ -3842,6 +4102,22 @@ function App() {
         const validatedAt = serverTimeIso ?? new Date().toISOString();
         const nextRevalidationAt = addDaysToIso(validatedAt, LICENSE_REVALIDATE_INTERVAL_DAYS);
         const expiryDate = normalizeApiDateToIso(licenseObject?.expiry_date ?? null);
+        const isExpiredByDate = isLicenseExpiredByDate(expiryDate, Date.parse(validatedAt));
+
+        if (isExpiredByDate) {
+          localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+          localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
+          setIsLicenseValidated(false);
+          setLicenseLastApiCode("LICENSE_EXPIRED");
+          setLicenseLastCheckedAt(validatedAt);
+          setLicenseRevalidationHint("");
+          setLicenseValidationMessage({
+            kind: "error",
+            text: "Periodo de teste expirado. Entre em contato para adquirir a licenca.",
+          });
+          enforceLicenseBlock("Periodo de teste expirado. Entre em contato para adquirir a licenca.");
+          return false;
+        }
 
         const refreshedCache: CachedLicenseStatus = {
           installationId,
@@ -3857,8 +4133,10 @@ function App() {
         setIsLicenseValidated(true);
         setLicenseLastApiCode("LICENSE_VALID");
         setLicenseLastCheckedAt(validatedAt);
-        setLicenseRevalidationHint(buildLicenseRevalidationHint(refreshedCache, installationId, isOnline));
-        return;
+        const expiryHint = buildLicenseExpiryHint(refreshedCache, installationId);
+        const revalidationHint = buildLicenseRevalidationHint(refreshedCache, installationId, isOnline);
+        setLicenseRevalidationHint(expiryHint || revalidationHint);
+        return true;
       }
 
       const rejectCodes = new Set([
@@ -3881,25 +4159,37 @@ function App() {
         setLicenseLastCheckedAt(new Date().toISOString());
         setLicenseRevalidationHint("");
         const rejectMessageMap: Record<string, string> = {
-          LICENSE_EXPIRED: "Licenca expirada. Fale com o suporte para regularizar.",
+          LICENSE_EXPIRED: "Periodo de teste/licenca expirado. Entre em contato para adquirir.",
           LICENSE_SUSPENDED: "Licenca suspensa. Fale com o suporte para reativacao.",
           LICENSE_PENDING: "Licenca pendente de ativacao no servidor.",
           LICENSE_INACTIVE: "Licenca inativa. Fale com o suporte.",
           LICENSE_BLOCKED: "Licenca bloqueada. Fale com o suporte.",
         };
+        const rejectMessage =
+          messageValue || rejectMessageMap[codeValue] || "Licenca suspensa ou invalida. Revalide para continuar.";
         setLicenseValidationMessage({
           kind: "error",
-          text: messageValue || rejectMessageMap[codeValue] || "Licenca suspensa ou invalida. Revalide para continuar.",
+          text: rejectMessage,
         });
-        setLicenseModalMandatory(true);
-        setLicenseModalOpen(true);
-        setStatus(messageValue || "Licenca suspensa/invalida na API. Acesso bloqueado.");
+        enforceLicenseBlock(rejectMessage);
+        return false;
       }
     } catch {
-      // Em erro de rede mantemos o acesso local (offline-first).
+      if (strict) {
+        localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+        setIsLicenseValidated(false);
+        setLicenseRevalidationHint("");
+        setLicenseValidationMessage({
+          kind: "error",
+          text: "Falha ao validar na API. Acesso bloqueado ate nova validacao.",
+        });
+        enforceLicenseBlock("Falha ao validar na API. Acesso bloqueado ate nova validacao.");
+      }
     } finally {
       backgroundLicenseRevalidationBusyRef.current = false;
     }
+
+    return false;
   }
 
   function handlePreconnectMixerSelection(mixer: DiscoveredMixer) {
@@ -4989,35 +5279,6 @@ function App() {
               onControlBChange={handleFxControlBChange}
             />
           </div>
-        </div>
-      </div>
-    );
-  }
-
-  function renderDetailPlaceholder(moduleLabel: string, title: string, description: string) {
-    return (
-      <div
-        style={{
-          minHeight: 0,
-          height: "100%",
-          borderRadius: 4,
-          border: "1px solid var(--border-default)",
-          background: "var(--surface-panel-raised)",
-          display: "grid",
-          alignContent: "center",
-          justifyItems: "center",
-          gap: 10,
-          color: "var(--text-primary)",
-          textAlign: "center",
-          padding: 24,
-        }}
-      >
-        <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.1em", color: "var(--text-secondary)" }}>
-          {moduleLabel}
-        </div>
-        <div style={{ fontSize: 22, lineHeight: "28px", fontWeight: 700 }}>{title}</div>
-        <div style={{ fontSize: 13, lineHeight: "18px", maxWidth: 520, color: "var(--text-secondary)" }}>
-          {description}
         </div>
       </div>
     );

@@ -188,7 +188,6 @@ export function FxPresetControlPanel({
     lastTapRef.current = now;
 
     if (taps.length < 2) {
-      setTapBpm(null);
       return;
     }
 

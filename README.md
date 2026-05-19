@@ -1,101 +1,95 @@
 # AX Controller
 
-Controle para mesa Axios 16 em desktop (macOS) e iPad via Tauri v2 + React + TypeScript.
+Aplicativo de controle para mixers Axios com foco em operação em desktop e iPad.
 
-O foco do repositório está no app em `apps/desktop`, com interface de mixagem (header redesenhado + abas de navegação), cliente WebSocket do protocolo da mesa e empacotamento desktop/mobile via Tauri v2.
+O núcleo do projeto está em `apps/desktop`, onde ficam a interface de operação, cliente de protocolo via WebSocket, camada de integração Tauri e política de licença/ativação.
 
-## Estado atual
+## Inicio rapido
 
-- ✅ Header com navegação, IP input e status tag redesenhado.
-- ✅ App funcional para operação de canais, auxiliares e master.
-- ✅ Sincronização de estado com foco no contexto ativo para reduzir carga no WebSocket.
-- ✅ Meters em tempo real com tratamento de hold/clip e atualização contínua.
-- ✅ Build desktop com Tauri funcional.
-- ✅ Build iOS para iPad completo e nomeado como **AX Controller**.
+```bash
+cd apps/desktop
+npm install
+npm run build
+npm run tauri dev
+```
 
-## Estrutura
+## Estado do projeto
 
-- `apps/desktop`: aplicacao principal (UI React, cliente de protocolo, Tauri).
-- `apps/desktop/src`: componentes e estado global do mixer.
-- `apps/desktop/src/lib/axios16Client.ts`: mapeamento de parametros e comunicacao WebSocket.
-- `apps/desktop/src-tauri`: backend Rust/Tauri e configuracao de bundle.
-- `research/duonn-web`: materiais de pesquisa de protocolo/roteamento.
+- Operação principal funcional para canais, auxiliares, FX e master.
+- Vistas globais implementadas: AUX SENDS, FX SENDS, MUTE GROUPS, DCA GROUPS e SCENES.
+- Descoberta de mixers na rede local.
+- Licença com primeira ativação online obrigatória, cache offline, revalidação em background e bloqueio de segurança.
+- Build web e build desktop em funcionamento.
+
+## Estrutura do repositório
+
+- `apps/desktop`: aplicação principal (React + Tauri).
+- `apps/desktop/src`: frontend, estado global e componentes.
+- `apps/desktop/src/lib/axios16Client.ts`: cliente DUONN/Axios com mapeamento de parâmetros.
+- `apps/desktop/src/protocol/duonn`: mapeamentos e builders de protocolo (groups, scenes, bitmask, FX presets).
+- `apps/desktop/src/services`: serviços de integração para discovery/groups/scenes.
+- `apps/desktop/src-tauri`: backend Rust/Tauri.
+- `research`: material de validação e engenharia reversa de protocolo.
+- `docs`: documentação operacional e técnica detalhada.
 
 ## Requisitos
 
 - Node.js 20+
 - npm 10+
-- Rust toolchain (cargo/rustc)
-- Ambiente Tauri (incluindo dependencias de plataforma)
-- Mesa Axios 16 acessivel na rede (ou endpoint WebSocket compativel)
+- Rust toolchain (`cargo`, `rustc`)
+- Dependências de plataforma do Tauri
+- Mixer Axios compatível acessível na rede local
 
-## Desenvolvimento
+## Comandos principais
 
 ```bash
+# frontend dev
 cd apps/desktop
 npm install
 npm run dev
-```
 
-## Execucao Desktop (Tauri)
-
-```bash
-cd apps/desktop
+# desktop (tauri)
 npm run tauri dev
-```
 
-## Build
-
-```bash
-cd apps/desktop
+# build de produção
 npm run build
+
+# checagem auxiliar de colisão de parâmetros
+npm run check:param-overlap
 ```
 
-## Recursos implementados
+## Fluxo de desenvolvimento
 
-- Controle de entradas (1-16) e auxiliares (1-8).
-- Canal strip com mute, solo, pan, gain, fader, nome, icone e cor.
-- Processadores por canal (Gate, Compressor, EQ) com grafico interativo.
-- HPF/LPF com tipo/inclinacao e atuacao no range ativo.
-- Link estereo por pares em canais e auxiliares, com espelhamento de ajustes.
-- Master com dois faders (L/R), mute independente e opcao de link.
+1. Rodar `npm install` em `apps/desktop`.
+2. Executar `npm run build` para validar TypeScript e bundle.
+3. Subir `npm run tauri dev` para fluxo desktop completo.
 
-## Atualizacoes recentes (maio/2026)
+## Funcionalidades principais
 
-- EQ refatorado para o novo layout modular com grafico responsivo, controles discretos por passos e padrao visual consolidado.
-- Selecao de banda no EQ estabilizada para evitar estado nulo e manter interacao consistente em desktop e iPad.
-- HPF/LPF ajustados para dominio visual expandido no grafico e resposta correta no range ativo.
-- Compressor migrado para o novo layout (cabecalho + grafico + fileira de 5 knobs) preservando funcionalidade existente.
-- Compressor com tema visual proprio (accent roxo/magenta), grafico interativo de threshold/ratio e ajuste de responsividade no container.
-- Area do grafico do compressor atualizada para ocupar 100% do espaco util, com escala inferior sem corte de labels/linhas.
-- Limpeza de codigo aplicada com remocao de componentes nao utilizados apos consolidacao dos knobs discretos.
+- Controle de canais (mute, solo, phantom, phase, pan, gain, fader, nome, cor e ícone).
+- Controle de AUX e FX (mute, solo, fader, nome/cor e detalhe dedicado).
+- Master bus com faders L/R, link estéreo, mute/solo e meters.
+- Processamento por canal/aux/master com Gate, Compressor, EQ, HPF e LPF.
+- DCA Groups e Mute Groups com membership e sincronização periódica.
+- Scenes (call, save, rename) com fluxo visual dedicado.
 
-## iOS/macOS
+## Licença e ativação
 
-- ✅ **App AX Controller compilado e pronto para iPad**
-- ✅ `.ipa` gerado: `apps/desktop/src-tauri/gen/apple/build/outputs/ios/release/desktop.ipa`
-- ✅ Projeto Xcode em `apps/desktop/src-tauri/gen/apple`
-- ✅ Patch local de `swift-rs` aplicado para compatibilidade
-- 🔄 Ícone da app será adicionado em breve
+- Primeira ativação exige internet.
+- Após validação, cache local permite uso offline temporário.
+- Revalidação ocorre em background quando online.
+- Janela de revalidação de 30 dias, com aviso in-app nos últimos 5 dias.
+- Expiração de trial/licença (`expiry_date`) salva em cache e aplicada também offline.
+- Bloqueio imediato em sessão quando API retorna estado inválido.
 
-## Scripts principais (apps/desktop)
+## Documentação
 
-```bash
-npm run dev              # Desenvolvimento UI
-npm run build            # Build de produção
-npm run preview          # Preview build
-npm run tauri dev        # Executa app desktop
-```
+- Guia geral do app desktop: `apps/desktop/README.md`
+- Onboarding rapido para novos devs: `docs/ONBOARDING.md`
+- Documentação técnica completa: `docs/APP_DOCUMENTATION.md`
+- Handoff para API/Admin: `docs/API_ADMIN_HANDOFF.md`
 
-## Build iOS/iPad
+## Observações
 
-O app foi compilado como **AX Controller** e está instalado no iPad. Para futuras compilações:
-
-```bash
-npm run tauri ios build
-```
-
-## Notas
-
-- Evite multiplos clientes controlando a mesma mesa ao mesmo tempo.
-- Para detalhes do app desktop, consulte `apps/desktop/README.md`.
+- Evite múltiplos clientes simultâneos controlando a mesma mesa.
+- Alguns mapeamentos para modelos acima de 16 canais estão marcados como derivados e precisam validação em hardware.
