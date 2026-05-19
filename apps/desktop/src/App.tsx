@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Axios16Client,
@@ -31,6 +31,7 @@ import {
 import { ChannelStrip } from "./components/ChannelStrip";
 import { AuxStrip } from "./components/AuxStrip";
 import { FxStrip } from "./components/FxStrip";
+import { GroupStrip } from "./components/GroupStrip";
 import { MasterBus } from "./components/MasterBus";
 import { DuonnIconsSprite, DUONN_CHANNEL_ICONS } from "./components/DuonnIcon";
 import { ChannelCustomizer } from "./components/ChannelCustomizer";
@@ -45,6 +46,44 @@ import axControlBrand from "./assets/AX-control-Brand-vert.svg";
 import { useMixerDiscovery } from "./hooks/useMixerDiscovery";
 import { type DiscoveredMixer } from "./services/mixerDiscovery";
 import { getMixerCompatibility } from "./lib/mixerCompatibility";
+import {
+  decodeGroupMembers,
+  type GroupMember,
+} from "./protocol/duonn/bitmask";
+import {
+  buildAllMutedMuteGroupMessages,
+  buildClearDcaMembersMessages,
+  buildClearMuteGroupMembersMessages,
+  buildSetDcaEnabledMessages,
+  buildSetDcaFaderMessage,
+  buildSetDcaMembersMessages,
+  buildSetMuteGroupActiveMessages,
+  buildSetMuteGroupMembersMessages,
+  getDcaFaderParam,
+  getDcaMemberParams,
+  getDcaOnOffParam,
+  getMuteGroupActiveParam,
+  getMuteGroupMemberParams,
+  type DcaGroupId,
+  type DuonnParamWriteMessage,
+  type MuteGroupId,
+  MUTE_GROUPS_CONFIG,
+} from "./protocol/duonn/groups";
+import {
+  applyMuteToMember,
+  buildAssignableMemberIds,
+  createInitialDcaState,
+  createInitialMuteState,
+  DCA_DEFAULT_COLOR_IDS,
+  DCA_IDS,
+  dcaPositionToValue,
+  dcaValueToPosition,
+  dcaAccentColorFromId,
+  MUTE_IDS,
+  type AssignableMemberId,
+  type DcaGroupState,
+  type MuteGroupState,
+} from "./lib/groupControls";
 import {
   ChannelProcessors,
   type CompressorState,
@@ -312,7 +351,8 @@ type DetailView =
 type AppStage = "splash" | "device-selection" | "mixer";
 type MainView = "mixer" | "auxSends" | "fxSends" | "dcaGroups" | "muteGroups" | "scenes";
 type StripSection = "inputs" | "aux" | "fx";
-type CustomizationView = { section: StripSection; index: number } | null;
+type CustomizationSection = StripSection | "dca";
+type CustomizationView = { section: CustomizationSection; index: number } | null;
 type PairLinkState = Record<string, boolean>;
 type SendValueState = Record<SendStripId, number>;
 type SendTapPointState = Record<SendStripId, SendTapPoint>;
@@ -403,6 +443,8 @@ const SPLASH_MIN_DURATION_MS = 2000;
 const APP_VERSION = "1.0.0";
 const INSTALLATION_ID_STORAGE_KEY = "ax_installation_id";
 const LICENSE_VALIDATED_STORAGE_KEY = "ax_license_validated";
+const DCA_NAMES_STORAGE_KEY = "ax_dca_group_names";
+const DCA_COLOR_IDS_STORAGE_KEY = "ax_dca_group_color_ids";
 const LICENSE_ACTIVATED_ONCE_STORAGE_KEY = "ax_license_activated_once";
 const LICENSE_STATUS_STORAGE_KEY = "ax_license_status";
 const LICENSE_KEY_STORAGE_KEY = "ax_license_key_last";
@@ -566,28 +608,13 @@ function buildLicenseExpiryHint(cached: CachedLicenseStatus | null, installation
 
 type ColorScope = "input" | "aux" | "fx" | "master";
 
-const COLOR_SCOPE_DEFAULTS: Record<ColorScope, number> = {
-  input: 0,
-  aux: DEFAULT_AUX_COLOR_ID,
-  fx: DEFAULT_FX_COLOR_ID,
-  master: 0,
-};
-
-const COLOR_SCOPE_ZERO_WRITEBACK: Record<ColorScope, boolean> = {
-  input: false,
-  aux: true,
-  fx: true,
-  master: false,
-};
-
 function clampColorId(colorId: number) {
   return Math.max(0, Math.min(12, Math.round(colorId)));
 }
 
 function normalizeColorByScope(scope: ColorScope, colorId: number) {
-  const clamped = clampColorId(colorId);
-  if (clamped === 0) return COLOR_SCOPE_DEFAULTS[scope];
-  return clamped;
+  void scope;
+  return clampColorId(colorId);
 }
 
 function resolveMesaColorByScope(
@@ -596,14 +623,8 @@ function resolveMesaColorByScope(
   onWriteBack?: () => void
 ) {
   if (rawColor === undefined) return undefined;
-
-  const clamped = clampColorId(rawColor);
-
-  if (clamped === 0 && COLOR_SCOPE_ZERO_WRITEBACK[scope]) {
-    onWriteBack?.();
-  }
-
-  return normalizeColorByScope(scope, clamped);
+  void onWriteBack;
+  return normalizeColorByScope(scope, rawColor);
 }
 
 function generateInstallationId() {
@@ -867,18 +888,8 @@ function isLocalDefaultDisplayName(target: NameTarget, displayName: string) {
   return normalized === defaultDisplayNormalized || isDefaultMixerName(target, displayName);
 }
 
-function getDcaNameTargetIndexes(channelCount: number): [number, number, number, number] {
-  return [channelCount, channelCount + 1, channelCount + 2, channelCount + 3];
-}
-
 function getDefaultDcaGroupName(index: number) {
-  return `Group ${index + 1}`;
-}
-
-function isDefaultDcaName(index: number, name: string) {
-  const normalized = normalizeMixerName(name);
-  if (!normalized) return true;
-  return normalized === `DCA${index + 1}` || normalized === `GROUP${index + 1}`;
+  return `DCA Group ${index + 1}`;
 }
 
 function createVirtualStripsState(count: number, defaultColorId?: number) {
@@ -889,6 +900,15 @@ function createVirtualStripsState(count: number, defaultColorId?: number) {
     faderDb: -5,
     faderPosition: dbToFaderPosition(-5),
   }));
+}
+
+function sendGroupMessages(
+  client: Axios16Client,
+  messages: DuonnParamWriteMessage[]
+) {
+  for (const message of messages) {
+    client.sendParam(message.param, message.value);
+  }
 }
 
 const DEFAULT_GATE: GateState = {
@@ -1387,9 +1407,20 @@ function App() {
   const [fxStrips, setFxStrips] = useState<ChannelState[]>(() =>
     createVirtualStripsState(2, DEFAULT_FX_COLOR_ID)
   );
-  const [dcaNames, setDcaNames] = useState<string[]>(() =>
-    Array.from({ length: 4 }, (_, index) => getDefaultDcaGroupName(index))
-  );
+  const [dcaNames, setDcaNames] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem(DCA_NAMES_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored) as unknown[];
+        if (Array.isArray(parsed) && parsed.length === 4 && parsed.every((v) => typeof v === "string")) {
+          return parsed as string[];
+        }
+      }
+    } catch { /* ignore */ }
+    return Array.from({ length: 4 }, (_, index) => getDefaultDcaGroupName(index));
+  });
+  const [dcaGroups, setDcaGroups] = useState<DcaGroupState[]>(createInitialDcaState);
+  const [muteGroups, setMuteGroups] = useState<MuteGroupState[]>(createInitialMuteState);
   const [auxProcessorStates, setAuxProcessorStates] = useState<ProcessorState[]>(() =>
     Array.from({ length: 8 }, () => createDefaultAuxProcessorState())
   );
@@ -1434,6 +1465,19 @@ function App() {
 
   const clientRef = useRef<Axios16Client | null>(null);
   const meterTimerRef = useRef<number | null>(null);
+  const [dcaColorIds, setDcaColorIds] = useState<number[]>(() => {
+    try {
+      const stored = localStorage.getItem(DCA_COLOR_IDS_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored) as unknown[];
+        if (Array.isArray(parsed) && parsed.length === 4 && parsed.every((v) => typeof v === "number")) {
+          return parsed.map((value) => Math.max(0, Math.min(12, Math.round(value as number))));
+        }
+      }
+    } catch { /* ignore */ }
+
+    return DCA_IDS.map((id) => DCA_DEFAULT_COLOR_IDS[id]);
+  });
   const meterBusyRef = useRef(false);
   const auxLinkBusyRef = useRef(false);
   const meterUpdateLastAtRef = useRef(0);
@@ -1448,6 +1492,7 @@ function App() {
   const backgroundLicenseRevalidationBusyRef = useRef(false);
   const lastBackgroundRevalidationAtRef = useRef(0);
   const strictStartupValidationDoneRef = useRef(false);
+  const lastAppliedMuteGroupsSignatureRef = useRef("");
   const dragScrollStateRef = useRef<DragScrollState>({
     pointerId: null,
     pointerType: "",
@@ -1466,6 +1511,10 @@ function App() {
     error: discoveryError,
     refresh: refreshMixerDiscovery,
   } = useMixerDiscovery(true);
+  const assignableMemberIds = useMemo(
+    () => buildAssignableMemberIds(channelCount),
+    [channelCount]
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1846,6 +1895,339 @@ function App() {
     );
   }
 
+  function updateDcaGroupState(id: DcaGroupId, patch: Partial<DcaGroupState>) {
+    setDcaGroups((current) =>
+      current.map((group, index) =>
+        index === id - 1 ? { ...group, ...patch } : group
+      )
+    );
+  }
+
+  function updateMuteGroupState(id: MuteGroupId, patch: Partial<MuteGroupState>) {
+    setMuteGroups((current) => {
+      const next = current.map((group, index) =>
+        index === id - 1 ? { ...group, ...patch } : group
+      );
+      applyManagedMutes(next);
+      return next;
+    });
+  }
+
+  function expandMuteGroupManagedMembers(members: Iterable<GroupMember>): AssignableMemberId[] {
+    const expanded = new Set<AssignableMemberId>();
+
+    for (const member of members) {
+      if (!assignableMemberIds.includes(member as AssignableMemberId)) continue;
+
+      if (member.startsWith("CH_")) {
+        const channel = Number(member.slice(3));
+        if (Number.isFinite(channel) && channel >= 1 && channel <= channelCount) {
+          for (const target of getLinkedChannelTargets(channel)) {
+            expanded.add(`CH_${target}` as AssignableMemberId);
+          }
+        }
+        continue;
+      }
+
+      if (member.startsWith("AUX_")) {
+        const aux = Number(member.slice(4));
+        if (Number.isFinite(aux) && aux >= 1 && aux <= 8) {
+          for (const target of getLinkedAuxTargets(aux)) {
+            expanded.add(`AUX_${target}` as AssignableMemberId);
+          }
+        }
+        continue;
+      }
+
+      if ((member === "MASTER_L" || member === "MASTER_R") && masterLinked) {
+        expanded.add("MASTER_L");
+        expanded.add("MASTER_R");
+        continue;
+      }
+
+      expanded.add(member as AssignableMemberId);
+    }
+
+    return assignableMemberIds.filter((member) => expanded.has(member));
+  }
+
+  function applyManagedMutes(nextGroups: MuteGroupState[]) {
+    const client = clientRef.current;
+    if (!client || !isConnected) {
+      lastAppliedMuteGroupsSignatureRef.current = "";
+      return;
+    }
+
+    const managedMembersSet = new Set<AssignableMemberId>();
+    const activeMembersSet = new Set<AssignableMemberId>();
+
+    for (const group of nextGroups) {
+      const expandedMembers = expandMuteGroupManagedMembers(group.members);
+
+      for (const member of expandedMembers) {
+        managedMembersSet.add(member);
+        if (group.active) {
+          activeMembersSet.add(member);
+        }
+      }
+    }
+
+    const managedOrdered = assignableMemberIds.filter((member) => managedMembersSet.has(member));
+    const activeOrdered = assignableMemberIds.filter((member) => activeMembersSet.has(member));
+    const signature = `${managedOrdered.join(",")}|${activeOrdered.join(",")}`;
+
+    if (signature === lastAppliedMuteGroupsSignatureRef.current) {
+      return;
+    }
+
+    for (const member of managedOrdered) {
+      const shouldMute = activeMembersSet.has(member);
+      applyMuteToMember(client, member, shouldMute);
+      handleMuteGroupsMemberMuteApplied(member, shouldMute);
+    }
+
+    lastAppliedMuteGroupsSignatureRef.current = signature;
+  }
+
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!client || !isConnected) {
+      lastAppliedMuteGroupsSignatureRef.current = "";
+      return;
+    }
+
+    let disposed = false;
+
+    const syncGroupStates = async () => {
+      try {
+        const params = [
+          ...DCA_IDS.flatMap((id) => [
+            getDcaOnOffParam(id),
+            getDcaFaderParam(id),
+            ...getDcaMemberParams(id),
+          ]),
+          ...MUTE_IDS.flatMap((id) => [
+            getMuteGroupActiveParam(id),
+            ...getMuteGroupMemberParams(id),
+          ]),
+        ];
+        const response = await client.readParams(params, 1000);
+        const values = new Map(response.map((item) => [item.param, item.value]));
+
+        if (disposed) return;
+
+        setDcaGroups((current) =>
+          current.map((group, index) => {
+            const id = DCA_IDS[index];
+            const rawEnabled = values.get(getDcaOnOffParam(id));
+            const rawFader = values.get(getDcaFaderParam(id));
+            const words = getDcaMemberParams(id).map((param) => values.get(param));
+            const nextMembers = words.every((word) => word !== undefined)
+              ? decodeGroupMembers(words as [number, number, number, number]).filter(
+                  (member): member is AssignableMemberId => assignableMemberIds.includes(member as AssignableMemberId)
+                )
+              : group.members;
+
+            return {
+              ...group,
+              enabled: rawEnabled === undefined ? group.enabled : rawEnabled > 0,
+              faderPosition: rawFader === undefined ? group.faderPosition : dcaValueToPosition(rawFader),
+              members: nextMembers,
+            };
+          })
+        );
+
+        setMuteGroups((current) => {
+          const next = current.map((group, index) => {
+            const id = MUTE_IDS[index];
+            const rawActive = values.get(getMuteGroupActiveParam(id));
+            const words = getMuteGroupMemberParams(id).map((param) => values.get(param));
+            const nextMembers = words.every((word) => word !== undefined)
+              ? decodeGroupMembers(words as [number, number, number, number]).filter(
+                  (member): member is AssignableMemberId => assignableMemberIds.includes(member as AssignableMemberId)
+                )
+              : group.members;
+
+            return {
+              ...group,
+              active: rawActive === undefined ? group.active : rawActive > 0,
+              members: nextMembers,
+            };
+          });
+
+          applyManagedMutes(next);
+          return next;
+        });
+      } catch {
+        // Ignore transient read failures.
+      }
+    };
+
+    syncGroupStates();
+    const timer = window.setInterval(syncGroupStates, 1500);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [assignableMemberIds, isConnected]);
+
+  function handleDcaGroupToggleEnabled(id: DcaGroupId) {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    const nextEnabled = !dcaGroups[id - 1].enabled;
+    try {
+      sendGroupMessages(client, buildSetDcaEnabledMessages(id, nextEnabled));
+    } catch (error) {
+      console.error("[DCA] toggle enabled error:", error);
+      return;
+    }
+
+    updateDcaGroupState(id, { enabled: nextEnabled });
+  }
+
+  function handleDcaGroupFaderChange(id: DcaGroupId, position: number) {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    try {
+      const message = buildSetDcaFaderMessage(id, dcaPositionToValue(position));
+      client.sendParam(message.param, message.value);
+    } catch (error) {
+      console.error("[DCA] fader error:", error);
+      return;
+    }
+
+    updateDcaGroupState(id, { faderPosition: position });
+  }
+
+  function normalizeDcaMembersForLinkedChannels(
+    currentMembers: GroupMember[],
+    proposedMembers: GroupMember[]
+  ): GroupMember[] {
+    const currentSet = new Set(currentMembers);
+    const nextMembers = new Set(proposedMembers);
+
+    for (let odd = 1; odd < channelCount; odd += 2) {
+      const even = odd + 1;
+      const key = pairKey(odd, even);
+      if (!channelLinks[key]) continue;
+
+      const oddMember = `CH_${odd}` as GroupMember;
+      const evenMember = `CH_${even}` as GroupMember;
+      const prevBothSelected = currentSet.has(oddMember) && currentSet.has(evenMember);
+      const nextOddSelected = nextMembers.has(oddMember);
+      const nextEvenSelected = nextMembers.has(evenMember);
+
+      if (nextOddSelected !== nextEvenSelected) {
+        if (prevBothSelected) {
+          nextMembers.delete(oddMember);
+          nextMembers.delete(evenMember);
+        } else {
+          nextMembers.add(oddMember);
+          nextMembers.add(evenMember);
+        }
+      }
+    }
+
+    return assignableMemberIds.filter((member) => nextMembers.has(member));
+  }
+
+  function handleDcaGroupMembersChange(id: DcaGroupId, members: GroupMember[]) {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    const currentMembers = dcaGroups[id - 1]?.members ?? [];
+    const normalizedMembers = normalizeDcaMembersForLinkedChannels(currentMembers, members);
+
+    try {
+      sendGroupMessages(client, buildSetDcaMembersMessages(id, normalizedMembers));
+    } catch (error) {
+      console.error("[DCA] members error:", error);
+      return;
+    }
+
+    updateDcaGroupState(id, { members: normalizedMembers });
+  }
+
+  function handleDcaGroupClear(id: DcaGroupId) {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    try {
+      sendGroupMessages(client, buildClearDcaMembersMessages(id));
+    } catch (error) {
+      console.error("[DCA] clear error:", error);
+      return;
+    }
+
+    updateDcaGroupState(id, { members: [] });
+  }
+
+  function handleMuteGroupToggleActive(id: MuteGroupId) {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    const nextActive = !muteGroups[id - 1].active;
+    try {
+      sendGroupMessages(client, buildSetMuteGroupActiveMessages(id, nextActive));
+    } catch (error) {
+      console.error("[Mute] toggle active error:", error);
+      return;
+    }
+
+    updateMuteGroupState(id, { active: nextActive });
+  }
+
+  function handleMuteGroupMembersChange(id: MuteGroupId, members: GroupMember[]) {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    try {
+      sendGroupMessages(client, buildSetMuteGroupMembersMessages(id, members));
+    } catch (error) {
+      console.error("[Mute] members error:", error);
+      return;
+    }
+
+    updateMuteGroupState(id, { members });
+  }
+
+  function handleMuteGroupClear(id: MuteGroupId) {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    try {
+      sendGroupMessages(client, buildClearMuteGroupMembersMessages(id));
+    } catch (error) {
+      console.error("[Mute] clear error:", error);
+      return;
+    }
+
+    updateMuteGroupState(id, { members: [] });
+  }
+
+  function handleMuteGroupAllMuted(id: MuteGroupId) {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    try {
+      sendGroupMessages(
+        client,
+        buildAllMutedMuteGroupMessages(id, {
+          allowDerived: MUTE_GROUPS_CONFIG[id].isDerived ?? false,
+        })
+      );
+    } catch (error) {
+      console.error("[Mute] all muted error:", error);
+      return;
+    }
+
+    const mappedMembers = assignableMemberIds.filter((member) => member !== "MASTER_L" && member !== "MASTER_R");
+    updateMuteGroupState(id, { members: mappedMembers as GroupMember[] });
+  }
+
   function getSectionStrips(section: StripSection) {
     if (section === "inputs") return channels;
     if (section === "aux") return auxStrips;
@@ -2186,16 +2568,10 @@ function App() {
     const client = clientRef.current;
     if (!client) return;
 
-    const dcaNameTargetIndexes = getDcaNameTargetIndexes(channelCount);
-    const [channelNames, auxNames, fxNames, dcaMixerNames] = await Promise.all([
+    const [channelNames, auxNames, fxNames] = await Promise.all([
       client.readChannelNames(channelCount, 600),
       client.readAuxNames(600),
       client.readFxNames(600),
-      Promise.all(
-        dcaNameTargetIndexes.map((targetIndex) =>
-          client.readNameByIndex(targetIndex, 600).catch(() => "")
-        )
-      ),
     ]);
 
     setChannels((current) =>
@@ -2269,24 +2645,37 @@ function App() {
         };
       })
     );
+  }
 
-    const nextDcaNames = dcaMixerNames.map((rawName, index) => {
-      const mixerName = rawName.trim();
-      const defaultGroupName = getDefaultDcaGroupName(index);
-
-      if (isDefaultDcaName(index, mixerName)) {
-        try {
-          client.setNameByIndex(dcaNameTargetIndexes[index], defaultGroupName);
-        } catch {
-          // Ignore transient write failures; keep display normalized locally.
-        }
-        return defaultGroupName;
-      }
-
-      return mixerName.length > 0 ? mixerName : defaultGroupName;
+  function handleDcaGroupRename(id: DcaGroupId, name: string) {
+    const trimmed = name.trim();
+    const finalName = trimmed.length > 0 ? trimmed : getDefaultDcaGroupName(id - 1);
+    setDcaNames((current) => {
+      const next = [...current];
+      next[id - 1] = finalName;
+      try {
+        localStorage.setItem(DCA_NAMES_STORAGE_KEY, JSON.stringify(next));
+      } catch { /* ignore */ }
+      return next;
     });
+  }
 
-    setDcaNames(nextDcaNames);
+  function handleDcaGroupColorChange(id: DcaGroupId, colorId: number) {
+    const normalizedColorId = Math.max(0, Math.min(12, Math.round(colorId)));
+
+    setDcaColorIds((current) => {
+      const next = [...current];
+      next[id - 1] = normalizedColorId;
+      try {
+        localStorage.setItem(DCA_COLOR_IDS_STORAGE_KEY, JSON.stringify(next));
+      } catch { /* ignore */ }
+      return next;
+    });
+  }
+
+  function handleDcaCustomizerSave(id: DcaGroupId, patch: { channelName: string; colorId: number }) {
+    handleDcaGroupRename(id, patch.channelName);
+    handleDcaGroupColorChange(id, patch.colorId);
   }
 
   async function syncChannelPairVisualState() {
@@ -4659,6 +5048,12 @@ function App() {
 
   function handleCustomizerNameChange(section: StripSection, index: number, channelName: string) {
     if (section === "inputs") {
+      const target: NameTarget = { type: "channel", channel: index };
+      if (isLocalDefaultDisplayName(target, channelName)) {
+        handleNameChange(index, "");
+        return;
+      }
+
       handleNameChange(index, channelName);
       return;
     }
@@ -4712,6 +5107,15 @@ function App() {
     }
 
     updateFxStripState(index, { colorId: normalizeColorByScope("fx", colorId) });
+  }
+
+  function handleCustomizerSave(
+    section: StripSection,
+    index: number,
+    patch: { channelName: string; colorId: number }
+  ) {
+    handleCustomizerNameChange(section, index, patch.channelName);
+    handleCustomizerColorChange(section, index, patch.colorId);
   }
 
   function handleGateChange(channelNumber: number, patch: Partial<GateState>) {
@@ -5046,12 +5450,14 @@ function App() {
   }
 
 
-  function goToDetailChannel(channelNumber: number) {
+  function goToDetailChannel(channelNumber: number, options?: { preserveActiveModule?: boolean }) {
     const nextChannel = Math.max(1, Math.min(channelCount, channelNumber));
 
     setMainView("mixer");
     clearScheduledSendWrites();
-    setActiveProcessorModule("eq");
+    if (!options?.preserveActiveModule) {
+      setActiveProcessorModule("eq");
+    }
     setDetailView({ type: "channel", channel: nextChannel });
     Promise.all([
       syncLinkStates(),
@@ -5069,11 +5475,13 @@ function App() {
   }
 
 
-  function goToDetailAux(auxNumber: number) {
+  function goToDetailAux(auxNumber: number, options?: { preserveActiveModule?: boolean }) {
     const nextAux = Math.max(1, Math.min(8, auxNumber));
     const [pairOdd, pairEven] = getAuxPair(nextAux);
     setMainView("mixer");
-    setActiveProcessorModule("comp");
+    if (!options?.preserveActiveModule) {
+      setActiveProcessorModule("eq");
+    }
     setDetailView({ type: "aux", aux: nextAux });
     Promise.allSettled([
       syncLinkStates(),
@@ -5525,7 +5933,7 @@ function App() {
                 <button
                   type="button"
                   disabled={channelNumber === 1}
-                  onClick={() => goToDetailChannel(channelNumber - 1)}
+                  onClick={() => goToDetailChannel(channelNumber - 1, { preserveActiveModule: true })}
                   style={{
                     width: 28,
                     height: 28,
@@ -5544,7 +5952,7 @@ function App() {
                 <button
                   type="button"
                   disabled={channelNumber === 16}
-                  onClick={() => goToDetailChannel(channelNumber + 1)}
+                  onClick={() => goToDetailChannel(channelNumber + 1, { preserveActiveModule: true })}
                   style={{
                     width: 28,
                     height: 28,
@@ -5837,7 +6245,7 @@ function App() {
               <button
                 type="button"
                 disabled={auxNumber === 1}
-                onClick={() => goToDetailAux(auxNumber - 1)}
+                onClick={() => goToDetailAux(auxNumber - 1, { preserveActiveModule: true })}
                 style={{
                   width: 28,
                   height: 28,
@@ -5856,7 +6264,7 @@ function App() {
               <button
                 type="button"
                 disabled={auxNumber === 8}
-                onClick={() => goToDetailAux(auxNumber + 1)}
+                onClick={() => goToDetailAux(auxNumber + 1, { preserveActiveModule: true })}
                 style={{
                   width: 28,
                   height: 28,
@@ -6582,6 +6990,7 @@ function App() {
                   }}
                   style={{
                     height: 32,
+                    minHeight: 32,
                     padding: "0 16px",
                     borderRadius: 0,
                     border: "none",
@@ -6768,8 +7177,28 @@ function App() {
     }
   }
 
-  const customizerStrip = customizationView
-    ? getSectionStrips(customizationView.section)[customizationView.index - 1]
+  const customizerItem = customizationView
+    ? customizationView.section === "dca"
+      ? {
+          defaultName: getDefaultDcaGroupName(customizationView.index - 1),
+          channelName: dcaNames[customizationView.index - 1],
+          colorId: dcaColorIds[customizationView.index - 1],
+          title: "Editar DCA",
+          allowZeroColorSelection: false,
+        }
+      : {
+          defaultName: getDefaultDisplayName(
+            customizationView.section === "inputs"
+              ? { type: "channel", channel: customizationView.index }
+              : customizationView.section === "aux"
+                ? { type: "aux", aux: customizationView.index }
+                : { type: "fx", fx: customizationView.index }
+          ),
+          channelName: getSectionStrips(customizationView.section)[customizationView.index - 1].channelName,
+          colorId: getSectionStrips(customizationView.section)[customizationView.index - 1].colorId,
+          title: "Editar Canal",
+          allowZeroColorSelection: false,
+        }
     : null;
 
   useEffect(() => {
@@ -6836,7 +7265,7 @@ function App() {
         <div className="top-nav__tabs" data-node-id="73:575">
           <button
             type="button"
-            className={`top-nav__tab ${!detailView && mainView === "mixer" ? "active" : ""}`}
+            className={`top-nav__tab ${mainView === "mixer" ? "active" : ""}`}
             onClick={() => {
               setMainView("mixer");
               setDetailView(null);
@@ -6847,7 +7276,7 @@ function App() {
           </button>
           <button
             type="button"
-            className={`top-nav__tab ${!detailView && mainView === "auxSends" ? "active" : ""}`}
+            className={`top-nav__tab ${mainView === "auxSends" ? "active" : ""}`}
             onClick={() => {
               setMainView("auxSends");
               setDetailView(null);
@@ -6859,7 +7288,7 @@ function App() {
           </button>
           <button
             type="button"
-            className={`top-nav__tab ${!detailView && mainView === "fxSends" ? "active" : ""}`}
+            className={`top-nav__tab ${mainView === "fxSends" ? "active" : ""}`}
             onClick={() => {
               setMainView("fxSends");
               setDetailView(null);
@@ -6871,7 +7300,7 @@ function App() {
           </button>
           <button
             type="button"
-            className={`top-nav__tab ${!detailView && mainView === "muteGroups" ? "active" : ""}`}
+            className={`top-nav__tab ${mainView === "muteGroups" ? "active" : ""}`}
             onClick={() => {
               setMainView("muteGroups");
               setDetailView(null);
@@ -6882,7 +7311,7 @@ function App() {
           </button>
           <button
             type="button"
-            className={`top-nav__tab ${!detailView && mainView === "dcaGroups" ? "active" : ""}`}
+            className={`top-nav__tab ${mainView === "dcaGroups" ? "active" : ""}`}
             onClick={() => {
               setMainView("dcaGroups");
               setDetailView(null);
@@ -6966,9 +7395,9 @@ function App() {
           : mainView === "fxSends"
             ? renderGlobalSendsView("fx")
             : mainView === "dcaGroups"
-              ? <div className="global-view-shell"><DcaGroupsView client={clientRef.current} isConnected={isConnected} channelCount={channelCount} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} dcaNames={dcaNames} /></div>
+                ? <div className="global-view-shell"><DcaGroupsView isConnected={isConnected} channelCount={channelCount} groups={dcaGroups} onToggleEnabled={handleDcaGroupToggleEnabled} onMembersChange={handleDcaGroupMembersChange} onClear={handleDcaGroupClear} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} dcaNames={dcaNames} dcaColorIds={dcaColorIds} /></div>
             : mainView === "muteGroups"
-              ? <div className="global-view-shell"><MuteGroupsView client={clientRef.current} isConnected={isConnected} channelCount={channelCount} onMemberMuteApplied={handleMuteGroupsMemberMuteApplied} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} /></div>
+                ? <div className="global-view-shell"><MuteGroupsView isConnected={isConnected} channelCount={channelCount} groups={muteGroups} onToggleActive={handleMuteGroupToggleActive} onMembersChange={handleMuteGroupMembersChange} onClear={handleMuteGroupClear} onAllMuted={handleMuteGroupAllMuted} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} /></div>
             : mainView === "scenes"
               ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} /></div>
         : <section className="mixer-layout">
@@ -7060,6 +7489,9 @@ function App() {
                       handleStripGainChange("inputs", stripNumber, value)
                     }
                     onOpenDetail={goToDetailChannel}
+                    onOpenEditMenu={(channelNumber) =>
+                      setCustomizationView({ section: "inputs", index: channelNumber })
+                    }
                   />
                 </div>
               );
@@ -7110,6 +7542,9 @@ function App() {
                       handleStripFaderChange("fx", fxNumber, position)
                     }
                     onOpenDetail={goToDetailFx}
+                    onOpenEditMenu={(targetFxNumber) =>
+                      setCustomizationView({ section: "fx", index: targetFxNumber })
+                    }
                   />
                 </div>
               );
@@ -7187,10 +7622,64 @@ function App() {
                       handleStripFaderChange("aux", auxNumber, position)
                     }
                     onOpenDetail={goToDetailAux}
+                    onOpenEditMenu={(targetAuxNumber) =>
+                      setCustomizationView({ section: "aux", index: targetAuxNumber })
+                    }
                   />
                 </div>
               );
             })}
+
+            <div
+              style={{
+                flex: "0 0 auto",
+                width: 1,
+                alignSelf: "stretch",
+                background: "var(--border-default)",
+                margin: "0 6px",
+                borderRadius: 1,
+              }}
+            />
+
+            {DCA_IDS.map((id, index) => {
+              const group = dcaGroups[index];
+              return (
+                <div
+                  key={`dca-group-${id}`}
+                  style={{
+                    marginLeft: 0,
+                    marginRight: index === DCA_IDS.length - 1 ? 0 : 4,
+                    flex: "0 0 auto",
+                    position: "relative",
+                    overflow: "visible",
+                  }}
+                >
+                  <GroupStrip
+                    kind="dca"
+                    groupId={id}
+                    groupName={dcaNames[id - 1]}
+                    memberCount={group.members.length}
+                    active={group.enabled}
+                    faderPosition={group.faderPosition}
+                    accentColor={dcaAccentColorFromId(dcaColorIds[id - 1], DCA_DEFAULT_COLOR_IDS[id])}
+                    disabled={!isConnected}
+                    onToggleActive={() => handleDcaGroupToggleEnabled(id)}
+                    onFaderChange={(value) => handleDcaGroupFaderChange(id, value)}
+                    onOpenDetail={() => {
+                      setMainView("dcaGroups");
+                      setDetailView(null);
+                      setSettingsDropdownOpen(false);
+                    }}
+                    onOpenEditMenu={() => {
+                      setCustomizationView({ section: "dca", index: id });
+                      setDetailView(null);
+                      setSettingsDropdownOpen(false);
+                    }}
+                  />
+                </div>
+              );
+            })}
+
           </section>
 
           <aside className="mixer-master">
@@ -7244,33 +7733,26 @@ function App() {
             })()}
           </aside>
         </section>}
-      {customizationView && customizerStrip && (
+      {customizationView && customizerItem && (
         <ChannelCustomizer
           channel={customizationView.index}
-          iconId={customizerStrip.iconId}
-          channelName={customizerStrip.channelName}
-          colorId={customizerStrip.colorId}
-          onIconChange={(iconId) =>
-            handleCustomizerIconChange(
+          title={customizerItem.title}
+          defaultName={customizerItem.defaultName}
+          channelName={customizerItem.channelName}
+          colorId={customizerItem.colorId}
+          allowZeroColorSelection={customizerItem.allowZeroColorSelection}
+          onSave={(patch) => {
+            if (customizationView.section === "dca") {
+              handleDcaCustomizerSave(customizationView.index as DcaGroupId, patch);
+              return;
+            }
+
+            handleCustomizerSave(
               customizationView.section,
               customizationView.index,
-              iconId
-            )
-          }
-          onNameChange={(name) =>
-            handleCustomizerNameChange(
-              customizationView.section,
-              customizationView.index,
-              name
-            )
-          }
-          onColorChange={(colorId) =>
-            handleCustomizerColorChange(
-              customizationView.section,
-              customizationView.index,
-              colorId
-            )
-          }
+              patch
+            );
+          }}
           onClose={closeChannelCustomizer}
         />
       )}

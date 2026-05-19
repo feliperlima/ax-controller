@@ -5,10 +5,6 @@ export function stripColorFromId(
 ) {
   const raw = Math.round(colorId);
 
-  if (raw === 0 && fallbackColorId === 0) {
-    return fallbackCssColor;
-  }
-
   const effective =
     raw === 0
       ? Math.max(1, Math.min(12, Math.round(fallbackColorId)))

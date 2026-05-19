@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
 import { eqMagnitudeDb, type EqState } from "./ChannelProcessors";
@@ -22,7 +22,10 @@ type FxStripProps = {
   onToggleSolo: () => void;
   onFaderChange: (value: number) => void;
   onOpenDetail?: (fxNumber: 1 | 2) => void;
+  onOpenEditMenu?: (fxNumber: 1 | 2) => void;
 };
+
+const FOOTER_LONG_PRESS_MS = 450;
 
 const EQ_PREVIEW_WIDTH = 78;
 const EQ_PREVIEW_HEIGHT = 48;
@@ -103,6 +106,7 @@ export function FxStrip({
   onToggleSolo,
   onFaderChange,
   onOpenDetail,
+  onOpenEditMenu,
 }: FxStripProps) {
   const isDetailVariant = variant === "detail";
   const stripColor = stripColorFromId(colorId, 7, "var(--module-fx-primary)");
@@ -111,7 +115,17 @@ export function FxStrip({
     ? channelName.trim()
     : `FX ${fxNumber}`;
   const canOpenDetail = typeof onOpenDetail === "function";
+  const canOpenEditMenu = typeof onOpenEditMenu === "function";
   const eqPreviewState = eqState ?? FLAT_EQ;
+  const footerLongPressTimerRef = useRef<number | null>(null);
+  const footerLongPressTriggeredRef = useRef(false);
+
+  function clearFooterLongPress() {
+    if (footerLongPressTimerRef.current !== null) {
+      window.clearTimeout(footerLongPressTimerRef.current);
+      footerLongPressTimerRef.current = null;
+    }
+  }
 
   const eqPreview = useMemo(
     () => buildEqPreview(eqPreviewState, EQ_PREVIEW_WIDTH, EQ_PREVIEW_HEIGHT, 40),
@@ -384,9 +398,34 @@ export function FxStrip({
 
       {!isDetailVariant && (
         <div
+          onPointerDown={(e) => {
+            if (disabled || !canOpenEditMenu) return;
+            e.stopPropagation();
+            footerLongPressTriggeredRef.current = false;
+            clearFooterLongPress();
+            footerLongPressTimerRef.current = window.setTimeout(() => {
+              footerLongPressTriggeredRef.current = true;
+              onOpenEditMenu?.(fxNumber);
+            }, FOOTER_LONG_PRESS_MS);
+          }}
+          onPointerUp={() => {
+            clearFooterLongPress();
+          }}
+          onPointerCancel={() => {
+            clearFooterLongPress();
+          }}
+          onPointerLeave={() => {
+            clearFooterLongPress();
+          }}
+          onClick={(e) => {
+            if (!footerLongPressTriggeredRef.current) return;
+            e.stopPropagation();
+            footerLongPressTriggeredRef.current = false;
+          }}
           onDoubleClick={(e) => {
             e.stopPropagation();
             if (disabled || !canOpenDetail) return;
+            clearFooterLongPress();
             onOpenDetail(fxNumber);
           }}
           style={{
@@ -407,6 +446,7 @@ export function FxStrip({
             opacity: disabled ? 0.58 : 1,
             filter: disabled ? "saturate(0.55) brightness(0.82)" : "none",
           }}
+          title={canOpenDetail || canOpenEditMenu ? "Double click to open detail. Long press to edit." : undefined}
         >
           <span
             style={{

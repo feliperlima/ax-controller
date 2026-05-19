@@ -1,4 +1,4 @@
-import { DuonnIcon, DUONN_CHANNEL_ICONS } from "./DuonnIcon";
+import { useEffect, useState } from "react";
 
 const CHANNEL_COLOR_PALETTE: Record<number, string> = {
   0: "#7B7B7B",
@@ -18,30 +18,46 @@ const CHANNEL_COLOR_PALETTE: Record<number, string> = {
 
 type ChannelCustomizerProps = {
   channel: number;
-  iconId: number;
+  title?: string;
+  defaultName: string;
   channelName: string;
   colorId: number;
-  onIconChange: (iconId: number) => void;
-  onNameChange: (name: string) => void;
-  onColorChange: (colorId: number) => void;
+  allowZeroColorSelection?: boolean;
+  onSave: (patch: { channelName: string; colorId: number }) => void;
   onClose: () => void;
 };
 
 export function ChannelCustomizer({
   channel,
-  iconId,
+  title = "Editar Canal",
+  defaultName,
   channelName,
   colorId,
-  onIconChange,
-  onNameChange,
-  onColorChange,
+  allowZeroColorSelection = false,
+  onSave,
   onClose,
 }: ChannelCustomizerProps) {
-  const channelColor = CHANNEL_COLOR_PALETTE[colorId] ?? CHANNEL_COLOR_PALETTE[1];
-  const currentIcon =
-    DUONN_CHANNEL_ICONS.find((icon) => icon.id === iconId) ??
-    DUONN_CHANNEL_ICONS[0];
-  const displayName = channelName.trim() || "Sem nome";
+  const [draftName, setDraftName] = useState(channelName);
+  const [draftColorId, setDraftColorId] = useState(colorId);
+
+  useEffect(() => {
+    setDraftName(channelName.trim() === defaultName.trim() ? "" : channelName);
+    setDraftColorId(colorId);
+  }, [channelName, colorId, channel, defaultName]);
+
+  const channelColor =
+    CHANNEL_COLOR_PALETTE[draftColorId] ?? CHANNEL_COLOR_PALETTE[0] ?? "#7B7B7B";
+  const displayName = draftName.trim() || defaultName;
+
+  function handleClear() {
+    setDraftName("");
+    setDraftColorId(0);
+  }
+
+  function handleSave() {
+    onSave({ channelName: draftName, colorId: draftColorId });
+    onClose();
+  }
 
   return (
     <>
@@ -61,7 +77,7 @@ export function ChannelCustomizer({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`Customizar canal ${channel}`}
+        aria-label={title}
         onClick={(event) => event.stopPropagation()}
         style={{
           position: "fixed",
@@ -92,48 +108,15 @@ export function ChannelCustomizer({
             justifyContent: "space-between",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-            }}
-          >
-            <div
-              style={{
-                width: 40,
-                height: 40,
-                borderRadius: 8,
-                border: "1px solid rgba(255,255,255,0.08)",
-                background: "#1c2430",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <DuonnIcon
-                id={currentIcon.iconId}
-                size={24}
-                color={channelColor}
-              />
-            </div>
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 900, color: "#94a3b8" }}>
-                CHANNEL {channel}
-              </div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b" }}>
-                {displayName}
-              </div>
-            </div>
-          </div>
+          <div style={{ fontSize: 13, fontWeight: 900, color: "#d7e1ea" }}>{title}</div>
 
           <button
             type="button"
             onClick={onClose}
             style={{
               background: "transparent",
-              border: "1px solid rgba(255,255,255,0.08)",
-              borderRadius: 8,
+              border: "none",
+              outline: "none",
               color: "#94a3b8",
               fontSize: 20,
               cursor: "pointer",
@@ -154,7 +137,7 @@ export function ChannelCustomizer({
           style={{
             padding: "16px",
             display: "grid",
-            gap: 16,
+            gap: 14,
             overflowY: "auto",
             minHeight: 0,
           }}
@@ -165,26 +148,57 @@ export function ChannelCustomizer({
               gap: 12,
             }}
           >
-            <input
-              type="text"
-              value={channelName}
-              onChange={(e) => onNameChange(e.target.value)}
-              placeholder="Nome do canal"
-              maxLength={20}
-              autoFocus
+            <div
               style={{
-                width: "100%",
-                padding: "12px",
-                borderRadius: 8,
-                border: "1px solid rgba(255,255,255,0.1)",
-                background: "#1a2332",
-                color: "#e5eef5",
-                fontSize: 13,
-                fontWeight: 600,
-                outline: "none",
-                boxSizing: "border-box",
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) auto",
+                gap: 8,
+                alignItems: "center",
               }}
-            />
+            >
+              <input
+                type="text"
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                placeholder={defaultName}
+                maxLength={32}
+                autoFocus
+                style={{
+                  width: "100%",
+                  minWidth: 0,
+                  padding: "14px 12px",
+                  borderRadius: 8,
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  background: "#1a2332",
+                  color: "#e5eef5",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+
+              <button
+                type="button"
+                onClick={handleClear}
+                style={{
+                  height: 48,
+                  padding: "0 14px",
+                  borderRadius: 8,
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  background: "transparent",
+                  color: "#cbd5e1",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  fontSize: 11,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                CLEAR
+              </button>
+            </div>
 
             <div
               style={{
@@ -197,9 +211,11 @@ export function ChannelCustomizer({
                 background: "#121923",
               }}
             >
-              {Object.entries(CHANNEL_COLOR_PALETTE).map(([id, color]) => {
+              {Object.entries(CHANNEL_COLOR_PALETTE)
+                .filter(([id]) => allowZeroColorSelection || Number(id) !== 0)
+                .map(([id, color]) => {
                 const numericId = Number(id);
-                const isActive = numericId === colorId;
+                const isActive = numericId === draftColorId;
 
                 return (
                   <button
@@ -207,7 +223,7 @@ export function ChannelCustomizer({
                     type="button"
                     title={`Cor ${id}`}
                     aria-label={`Selecionar cor ${id}`}
-                    onClick={() => onColorChange(numericId)}
+                    onClick={() => setDraftColorId(numericId)}
                     style={{
                       width: "100%",
                       aspectRatio: "1",
@@ -242,66 +258,6 @@ export function ChannelCustomizer({
               })}
             </div>
           </div>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(4, 1fr)",
-              gap: 8,
-            }}
-          >
-            {DUONN_CHANNEL_ICONS.map((icon) => {
-              const isActive = icon.id === iconId;
-
-              return (
-                <button
-                  key={icon.id}
-                  type="button"
-                  title={icon.label}
-                  aria-label={icon.label}
-                  onClick={() => onIconChange(icon.id)}
-                  style={{
-                    width: "100%",
-                    aspectRatio: "1",
-                    padding: 0,
-                    borderRadius: 9,
-                    border: isActive
-                      ? `1px solid ${channelColor}`
-                      : "1px solid rgba(255,255,255,0.08)",
-                    background: isActive ? `${channelColor}18` : "#1a2332",
-                    boxShadow: isActive
-                      ? `0 0 0 1px ${channelColor}44 inset`
-                      : "inset 0 1px 0 rgba(255,255,255,0.03)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    cursor: "pointer",
-                  }}
-                >
-                  <DuonnIcon
-                    id={icon.iconId}
-                    size={21}
-                    color={isActive ? channelColor : "#94a3b8"}
-                    glow={isActive}
-                  />
-                </button>
-              );
-            })}
-          </div>
-
-          <div
-            style={{
-              padding: "12px",
-              borderRadius: 8,
-              background: "#0a0f18",
-              border: "1px solid rgba(255,255,255,0.06)",
-              fontSize: 12,
-              color: "#94a3b8",
-              lineHeight: 1.5,
-            }}
-          >
-            <strong>Dica:</strong> O nome digitado e a cor escolhida definem a identidade do canal. Os icones aqui servem apenas como apoio visual.
-          </div>
         </div>
 
         {/* Footer */}
@@ -321,6 +277,24 @@ export function ChannelCustomizer({
               padding: "8px 16px",
               borderRadius: 6,
               border: "1px solid rgba(255,255,255,0.1)",
+              background: "transparent",
+              color: "#9fb0c4",
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: "pointer",
+              transition: "all 150ms",
+            }}
+          >
+            Cancelar
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSave}
+            style={{
+              padding: "8px 16px",
+              borderRadius: 6,
+              border: "1px solid rgba(255,255,255,0.1)",
               background: "#161d27",
               color: "#cbd5e1",
               fontSize: 11,
@@ -332,7 +306,7 @@ export function ChannelCustomizer({
               e.currentTarget.style.background = "#1a2332";
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = "transparent";
+              e.currentTarget.style.background = "#161d27";
             }}
           >
             Salvar

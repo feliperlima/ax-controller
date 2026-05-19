@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { Knob } from "./Knob";
 import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
@@ -37,7 +37,10 @@ type ChannelStripProps = {
   linkButtonLabel?: string;
   onFooterClick?: () => void;
   onOpenDetail?: (channel: number) => void;
+  onOpenEditMenu?: (channel: number) => void;
 };
+
+const FOOTER_LONG_PRESS_MS = 450;
 
 function formatPan(value: number) {
   if (value === 100) return "C";
@@ -137,6 +140,7 @@ export function ChannelStrip({
   linkButtonLabel,
   onFooterClick,
   onOpenDetail,
+  onOpenEditMenu,
 }: ChannelStripProps) {
   const CHANNEL_COLOR_PALETTE: Record<number, string> = {
     0: "#7B7B7B",
@@ -166,9 +170,19 @@ export function ChannelStrip({
   const phaseInverted = !phasePositive;
   const canTogglePhase = typeof onTogglePhase === "function";
   const canOpenDetail = typeof onOpenDetail === "function";
+  const canOpenEditMenu = typeof onOpenEditMenu === "function";
   const canToggleLink = typeof onToggleLink === "function" && Boolean(linkButtonLabel);
   const canToggleInputSource = typeof onToggleInputSource === "function" && section === "inputs";
   const isDetailVariant = variant === "detail";
+  const footerLongPressTimerRef = useRef<number | null>(null);
+  const footerLongPressTriggeredRef = useRef(false);
+
+  function clearFooterLongPress() {
+    if (footerLongPressTimerRef.current !== null) {
+      window.clearTimeout(footerLongPressTimerRef.current);
+      footerLongPressTimerRef.current = null;
+    }
+  }
 
   return (
     <div
@@ -681,11 +695,35 @@ export function ChannelStrip({
           onClick={(e) => {
             e.stopPropagation();
             if (disabled) return;
+            if (footerLongPressTriggeredRef.current) {
+              footerLongPressTriggeredRef.current = false;
+              return;
+            }
             onFooterClick?.();
+          }}
+          onPointerDown={(e) => {
+            if (disabled || !canOpenEditMenu) return;
+            e.stopPropagation();
+            footerLongPressTriggeredRef.current = false;
+            clearFooterLongPress();
+            footerLongPressTimerRef.current = window.setTimeout(() => {
+              footerLongPressTriggeredRef.current = true;
+              onOpenEditMenu?.(channel);
+            }, FOOTER_LONG_PRESS_MS);
+          }}
+          onPointerUp={() => {
+            clearFooterLongPress();
+          }}
+          onPointerCancel={() => {
+            clearFooterLongPress();
+          }}
+          onPointerLeave={() => {
+            clearFooterLongPress();
           }}
           onDoubleClick={(e) => {
             if (disabled || !canOpenDetail) return;
             e.stopPropagation();
+            clearFooterLongPress();
             onOpenDetail(channel);
           }}
           style={{
@@ -710,7 +748,7 @@ export function ChannelStrip({
             opacity: disabled ? 0.58 : 1,
             filter: disabled ? "saturate(0.55) brightness(0.82)" : "none",
           }}
-          title={canOpenDetail ? "Double click to open channel detail" : undefined}
+          title={canOpenDetail || canOpenEditMenu ? "Double click to open detail. Long press to edit." : undefined}
         >
           <span
             style={{
