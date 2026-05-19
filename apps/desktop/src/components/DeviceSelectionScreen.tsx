@@ -6,6 +6,7 @@ type DeviceSelectionScreenProps = {
   discoveryLoading: boolean;
   discoveryError: string | null;
   connectBusy: boolean;
+  manualConnectBusy: boolean;
   connectionStatus: string;
   connectionError: string | null;
   manualIp: string;
@@ -15,11 +16,6 @@ type DeviceSelectionScreenProps = {
   onConnectManual: () => void;
   onConnectMixer: (mixer: DiscoveredMixer) => void;
 };
-
-function renderChannelsLabel(channels?: number) {
-  if (!channels) return "Canais";
-  return `${channels} canais`;
-}
 
 function DeviceCard({
   mixer,
@@ -33,24 +29,10 @@ function DeviceCard({
   return (
     <article className="device-card">
       <div className="device-card__header">
-        <div>
+        <div className="device-card__title-row">
           <div className="device-card__title">{mixer.name}</div>
-          <div className="device-card__subtitle">{mixer.ip}</div>
+          <span className="device-card__badge">Online</span>
         </div>
-      </div>
-
-      <div className="device-card__meta-grid device-card__meta-grid--compact">
-        <div className="device-meta-pill">
-          <span className="device-meta-pill__label">Modelo</span>
-          <span className="device-meta-pill__value">{mixer.model ?? "Axios"}</span>
-        </div>
-        <div className="device-meta-pill">
-          <span className="device-meta-pill__label">Canais</span>
-          <span className="device-meta-pill__value">{renderChannelsLabel(mixer.channels)}</span>
-        </div>
-      </div>
-
-      <div className="device-card__actions">
         <button
           type="button"
           className="startup-button startup-button--secondary"
@@ -59,6 +41,16 @@ function DeviceCard({
         >
           Conectar
         </button>
+      </div>
+
+      <div className="device-card__subtitle">
+        <span>IP: {mixer.ip}</span>
+        {mixer.channels ? (
+          <>
+            <span className="device-card__separator">|</span>
+            <span>{mixer.channels} canais</span>
+          </>
+        ) : null}
       </div>
     </article>
   );
@@ -69,134 +61,124 @@ export function DeviceSelectionScreen({
   discoveryLoading,
   discoveryError,
   connectBusy,
+  manualConnectBusy,
   connectionStatus,
   connectionError,
   manualIp,
-  version,
   onManualIpChange,
   onRefresh,
   onConnectManual,
   onConnectMixer,
 }: DeviceSelectionScreenProps) {
   const showEmptyState = !discoveryLoading && mixers.length === 0;
+  const showSearchingState = discoveryLoading && mixers.length > 0;
 
   return (
-    <section className="startup-shell">
-      <div className="device-selection-shell">
-        <header className="startup-card device-selection-header">
-          <div className="startup-brand-lockup startup-brand-lockup--compact">
-            <img className="startup-brand-lockup__logo startup-brand-lockup__logo--small" src={axControlBrand} alt="AX Control" />
-            <div className="startup-brand-lockup__text">
-              <div className="startup-kicker">DIGITAL MIXING CONTROL</div>
-              <h1 className="startup-title">Selecione uma mesa</h1>
-              <p className="startup-subtitle">Mesas Axios na rede local.</p>
-            </div>
+    <section className="startup-shell startup-shell--device-selection">
+      <header className="device-selection-fixed-header">
+        <div className="device-selection-shell device-selection-shell--reference">
+          <div className="device-selection-hero">
+            <img
+              className="device-selection-hero__logo"
+              src={axControlBrand}
+              alt="AX Control"
+            />
+            <button
+              type="button"
+              className="startup-button startup-button--ghost"
+              disabled={discoveryLoading || connectBusy}
+              onClick={onRefresh}
+            >
+              {discoveryLoading ? "Buscando..." : "Atualizar"}
+            </button>
           </div>
+        </div>
+      </header>
 
-          <button
-            type="button"
-            className="startup-button startup-button--ghost"
-            disabled={discoveryLoading || connectBusy}
-            onClick={onRefresh}
-          >
-            {discoveryLoading ? "Buscando..." : "Atualizar"}
-          </button>
-        </header>
-
-        <div className="device-selection-grid">
+      <div className="device-selection-content">
+        <div className="device-selection-shell device-selection-shell--reference">
+          <section className="device-selection-intro">
+            <h1 className="device-selection-header__title">Selecione uma mesa</h1>
+            <p className="device-selection-hero__subtitle">
+              Conecte-se a uma mesa Duonn Axios disponivel na rede local.
+            </p>
+          </section>
+          <div className="device-selection-grid device-selection-grid--reference">
           <section className="startup-card device-selection-panel">
             <div className="device-selection-panel__header">
-              <div>
-                <div className="startup-kicker">DESCobERTA</div>
-                <h2 className="device-selection-panel__title">Mixers encontrados</h2>
-              </div>
+              <h2 className="device-selection-panel__title">Mesas encontradas</h2>
               <div className="device-selection-status">
+                <span className="device-selection-status__dot" />
                 {discoveryLoading
                   ? "Buscando"
                   : mixers.length > 0
-                    ? `${mixers.length} encontrado(s)`
+                    ? `${mixers.length} encontrada(s)`
                     : "Sem resultado"}
               </div>
             </div>
 
             <div className="device-selection-list">
-              <div className="device-selection-block">
-                <div className="device-selection-block__label">Finder</div>
-                {mixers.map((mixer) => (
-                  <DeviceCard
-                    key={mixer.id}
-                    mixer={mixer}
-                    connectBusy={connectBusy}
-                    onConnect={onConnectMixer}
-                  />
-                ))}
+              {mixers.map((mixer) => (
+                <DeviceCard
+                  key={mixer.id}
+                  mixer={mixer}
+                  connectBusy={connectBusy}
+                  onConnect={onConnectMixer}
+                />
+              ))}
 
-                {showEmptyState ? (
-                  <article className="device-empty-state">
-                    <h3>Nenhuma mesa encontrada</h3>
-                    <p>Use o IP manual ou atualize a busca.</p>
-                  </article>
-                ) : null}
-              </div>
+              {showEmptyState ? (
+                <article className="device-empty-state">
+                  <h3>Nenhuma mesa encontrada</h3>
+                </article>
+              ) : null}
+
+              {showSearchingState ? (
+                <article className="device-searching-state">
+                  <h3>Buscando outras mesas na rede...</h3>
+                  <p>Isso pode levar alguns segundos.</p>
+                </article>
+              ) : null}
             </div>
 
             {discoveryError ? <div className="device-inline-message device-inline-message--warning">{discoveryError}</div> : null}
           </section>
 
-          <aside className="device-selection-side">
-            <section className="startup-card device-selection-panel">
-              <div className="device-selection-panel__header">
-                <div>
-                  <div className="startup-kicker">MANUAL</div>
-                  <h2 className="device-selection-panel__title">Conectar por IP</h2>
-                </div>
-              </div>
+          <section className="startup-card device-selection-panel">
+            <h2 className="device-selection-panel__title">Conexao Manual</h2>
+            <div className="device-manual-row">
+              <span className="device-manual-row__label">IP</span>
+              <input
+                id="manual-mixer-ip"
+                className="device-input"
+                value={manualIp}
+                onChange={(event) => onManualIpChange(event.target.value)}
+                placeholder="000.000.000.000"
+                spellCheck={false}
+                autoCapitalize="none"
+                autoCorrect="off"
+                inputMode="numeric"
+                disabled={manualConnectBusy}
+              />
+            </div>
+            <button
+              type="button"
+              className="startup-button startup-button--secondary device-manual-connect"
+              disabled={manualConnectBusy || manualIp.trim().length === 0}
+              onClick={onConnectManual}
+            >
+              {manualConnectBusy ? "Conectando..." : "Conectar"}
+            </button>
 
-              <label className="device-input-label" htmlFor="manual-mixer-ip">
-                IP da mesa
-              </label>
-              <div className="device-input-row">
-                <input
-                  id="manual-mixer-ip"
-                  className="device-input"
-                  value={manualIp}
-                  onChange={(event) => onManualIpChange(event.target.value)}
-                  placeholder="192.168.1.20"
-                  spellCheck={false}
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  inputMode="numeric"
-                  disabled={connectBusy}
-                />
-                <button
-                  type="button"
-                  className="startup-button startup-button--primary"
-                  disabled={connectBusy || manualIp.trim().length === 0}
-                  onClick={onConnectManual}
-                >
-                  {connectBusy ? "Conectando..." : "Conectar"}
-                </button>
-              </div>
-
-              {connectionStatus ? (
-                <div className="device-inline-message">{connectionStatus}</div>
-              ) : null}
-              {connectionError ? (
-                <div className="device-inline-message device-inline-message--danger">{connectionError}</div>
-              ) : null}
-            </section>
-
-            <section className="startup-card device-selection-panel device-help-card">
-              <div className="startup-kicker">SUPORTE</div>
-              <h2 className="device-selection-panel__title">Nao encontrou sua mesa?</h2>
-              <p className="device-help-card__text">
-                Confirme a rede e tente conectar pelo IP da mesa.
-              </p>
-            </section>
-          </aside>
+            {connectionStatus ? (
+              <div className="device-inline-message">{connectionStatus}</div>
+            ) : null}
+            {connectionError ? (
+              <div className="device-inline-message device-inline-message--danger">{connectionError}</div>
+            ) : null}
+          </section>
+          </div>
         </div>
-
-        {version ? <div className="startup-footer">Versao {version}</div> : null}
       </div>
     </section>
   );

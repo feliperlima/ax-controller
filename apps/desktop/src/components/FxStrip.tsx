@@ -9,6 +9,7 @@ type FxStripProps = {
   variant?: "default" | "detail";
   colorId?: number;
   channelName?: string;
+  eqState?: EqState;
   muted: boolean;
   soloOn: boolean;
   faderDb: number;
@@ -72,12 +73,12 @@ const FLAT_EQ: EqState = {
   bands: [],
 };
 
-function buildFlatPreview(width: number, height: number, pointCount = 40) {
+function buildEqPreview(eq: EqState, width: number, height: number, pointCount = 40) {
   const zeroY = height / 2;
   const points = Array.from({ length: pointCount }, (_, i) => {
     const ratio = pointCount <= 1 ? 0 : i / (pointCount - 1);
     const x = ratio * width;
-    const gain = eqMagnitudeDb(ratioToDisplayFreq(ratio), FLAT_EQ);
+    const gain = eqMagnitudeDb(ratioToDisplayFreq(ratio), eq);
     const y = zeroY - (gain / 12) * zeroY;
     return `${x.toFixed(2)},${y.toFixed(2)}`;
   }).join(" ");
@@ -89,6 +90,7 @@ export function FxStrip({
   variant = "default",
   colorId = 7,
   channelName,
+  eqState,
   muted,
   soloOn,
   faderDb,
@@ -109,11 +111,11 @@ export function FxStrip({
     ? channelName.trim()
     : `FX ${fxNumber}`;
   const canOpenDetail = typeof onOpenDetail === "function";
+  const eqPreviewState = eqState ?? FLAT_EQ;
 
-  // FX strips don't have EQ state — always show a flat preview line
   const eqPreview = useMemo(
-    () => buildFlatPreview(EQ_PREVIEW_WIDTH, EQ_PREVIEW_HEIGHT, 40),
-    [],
+    () => buildEqPreview(eqPreviewState, EQ_PREVIEW_WIDTH, EQ_PREVIEW_HEIGHT, 40),
+    [eqPreviewState],
   );
 
   return (
@@ -163,14 +165,18 @@ export function FxStrip({
           <svg
             viewBox={`0 0 ${EQ_PREVIEW_WIDTH} ${EQ_PREVIEW_HEIGHT}`}
             preserveAspectRatio="xMidYMid meet"
-            onClick={(e) => e.stopPropagation()}
+            onClick={(event) => {
+              if (!canOpenDetail) return;
+              event.stopPropagation();
+              onOpenDetail?.(fxNumber);
+            }}
             style={{
               width: "100%",
               height: `${EQ_PREVIEW_HEIGHT}px`,
               display: "block",
               backgroundColor: "rgba(0,0,0,0.8)",
               borderRadius: "4px",
-              cursor: "pointer",
+              cursor: canOpenDetail ? "pointer" : "default",
             }}
           >
             <line
@@ -180,7 +186,12 @@ export function FxStrip({
               y2={eqPreview.zeroY}
               stroke={stripColor}
               strokeWidth={0.9}
-              opacity={disabled ? 0.2 : 0.48}
+              opacity={0.22}
+            />
+            <polygon
+              points={`0,${eqPreview.zeroY.toFixed(2)} ${eqPreview.points} ${EQ_PREVIEW_WIDTH},${eqPreview.zeroY.toFixed(2)}`}
+              fill={stripColor}
+              opacity={eqPreviewState.enabled ? 0.22 : 0.1}
             />
             <polyline
               points={eqPreview.points}
@@ -189,16 +200,16 @@ export function FxStrip({
               strokeWidth={1.4}
               strokeLinejoin="round"
               strokeLinecap="round"
-              opacity={disabled ? 0.32 : 0.82}
+              opacity={eqPreviewState.enabled ? 0.95 : 0.62}
             />
-            {disabled && (
+            {!eqPreviewState.enabled && (
               <>
                 <rect
                   x={0}
                   y={0}
                   width={EQ_PREVIEW_WIDTH}
                   height={EQ_PREVIEW_HEIGHT}
-                  fill="rgba(0,0,0,0.5)"
+                  fill="rgba(0,0,0,0.48)"
                 />
                 <text
                   x={EQ_PREVIEW_WIDTH / 2}

@@ -1,5 +1,5 @@
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::process::Command;
 use std::time::Duration;
 
@@ -13,6 +13,24 @@ struct DiscoveredMixer {
     channels: Option<u16>,
     status: String,
     source: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LicenseValidatePayload {
+    license_key: String,
+    series: String,
+    device_id: String,
+    device_name: String,
+    platform: String,
+    app_version: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LicenseValidateResponse {
+    status_code: u16,
+    body: serde_json::Value,
 }
 
 fn strip_html(value: &str) -> String {
@@ -194,11 +212,47 @@ async fn discover_mixers() -> Result<Vec<DiscoveredMixer>, String> {
     Ok(parse_finder_html(&html))
 }
 
+#[tauri::command]
+async fn validate_license(payload: LicenseValidatePayload) -> Result<LicenseValidateResponse, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| format!("client build error: {error}"))?;
+
+    let response = client
+        .post("https://axcontrol.com.br/api/license/validate.php")
+        .json(&serde_json::json!({
+            "license_key": payload.license_key,
+            "series": payload.series,
+            "device_id": payload.device_id,
+            "device_name": payload.device_name,
+            "platform": payload.platform,
+            "app_version": payload.app_version,
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("request error: {error}"))?;
+
+    let status_code = response.status().as_u16();
+    let raw_body = response
+        .text()
+        .await
+        .map_err(|error| format!("read body error: {error}"))?;
+
+    let body = serde_json::from_str::<serde_json::Value>(&raw_body)
+        .unwrap_or_else(|_| serde_json::json!({
+            "status": "error",
+            "message": raw_body,
+        }));
+
+    Ok(LicenseValidateResponse { status_code, body })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![discover_mixers])
+        .invoke_handler(tauri::generate_handler![discover_mixers, validate_license])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
