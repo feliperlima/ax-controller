@@ -7465,23 +7465,11 @@ function App() {
         discoveryLoading={isDiscoveringMixers}
         discoveryError={discoveryError}
         connectBusy={connectingSource === "discovered"}
-        manualConnectBusy={connectingSource === "manual"}
-        connectionStatus={status === "Desconectado" ? "" : status}
         connectionError={connectionError}
-        manualIp={ip}
         version={APP_VERSION}
-        onManualIpChange={(value) => {
-          setIp(value);
-          if (connectionError) {
-            setConnectionError(null);
-          }
-        }}
         onRefresh={() => {
           setConnectionError(null);
           void refreshMixerDiscovery();
-        }}
-        onConnectManual={() => {
-          void connectToMixer(ip, "manual");
         }}
         onConnectMixer={handlePreconnectMixerSelection}
       />

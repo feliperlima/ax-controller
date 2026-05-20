@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Knob } from "./Knob";
 import { MeterBar, MeterScale } from "./Meter";
 import { VerticalFader } from "./VerticalFader";
+import { stripColorForScope } from "./stripColor";
 import { useCompressorMeters } from "../hooks/useCompressorMeters";
 import { useGateMeters } from "../hooks/useGateMeters";
 
@@ -234,24 +235,10 @@ function formatSendDb(value: number) {
 }
 
 function getSendStripFooterColor(send: SendStripView) {
-  const rawColorId = Math.round(send.colorId);
-  const defaultColorByType: Record<SendStripView["type"], number> = {
-    fx: 7,
-    aux: 8,
-    channel: 0,
-    master: 0,
-  };
-  const effectiveColorId = rawColorId === 0 ? defaultColorByType[send.type] : rawColorId;
-
-  if (effectiveColorId === 0) return "#7B7B7B";
-  if (effectiveColorId >= 1 && effectiveColorId <= 12) {
-    return `var(--channel-${String(effectiveColorId).padStart(2, "0")}, #c96626)`;
-  }
-
-  if (send.type === "fx") return "var(--module-fx-primary)";
-  if (send.type === "aux") return "var(--brand-primary)";
-  if (send.type === "master") return "var(--module-master-primary)";
-  return "#7B7B7B";
+  if (send.type === "fx") return stripColorForScope(send.colorId, "fx");
+  if (send.type === "aux") return stripColorForScope(send.colorId, "aux");
+  if (send.type === "master") return stripColorForScope(send.colorId, "master");
+  return stripColorForScope(send.colorId, "channel");
 }
 
 function SendsEditor({

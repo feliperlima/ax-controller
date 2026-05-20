@@ -11,9 +11,11 @@ import {
   FX_IDS,
   dcaAccentColorFromId,
   isMemberSelectable,
+  
   type AssignableMemberId,
   type DcaGroupState,
 } from "../lib/groupControls";
+import { stripColorForScope } from "./stripColor";
 
 type MatrixRow = {
   id: AssignableMemberId;
@@ -41,10 +43,11 @@ type DcaGroupsViewProps = {
   dcaColorIds?: number[];
 };
 
-function channelBadgeColorFromId(colorId: number | undefined): string {
-  const normalized = Math.max(0, Math.min(12, Math.round(colorId ?? 0)));
-  if (normalized === 0) return "#7b7b7b";
-  return `var(--channel-${String(normalized).padStart(2, "0")}, #7b7b7b)`;
+function rowBadgeColorFromId(row: MatrixRow): string {
+  if (row.id.startsWith("AUX_")) return stripColorForScope(row.colorId, "aux");
+  if (row.id.startsWith("FX_")) return stripColorForScope(row.colorId, "fx");
+  if (row.id.startsWith("MASTER_")) return stripColorForScope(row.colorId, "master");
+  return stripColorForScope(row.colorId, "channel");
 }
 
 export function DcaGroupsView({
@@ -162,6 +165,7 @@ export function DcaGroupsView({
   function renderMatrixRow(row: MatrixRow, accent: string) {
     const selected = selectedSet.has(row.id as AssignableMemberId);
     const isDisabled = !isConnected || Boolean(row.disabled);
+    const channelAccent = rowBadgeColorFromId(row);
 
     return (
       <button
@@ -180,7 +184,7 @@ export function DcaGroupsView({
         </span>
         <span
           className="groups-structured-row__tag"
-          style={{ "--channel-accent": channelBadgeColorFromId(row.colorId) } as CSSProperties}
+          style={{ "--channel-accent": channelAccent } as CSSProperties}
         >
           {row.tag}
         </span>

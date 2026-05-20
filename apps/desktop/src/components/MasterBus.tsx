@@ -1,6 +1,6 @@
 import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
-import { stripColorFromId } from "./stripColor";
+import { stripColorForScope } from "./stripColor";
 
 type MasterBusProps = {
   name?: string;
@@ -83,8 +83,8 @@ export function MasterBus({
   const isLinked = linked;
   const canOpenDetail = typeof onOpenDetail === "function";
   const faderDbLabel = (db: number) => (db <= -120 ? "-∞" : `${db} dB`);
-  const leftColor = stripColorFromId(leftColorId, 0, "var(--module-master-primary)");
-  const rightColor = stripColorFromId(rightColorId, 0, "var(--module-master-primary)");
+  const leftColor = stripColorForScope(leftColorId, "master");
+  const rightColor = stripColorForScope(rightColorId, "master");
   const footerBackground =
     leftColor === rightColor
       ? leftColor

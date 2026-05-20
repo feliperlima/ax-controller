@@ -3,6 +3,7 @@ import { Knob } from "./Knob";
 import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
 import { eqMagnitudeDb, type EqState } from "./ChannelProcessors";
+import { stripColorForScope, type StripColorScope } from "./stripColor";
 
 type ChannelStripProps = {
   channel?: number;
@@ -142,24 +143,8 @@ export function ChannelStrip({
   onOpenDetail,
   onOpenEditMenu,
 }: ChannelStripProps) {
-  const CHANNEL_COLOR_PALETTE: Record<number, string> = {
-    0: "#7B7B7B",
-    1: "var(--channel-01)",
-    2: "var(--channel-02)",
-    3: "var(--channel-03)",
-    4: "var(--channel-04)",
-    5: "var(--channel-05)",
-    6: "var(--channel-06)",
-    7: "var(--channel-07)",
-    8: "var(--channel-08)",
-    9: "var(--channel-09)",
-    10: "var(--channel-10)",
-    11: "var(--channel-11)",
-    12: "var(--channel-12)",
-  };
-
-  const effectiveColorId = disabled ? 0 : colorId;
-  const channelColor = CHANNEL_COLOR_PALETTE[effectiveColorId] ?? CHANNEL_COLOR_PALETTE[0];
+  const colorScope: StripColorScope = section === "aux" ? "aux" : section === "fx" ? "fx" : "channel";
+  const channelColor = disabled ? stripColorForScope(0, "channel") : stripColorForScope(colorId, colorScope);
   const channelPrefix = section === "aux" ? "AUX" : section === "fx" ? "FX" : "CH";
   const footerTitle = `${channelPrefix} ${channel}`;
   const footerName = channelName?.trim().length ? channelName.trim() : footerTitle;

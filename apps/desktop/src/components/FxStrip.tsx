@@ -2,7 +2,7 @@ import { useMemo, useRef } from "react";
 import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
 import { eqMagnitudeDb, type EqState } from "./ChannelProcessors";
-import { stripColorFromId } from "./stripColor";
+import { stripColorForScope } from "./stripColor";
 
 type FxStripProps = {
   fxNumber: 1 | 2;
@@ -109,7 +109,7 @@ export function FxStrip({
   onOpenEditMenu,
 }: FxStripProps) {
   const isDetailVariant = variant === "detail";
-  const stripColor = stripColorFromId(colorId, 7, "var(--module-fx-primary)");
+  const stripColor = stripColorForScope(colorId, "fx");
   const label = `FX${fxNumber}`;
   const displayName = channelName?.trim().length
     ? channelName.trim()

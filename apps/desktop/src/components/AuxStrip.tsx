@@ -2,7 +2,7 @@ import { useMemo, useRef } from "react";
 import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
 import { eqMagnitudeDb, type EqState } from "./ChannelProcessors";
-import { stripColorFromId } from "./stripColor";
+import { stripColorForScope } from "./stripColor";
 
 type AuxStripProps = {
   auxNumber: number;
@@ -112,7 +112,7 @@ export function AuxStrip({
   onOpenEditMenu,
 }: AuxStripProps) {
   const isDetailVariant = variant === "detail";
-  const stripColor = stripColorFromId(colorId, 8, "var(--brand-primary)");
+  const stripColor = stripColorForScope(colorId, "aux");
   const label = `AUX${auxNumber}`;
   const displayName = channelName?.trim().length
     ? channelName.trim()
