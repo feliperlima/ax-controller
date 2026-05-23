@@ -13,19 +13,53 @@ export function useMixerDiscovery(enabled: boolean): UseMixerDiscoveryResult {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const autoLoadedRef = useRef(false);
+  const refreshInFlightRef = useRef(false);
 
-  const refresh = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
+  const refresh = useCallback(async (silent = false) => {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    if (!silent) {
+      setIsLoading(true);
+      setError(null);
+    }
 
     try {
       const discovered = await discoverMixers();
-      setMixers(discovered);
+      setMixers((current) => {
+        const merged = new Map<string, DiscoveredMixer>();
+        current.forEach((mixer) => merged.set(mixer.ip, mixer));
+        discovered.forEach((mixer) => merged.set(mixer.ip, mixer));
+        const next = Array.from(merged.values());
+
+        if (next.length !== current.length) {
+          return next;
+        }
+
+        const same = next.every((mixer, index) => {
+          const prev = current[index];
+          return (
+            prev !== undefined &&
+            prev.ip === mixer.ip &&
+            prev.id === mixer.id &&
+            prev.name === mixer.name &&
+            prev.model === mixer.model &&
+            prev.channels === mixer.channels &&
+            prev.status === mixer.status &&
+            prev.macAddress === mixer.macAddress
+          );
+        });
+
+        return same ? current : next;
+      });
     } catch {
-      setMixers([]);
-      setError("Nao foi possivel buscar mixers automaticamente.");
+      if (!silent) {
+        setError("Nao foi possivel buscar mixers automaticamente.");
+      }
     } finally {
-      setIsLoading(false);
+      refreshInFlightRef.current = false;
+      if (!silent) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
@@ -33,8 +67,20 @@ export function useMixerDiscovery(enabled: boolean): UseMixerDiscoveryResult {
     if (!enabled || autoLoadedRef.current) return;
 
     autoLoadedRef.current = true;
-    void refresh();
+    void refresh(false);
   }, [enabled, refresh]);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    const timer = window.setInterval(() => {
+      void refresh(true);
+    }, mixers.length > 0 ? 8000 : 2000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [enabled, mixers.length, refresh]);
 
   return {
     mixers,

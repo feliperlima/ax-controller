@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Axios16Client,
+  type LocalParamWrite,
+  type AxiosProtocolProfile,
   type NameTarget,
   valueToCompGain,
   valueToCompRatio,
@@ -45,14 +47,17 @@ import { SplashScreen } from "./components/SplashScreen";
 import { DeviceSelectionScreen } from "./components/DeviceSelectionScreen";
 import axControlBrand from "./assets/AX-control-Brand-vert.svg";
 import { useMixerDiscovery } from "./hooks/useMixerDiscovery";
-import { type DiscoveredMixer } from "./services/mixerDiscovery";
+import {
+  type DiscoveredMixer,
+  rememberConnectedMixerIp,
+} from "./services/mixerDiscovery";
 import { getMixerCompatibility } from "./lib/mixerCompatibility";
 import {
   decodeGroupMembers,
   type GroupMember,
+  setBitmaskProtocolProfile,
 } from "./protocol/duonn/bitmask";
 import {
-  buildAllMutedMuteGroupMessages,
   buildClearDcaMembersMessages,
   buildClearMuteGroupMembersMessages,
   buildSetDcaEnabledMessages,
@@ -68,7 +73,7 @@ import {
   type DcaGroupId,
   type DuonnParamWriteMessage,
   type MuteGroupId,
-  MUTE_GROUPS_CONFIG,
+  setGroupProtocolProfile,
 } from "./protocol/duonn/groups";
 import {
   applyMuteToMember,
@@ -76,11 +81,10 @@ import {
   createInitialDcaState,
   createInitialMuteState,
   DCA_DEFAULT_COLOR_IDS,
-  DCA_IDS,
   dcaPositionToValue,
   dcaValueToPosition,
   dcaAccentColorFromId,
-  MUTE_IDS,
+  getDcaIdsForChannelCount,
   type AssignableMemberId,
   type DcaGroupState,
   type MuteGroupState,
@@ -128,6 +132,8 @@ type MasterState = {
   rightMuted: boolean;
   leftColorId: number;
   rightColorId: number;
+  leftSoloOn: boolean;
+  rightSoloOn: boolean;
   soloOn: boolean;
   leftFaderDb: number;
   rightFaderDb: number;
@@ -165,15 +171,176 @@ type MonitorSoloMeterState = {
   rightLevel: number;
 };
 
+type FxPresetState = {
+  presetId: FxPresetId;
+  controlAValue: number;
+  controlBValue: number;
+};
+
 const DEFAULT_CHANNEL_COUNT = 16;
 const AX24_CHANNEL_COUNT = 24;
+const AX32_CHANNEL_COUNT = 32;
+const AX16_24_AUX_COUNT = 8;
+const AX32_AUX_COUNT = 14;
+const AX16_24_FX_COUNT = 2;
+const AX32_FX_COUNT = 4;
+let ACTIVE_CHANNEL_PROFILE: AxiosProtocolProfile = "ax16_24";
+
+function isAx32ProtocolProfile(profile: AxiosProtocolProfile) {
+  return profile === "ax32" || profile === "ax32_experimental";
+}
+
+function normalizeProtocolProfile(profile: AxiosProtocolProfile): AxiosProtocolProfile {
+  return profile === "ax32_experimental" ? "ax32" : profile;
+}
+
+const AX32_CHANNEL_STRIDE = 72;
+const CHANNEL_LINK_MIRROR_BASES: readonly number[] = [
+  65, 66, 67, 69, 70, 71,
+  72, 73, 74, 76,
+  77, 78, 79, 80, 81, 82, 83, 84,
+];
+const AX32_CHANNEL_BASE_MAP: Record<number, number> = {
+  64: 63,
+  65: 64,
+  66: 65,
+  67: 66,
+  69: 68,
+  70: 69,
+  71: 70,
+  72: 71,
+  73: 72,
+  74: 73,
+  75: 74,
+  76: 75,
+  77: 76,
+  78: 77,
+  79: 78,
+  80: 79,
+  81: 80,
+  82: 81,
+  83: 82,
+  84: 83,
+  85: 92,
+  86: 93,
+  87: 94,
+  88: 95,
+  89: 96,
+  90: 97,
+  93: 102,
+  94: 103,
+  95: 104,
+  96: 105,
+  97: 106,
+  99: 108,
+  100: 109,
+  102: 111,
+  103: 112,
+  104: 113,
+  105: 114,
+  107: 116,
+  108: 117,
+  109: 118,
+  111: 120,
+  112: 121,
+  113: 122,
+  115: 124,
+  116: 125,
+  117: 126,
+  119: 128,
+  120: 129,
+  121: 130,
+};
 
 function normalizeSupportedChannelCount(channels?: number) {
+  if (channels && channels >= AX32_CHANNEL_COUNT) {
+    return AX32_CHANNEL_COUNT;
+  }
+
   if (channels && channels >= AX24_CHANNEL_COUNT) {
     return AX24_CHANNEL_COUNT;
   }
 
   return DEFAULT_CHANNEL_COUNT;
+}
+
+function inferChannelCountFromIdentity(identity: string) {
+  const normalized = identity.toUpperCase();
+  const match = normalized.match(/AX(?:IOS)?\s*(16|24|32)\b/);
+
+  if (!match) return undefined;
+
+  const parsed = Number(match[1]);
+  if (!Number.isFinite(parsed)) return undefined;
+
+  return parsed;
+}
+
+function resolveMixerChannelCount(mixer?: DiscoveredMixer) {
+  if (!mixer) return undefined;
+
+  if (typeof mixer.channels === "number" && Number.isFinite(mixer.channels)) {
+    return normalizeSupportedChannelCount(mixer.channels);
+  }
+
+  const inferred = inferChannelCountFromIdentity(`${mixer.model ?? ""} ${mixer.name ?? ""}`);
+
+  return inferred === undefined ? undefined : normalizeSupportedChannelCount(inferred);
+}
+
+function resolveConnectionTargetProfile(
+  targetIp: string,
+  mixers: DiscoveredMixer[],
+  currentChannelCount: number,
+  forcedProfile?: AxiosProtocolProfile,
+  forcedChannelCount?: number
+) {
+  const discoveredMixer = mixers.find((mixer) => mixer.ip.trim() === targetIp.trim());
+  const discoveredChannelCount = resolveMixerChannelCount(discoveredMixer);
+  const normalizedForcedChannelCount =
+    forcedChannelCount === undefined
+      ? undefined
+      : normalizeSupportedChannelCount(forcedChannelCount);
+
+  const resolvedChannelCount =
+    normalizedForcedChannelCount ??
+    discoveredChannelCount ??
+    normalizeSupportedChannelCount(currentChannelCount);
+
+  const resolvedProfile = forcedProfile ?? channelCountToProtocolProfile(resolvedChannelCount);
+  const targetChannelCount =
+    isAx32ProtocolProfile(resolvedProfile)
+      ? AX32_CHANNEL_COUNT
+      : resolvedChannelCount;
+
+  return {
+    profile: normalizeProtocolProfile(resolvedProfile),
+    channelCount: targetChannelCount,
+  };
+}
+
+function channelCountToProtocolProfile(channels: number): AxiosProtocolProfile {
+  return channels >= AX32_CHANNEL_COUNT ? "ax32" : "ax16_24";
+}
+
+function isAx32ProfileActive() {
+  return isAx32ProtocolProfile(ACTIVE_CHANNEL_PROFILE);
+}
+
+function getAuxBusCount() {
+  return isAx32ProfileActive() ? AX32_AUX_COUNT : AX16_24_AUX_COUNT;
+}
+
+function getFxBusCount() {
+  return isAx32ProfileActive() ? AX32_FX_COUNT : AX16_24_FX_COUNT;
+}
+
+function getDcaIdsForActiveProfile(): DcaGroupId[] {
+  return isAx32ProtocolProfile(ACTIVE_CHANNEL_PROFILE) ? [1, 2, 3, 4, 5, 6, 7, 8] : [1, 2, 3, 4];
+}
+
+function getMuteIdsForActiveProfile(): MuteGroupId[] {
+  return isAx32ProtocolProfile(ACTIVE_CHANNEL_PROFILE) ? [1, 2, 3, 4, 5, 6] : [1, 2, 3, 4];
 }
 
 function faderPositionToDb(position: number) {
@@ -263,6 +430,8 @@ function createDefaultMasterState(): MasterState {
     rightMuted: false,
     leftColorId: 0,
     rightColorId: 0,
+    leftSoloOn: false,
+    rightSoloOn: false,
     soloOn: false,
     leftFaderDb: 0,
     rightFaderDb: 0,
@@ -306,10 +475,23 @@ function createDefaultMonitorSoloMeterState(): MonitorSoloMeterState {
 }
 
 function channelParam(channel: number, base: number) {
+  if (isAx32ProfileActive()) {
+    const translatedBase = AX32_CHANNEL_BASE_MAP[base] ?? base;
+    return translatedBase + (channel - 1) * AX32_CHANNEL_STRIDE;
+  }
+
   return base + (channel - 1) * 62;
 }
 
+function inputSourceParam(channel: number) {
+  return isAx32ProfileActive() ? 2660 + channel : 2846 + channel;
+}
+
 function channelColorParam(channel: number) {
+  if (isAx32ProfileActive()) {
+    return 5131 + channel - 1;
+  }
+
   return 3110 + channel - 1;
 }
 
@@ -323,7 +505,7 @@ function channelColorBadgeBackground(colorId: number) {
   return `var(--channel-${String(normalized).padStart(2, "0")}, #c96626)`;
 }
 
-const MASTER_PARAMS = {
+const MASTER_PARAMS_AX16_24 = {
   leftFader: 2548,
   leftMute: 2550,
   rightFader: 2657,
@@ -332,22 +514,203 @@ const MASTER_PARAMS = {
   rightColor: 3147,
 };
 
-const FX_COLOR_PARAMS = {
+const MASTER_PARAMS_AX32 = {
+  leftFader: 4634,
+  leftMute: 4636,
+  rightFader: 4743,
+  rightMute: 4745,
+  leftColor: 5185,
+  rightColor: 5186,
+};
+
+function getMasterParams() {
+  return isAx32ProfileActive() ? MASTER_PARAMS_AX32 : MASTER_PARAMS_AX16_24;
+}
+
+const MASTER_PROCESSOR_PARAMS_AX16_24 = {
+  compEnabled: 2552,
+  compRatio: 2553,
+  compAttack: 2554,
+  compRelease: 2555,
+  compThreshold: 2556,
+  compGain: 2557,
+  eqEnabled: 2561,
+  hpfTypeSlope: 2563,
+  hpfFreq: 2564,
+  lpfTypeSlope: 2565,
+  lpfFreq: 2566,
+  eqBandBase: 2568,
+};
+
+const MASTER_PROCESSOR_PARAMS_AX32_LEFT = {
+  compEnabled: 4638,
+  compRatio: 4639,
+  compAttack: 4640,
+  compRelease: 4641,
+  compThreshold: 4642,
+  compGain: 4643,
+  eqEnabled: 4649,
+  hpfTypeSlope: 4651,
+  hpfFreq: 4652,
+  lpfTypeSlope: 4653,
+  lpfFreq: 4654,
+  eqBandBase: 4656,
+};
+
+const MASTER_PROCESSOR_AX32_SIDE_STRIDE = 109;
+
+function masterProcessorParams(side: "left" | "right" = "left") {
+  if (!isAx32ProfileActive()) {
+    return MASTER_PROCESSOR_PARAMS_AX16_24;
+  }
+
+  if (side === "right") {
+    const offset = MASTER_PROCESSOR_AX32_SIDE_STRIDE;
+    return {
+      compEnabled: MASTER_PROCESSOR_PARAMS_AX32_LEFT.compEnabled + offset,
+      compRatio: MASTER_PROCESSOR_PARAMS_AX32_LEFT.compRatio + offset,
+      compAttack: MASTER_PROCESSOR_PARAMS_AX32_LEFT.compAttack + offset,
+      compRelease: MASTER_PROCESSOR_PARAMS_AX32_LEFT.compRelease + offset,
+      compThreshold: MASTER_PROCESSOR_PARAMS_AX32_LEFT.compThreshold + offset,
+      compGain: MASTER_PROCESSOR_PARAMS_AX32_LEFT.compGain + offset,
+      eqEnabled: MASTER_PROCESSOR_PARAMS_AX32_LEFT.eqEnabled + offset,
+      hpfTypeSlope: MASTER_PROCESSOR_PARAMS_AX32_LEFT.hpfTypeSlope + offset,
+      hpfFreq: MASTER_PROCESSOR_PARAMS_AX32_LEFT.hpfFreq + offset,
+      lpfTypeSlope: MASTER_PROCESSOR_PARAMS_AX32_LEFT.lpfTypeSlope + offset,
+      lpfFreq: MASTER_PROCESSOR_PARAMS_AX32_LEFT.lpfFreq + offset,
+      eqBandBase: MASTER_PROCESSOR_PARAMS_AX32_LEFT.eqBandBase + offset,
+    };
+  }
+
+  return MASTER_PROCESSOR_PARAMS_AX32_LEFT;
+}
+
+const FX_COLOR_PARAMS_AX16_24: Record<number, number> = {
   1: 3136,
   2: 3137,
-} as const;
+};
 
-const AUX_COLOR_BASE = 3138;
+const FX_COLOR_BASE_AX32 = 5165;
+const AUX_COLOR_BASE_AX16_24 = 3138;
+const AUX_COLOR_BASE_AX32 = 5169;
+
+function fxColorParam(fx: number) {
+  if (isAx32ProfileActive()) {
+    return FX_COLOR_BASE_AX32 + fx - 1;
+  }
+
+  return FX_COLOR_PARAMS_AX16_24[fx];
+}
 
 function auxColorParam(aux: number) {
-  return AUX_COLOR_BASE + aux - 1;
+  const base = isAx32ProfileActive() ? AUX_COLOR_BASE_AX32 : AUX_COLOR_BASE_AX16_24;
+  return base + aux - 1;
+}
+
+function getFxStateParams(fxNumber: number): {
+  fader: number;
+  mute: number;
+} {
+  const fx = Math.round(fxNumber);
+  const maxFx = getFxBusCount();
+
+  if (fx < 1 || fx > maxFx) {
+    throw new Error(`FX invalido. Use valores de 1 a ${maxFx}.`);
+  }
+
+  if (isAx32ProfileActive()) {
+    const base = 4873 + (fx - 1) * 22;
+    return {
+      fader: base,
+      mute: base + 1,
+    };
+  }
+
+  const table: Record<number, { fader: number; mute: number }> = {
+    1: { fader: 2899, mute: 2900 },
+    2: { fader: 2944, mute: 2945 },
+  };
+
+  return table[fx];
+}
+
+type FxProcessorParams = {
+  eqEnabled: number;
+  hpfTypeSlope: number;
+  hpfFreq: number;
+  lpfTypeSlope: number;
+  lpfFreq: number;
+  eqBand1Freq: number;
+  eqBand1Gain: number;
+  eqBand1Q: number;
+  eqBand2Freq: number;
+  eqBand2Gain: number;
+  eqBand2Q: number;
+  eqBand3Freq: number;
+  eqBand3Gain: number;
+  eqBand3Q: number;
+  eqBand4Freq: number;
+  eqBand4Gain: number;
+  eqBand4Q: number;
+};
+
+function getFxProcessorParams(fxNumber: number): FxProcessorParams | undefined {
+  if (!isAx32ProfileActive()) {
+    return undefined;
+  }
+
+  const fx = Math.round(fxNumber);
+  if (fx < 1 || fx > 4) {
+    return undefined;
+  }
+
+  // AX32 FX EQ block confirmed from mesa logs. FX buses use stride 31.
+  const base = 2727 + (fx - 1) * 31;
+  return {
+    eqEnabled: base,
+    hpfTypeSlope: base + 2,
+    hpfFreq: base + 3,
+    lpfTypeSlope: base + 4,
+    lpfFreq: base + 5,
+    eqBand1Freq: base + 7,
+    eqBand1Gain: base + 8,
+    eqBand1Q: base + 9,
+    eqBand2Freq: base + 11,
+    eqBand2Gain: base + 12,
+    eqBand2Q: base + 13,
+    eqBand3Freq: base + 15,
+    eqBand3Gain: base + 16,
+    eqBand3Q: base + 17,
+    eqBand4Freq: base + 19,
+    eqBand4Gain: base + 20,
+    eqBand4Q: base + 21,
+  };
+}
+
+function getFxPresetParams(fxNumber: number) {
+  if (!isAx32ProfileActive()) {
+    return {
+      preset: 3097,
+      controlA: 2940,
+      controlB: 2941,
+    };
+  }
+
+  const fx = Math.max(1, Math.min(4, Math.round(fxNumber)));
+  const base = 2727 + (fx - 1) * 31;
+
+  return {
+    preset: 5116 + (fx - 1),
+    controlA: base + 27,
+    controlB: base + 28,
+  };
 }
 
 type DetailView =
   | { type: "channel"; channel: number }
   | { type: "aux"; aux: number }
-  | { type: "fx"; fx: 1 | 2 }
-  | { type: "master" }
+  | { type: "fx"; fx: number }
+  | { type: "master"; side: "left" | "right" }
   | null;
 type AppStage = "splash" | "device-selection" | "mixer";
 type MainView = "mixer" | "auxSends" | "fxSends" | "dcaGroups" | "muteGroups" | "scenes";
@@ -368,6 +731,9 @@ type DragScrollState = {
   startY: number;
   startScrollLeft: number;
   startAtMs: number;
+  lastClientX: number;
+  lastMoveAtMs: number;
+  scrollVelocityPxPerMs: number;
   dragging: boolean;
   suppressClick: boolean;
 };
@@ -390,9 +756,9 @@ function getDragScrollProfile(pointerType: "mouse" | "touch" | "pen" | "") {
   }
 
   return {
-    holdMs: 8,
-    thresholdPx: 4,
-    horizontalBias: 1.04,
+    holdMs: 0,
+    thresholdPx: 2,
+    horizontalBias: 1,
   };
 }
 
@@ -444,8 +810,8 @@ const SPLASH_MIN_DURATION_MS = 2000;
 const APP_VERSION = "1.0.0";
 const INSTALLATION_ID_STORAGE_KEY = "ax_installation_id";
 const LICENSE_VALIDATED_STORAGE_KEY = "ax_license_validated";
-const DCA_NAMES_STORAGE_KEY = "ax_dca_group_names";
-const DCA_COLOR_IDS_STORAGE_KEY = "ax_dca_group_color_ids";
+const DCA_NAMES_STORAGE_KEY_BASE = "ax_dca_group_names";
+const DCA_COLOR_IDS_STORAGE_KEY_BASE = "ax_dca_group_color_ids";
 const LICENSE_ACTIVATED_ONCE_STORAGE_KEY = "ax_license_activated_once";
 const LICENSE_STATUS_STORAGE_KEY = "ax_license_status";
 const LICENSE_KEY_STORAGE_KEY = "ax_license_key_last";
@@ -532,6 +898,91 @@ function isLicenseExpiredByDate(expiryIso: string | null, nowMs = Date.now()) {
   if (Number.isNaN(expiryMs)) return false;
 
   return nowMs >= expiryMs;
+}
+
+function normalizeMixerMacAddress(macAddress?: string) {
+  if (!macAddress) return undefined;
+
+  const upper = macAddress.trim().toUpperCase();
+  if (!upper) return undefined;
+
+  const parts = upper.split(":");
+  if (parts.length !== 6 || parts.some((part) => !/^[0-9A-F]{2}$/.test(part))) {
+    return undefined;
+  }
+
+  return parts.join(":");
+}
+
+function buildMixerCacheIdentity(
+  ip: string,
+  channelCountValue: number,
+  mixers: DiscoveredMixer[]
+) {
+  const normalizedIp = ip.trim();
+  const discoveredMixer = mixers.find((mixer) => mixer.ip.trim() === normalizedIp);
+  const normalizedChannels = normalizeSupportedChannelCount(channelCountValue);
+  const normalizedMac = normalizeMixerMacAddress(discoveredMixer?.macAddress);
+
+  if (normalizedMac) {
+    return `mac:${normalizedMac}:ch:${normalizedChannels}`;
+  }
+
+  return `ip:${normalizedIp}:ch:${normalizedChannels}`;
+}
+
+function getScopedStorageKey(baseKey: string, mixerCacheIdentity: string | null) {
+  if (!mixerCacheIdentity) return null;
+  return `${baseKey}:${mixerCacheIdentity}`;
+}
+
+function readScopedDcaNames(mixerCacheIdentity: string | null, dcaCount: number) {
+  const storageKey = getScopedStorageKey(DCA_NAMES_STORAGE_KEY_BASE, mixerCacheIdentity);
+  if (!storageKey) return null;
+
+  try {
+    const stored = localStorage.getItem(storageKey);
+    if (!stored) return null;
+
+    const parsed = JSON.parse(stored) as unknown[];
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === dcaCount &&
+      parsed.every((value) => typeof value === "string")
+    ) {
+      return parsed as string[];
+    }
+  } catch {
+    // Ignore malformed or unavailable local cache.
+  }
+
+  return null;
+}
+
+function readScopedDcaColorIds(mixerCacheIdentity: string | null, dcaIds: DcaGroupId[]) {
+  const storageKey = getScopedStorageKey(DCA_COLOR_IDS_STORAGE_KEY_BASE, mixerCacheIdentity);
+  if (!storageKey) return null;
+
+  try {
+    const stored = localStorage.getItem(storageKey);
+    if (!stored) return null;
+
+    const parsed = JSON.parse(stored) as unknown[];
+    if (!Array.isArray(parsed)) return null;
+
+    return Array.from({ length: dcaIds.length }, (_, index) => {
+      const cached = parsed[index];
+      if (typeof cached === "number") {
+        return Math.max(0, Math.min(12, Math.round(cached)));
+      }
+
+      return DCA_DEFAULT_COLOR_IDS[dcaIds[index]];
+    });
+  } catch {
+    // Ignore malformed or unavailable local cache.
+  }
+
+  return null;
 }
 
 function isLicenseCacheExpired(
@@ -656,6 +1107,25 @@ function getDeviceNameLabel() {
   return "Desktop Device";
 }
 
+function isConstrainedMobileDevice() {
+  if (typeof navigator === "undefined") return false;
+
+  const ua = navigator.userAgent.toLowerCase();
+  const isIpad =
+    ua.includes("ipad") ||
+    (ua.includes("macintosh") && navigator.maxTouchPoints > 1);
+
+  if (!isIpad) return false;
+
+  const memoryHint = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  if (typeof memoryHint === "number") {
+    return memoryHint <= 4;
+  }
+
+  // Safari on iPad may not expose deviceMemory; default to conservative profile.
+  return true;
+}
+
 function normalizeAuxColorId(colorId: number) {
   return normalizeColorByScope("aux", colorId);
 }
@@ -683,10 +1153,80 @@ function stripLinkedNameSuffix(name: string) {
 }
 
 function getChannelLinkFlag(pairOdd: number, linked: boolean) {
+  if (isAx32ProfileActive()) {
+    if (!linked) return 0;
+    return Math.max(1, Math.floor((pairOdd + 1) / 2));
+  }
+
   if (linked) return 3;
   if (pairOdd === 1) return 2;
   if (pairOdd === 3) return 1;
   return null;
+}
+
+function getChannelLinkParam() {
+  return isAx32ProfileActive() ? 5108 : 3055;
+}
+
+function getLinkMaskParam() {
+  return isAx32ProfileActive() ? 5109 : 3056;
+}
+
+function getMasterLinkBit() {
+  return isAx32ProfileActive() ? 256 : 16;
+}
+
+function auxBlockStart(aux: number) {
+  if (isAx32ProfileActive()) {
+    return 2890 + (aux - 1) * 109;
+  }
+
+  return AUX_BLOCK_STARTS[aux];
+}
+
+function auxSoloLeftParam(aux: number) {
+  if (isAx32ProfileActive()) {
+    return 2902 + (aux - 1) * 109;
+  }
+
+  return 1688 + (aux - 1) * 109;
+}
+
+function auxMuteParam(aux: number) {
+  if (isAx32ProfileActive()) {
+    return 2892 + (aux - 1) * 109;
+  }
+
+  return 1678 + (aux - 1) * 109;
+}
+
+function fxSoloLeftParam(fx: number) {
+  if (isAx32ProfileActive()) {
+    return 4893 + (fx - 1) * 22;
+  }
+
+  const table: Record<number, number> = {
+    1: 2911,
+    2: 2956,
+  };
+
+  return table[fx] ?? 2911;
+}
+
+function masterSoloLeftParam() {
+  return isAx32ProfileActive() ? 4646 : 1575;
+}
+
+function masterSoloRightParam() {
+  return isAx32ProfileActive() ? 4755 : 1637;
+}
+
+function masterSoloAuxLeftParam() {
+  return isAx32ProfileActive() ? 4647 : 1576;
+}
+
+function masterSoloAuxRightParam() {
+  return isAx32ProfileActive() ? 4756 : 1638;
 }
 
 const AUX_LINK_BITS: Record<number, number> = {
@@ -696,20 +1236,17 @@ const AUX_LINK_BITS: Record<number, number> = {
   7: 8,
 };
 
-const SEND_IDS: SendStripId[] = [
-  "fx1",
-  "fx2",
-  "aux1",
-  "aux2",
-  "aux3",
-  "aux4",
-  "aux5",
-  "aux6",
-  "aux7",
-  "aux8",
-];
+function getActiveSendIds(): SendStripId[] {
+  const fxCount = getFxBusCount();
+  const auxCount = getAuxBusCount();
 
-const AUX_SEND_BASES: Record<number, number> = {
+  return [
+    ...Array.from({ length: fxCount }, (_, index) => `fx${index + 1}`),
+    ...Array.from({ length: auxCount }, (_, index) => `aux${index + 1}`),
+  ];
+}
+
+const AUX_SEND_BASES_AX16_24: Record<number, number> = {
   1: 77,
   2: 78,
   3: 79,
@@ -720,59 +1257,51 @@ const AUX_SEND_BASES: Record<number, number> = {
   8: 84,
 };
 
-const FX_SEND_BASES: Record<number, number> = {
+const FX_SEND_BASES_AX16_24: Record<number, number> = {
   1: 89,
   2: 90,
 };
 
+const FX_SEND_BASES_AX32: Record<number, number> = {
+  1: 96,
+  2: 97,
+  3: 98,
+  4: 99,
+};
+
 const SEND_WRITE_THROTTLE_MS = 80;
+const GLOBAL_CONTROL_FAST_POLL_INTERVAL_MIXER_MS = 280;
+const GLOBAL_CONTROL_FAST_POLL_INTERVAL_DETAIL_MS = 420;
+const GLOBAL_CONTROL_FAST_POLL_INTERVAL_OTHER_MS = 650;
+const GLOBAL_CONTROL_POLL_INTERVAL_MS = 2400;
+const USB_RETURN_PATCH_POLL_INTERVAL_MS = 4200;
+const LOCAL_WRITE_ECHO_SUPPRESSION_MS = 900;
+const AX16_24_READ_TIMEOUT_MS = 1400;
+const AX16_24_BATCH_CHANNEL_CHUNK = 30;
+const AX16_24_BATCH_AUX_CHUNK = 28;
+const AX16_24_FAST_CHANNEL_CHUNK = 34;
 const SEND_PRE_FADER_FLAG = 32768;
+const AX32_USB_RETURN_PATCH_BASE = 2565;
+const AX32_USB_RETURN_PATCH_SIZE = 32;
 const FX_RETURN_MAPPING: Readonly<{ available: false; reason: string }> = {
   available: false,
   reason: "TODO(types): mapear parametros reais de retorno de FX (level/mute/pan) antes de habilitar controle.",
 };
 
-// Channel sends use the same fader scale as channel faders. AUX sends are params 77–84 + channel offset; FX sends are 89–90 + channel offset.
-function sendDbToValue(db: number | "-inf") {
-  if (db === "-inf") return 0;
-  const clamped = Math.max(-120, Math.min(10, db));
-  if (clamped <= -120) return 0;
-  return Math.round(1200 + clamped * 10);
-}
-
-function sendValueToDb(value: number) {
-  if (value <= 0) return -120;
-  return (value - 1200) / 10;
-}
-
 function createDefaultSendValues(): SendValueState {
-  return {
-    fx1: 1200,
-    fx2: 1200,
-    aux1: 1200,
-    aux2: 1200,
-    aux3: 1200,
-    aux4: 1200,
-    aux5: 1200,
-    aux6: 1200,
-    aux7: 1200,
-    aux8: 1200,
-  };
+  const next: SendValueState = {};
+  getActiveSendIds().forEach((id) => {
+    next[id] = 1200;
+  });
+  return next;
 }
 
 function createDefaultSendTapPoints(): SendTapPointState {
-  return {
-    fx1: "post",
-    fx2: "post",
-    aux1: "post",
-    aux2: "post",
-    aux3: "post",
-    aux4: "post",
-    aux5: "post",
-    aux6: "post",
-    aux7: "post",
-    aux8: "post",
-  };
+  const next: SendTapPointState = {};
+  getActiveSendIds().forEach((id) => {
+    next[id] = "post";
+  });
+  return next;
 }
 
 function createDefaultChannelInputSendValues(channelCount = DEFAULT_CHANNEL_COUNT): ChannelInputSendValues {
@@ -815,16 +1344,40 @@ function encodeSendRawValue(value: number, tapPoint: SendTapPoint) {
 }
 
 function sendIdToParam(channel: number, id: SendStripId) {
-  const channelOffset = (channel - 1) * 62;
+  const channelOffset = (channel - 1) * (isAx32ProfileActive() ? AX32_CHANNEL_STRIDE : 62);
 
-  if (id === "fx1") return FX_SEND_BASES[1] + channelOffset;
-  if (id === "fx2") return FX_SEND_BASES[2] + channelOffset;
+  if (id.startsWith("fx")) {
+    const fxNumber = Number(id.replace("fx", ""));
+    const maxFx = getFxBusCount();
+    if (!Number.isFinite(fxNumber) || fxNumber < 1 || fxNumber > maxFx) {
+      throw new Error(`FX send inválido para o perfil atual: ${id}`);
+    }
+    const base = isAx32ProfileActive()
+      ? FX_SEND_BASES_AX32[fxNumber]
+      : FX_SEND_BASES_AX16_24[fxNumber];
+
+    if (base === undefined) {
+      throw new Error(`Base de FX send não mapeada para ${id}`);
+    }
+
+    return base + channelOffset;
+  }
 
   const auxNumber = Number(id.replace("aux", ""));
-  return (AUX_SEND_BASES[auxNumber] ?? AUX_SEND_BASES[1]) + channelOffset;
-}
+  const maxAux = getAuxBusCount();
+  if (!Number.isFinite(auxNumber) || auxNumber < 1 || auxNumber > maxAux) {
+    throw new Error(`AUX send inválido para o perfil atual: ${id}`);
+  }
+  const base = isAx32ProfileActive()
+    ? 75 + auxNumber // AUX1..14 -> 76..89
+    : AUX_SEND_BASES_AX16_24[auxNumber];
 
-const MASTER_LINK_BIT = 16;
+  if (base === undefined) {
+    throw new Error(`Base de AUX send não mapeada para ${id}`);
+  }
+
+  return base + channelOffset;
+}
 
 function isAuxLinked(value3056: number, aux: number) {
   const odd = aux % 2 === 0 ? aux - 1 : aux;
@@ -836,7 +1389,7 @@ function isAuxLinked(value3056: number, aux: number) {
 }
 
 function isMasterLinked(value3056: number) {
-  return Boolean(value3056 & MASTER_LINK_BIT);
+  return Boolean(value3056 & getMasterLinkBit());
 }
 
 // AUX link state comes from param 3056 bitmask. Linked AUX pairs should mirror values and show the same linked visual treatment used in Mixer.
@@ -959,7 +1512,7 @@ const DEFAULT_AUX_EQ: EqState = {
   lpfFreq: 20000,
   bands: [
     { enabled: true, freq: 63, gain: 0, q: 1 },
-    { enabled: true, freq: 160, gain: 0, q: 1 },
+    { enabled: true, freq: 150, gain: 0, q: 1 },
     { enabled: true, freq: 400, gain: 0, q: 1 },
     { enabled: true, freq: 1000, gain: 0, q: 1 },
     { enabled: true, freq: 2500, gain: 0, q: 1 },
@@ -1037,8 +1590,31 @@ function createDefaultAuxProcessorState(): ProcessorState {
   };
 }
 
+function createDefaultFxPresetState(): FxPresetState {
+  return {
+    presetId: 1,
+    controlAValue: 0,
+    controlBValue: 0,
+  };
+}
+
+function createInitialFxPresetStates(fxCount: number) {
+  return Array.from({ length: fxCount }, () => createDefaultFxPresetState());
+}
+
 function createInitialProcessorStates(channelCount = DEFAULT_CHANNEL_COUNT) {
   return Array.from({ length: channelCount }, () => createDefaultProcessorState());
+}
+
+function cloneProcessorState(state: ProcessorState): ProcessorState {
+  return {
+    gate: { ...state.gate },
+    comp: { ...state.comp },
+    eq: {
+      ...state.eq,
+      bands: state.eq.bands.map((band) => ({ ...band })),
+    },
+  };
 }
 
 function processorParams(channelNumber: number) {
@@ -1076,6 +1652,56 @@ function processorParams(channelNumber: number) {
 
 function auxProcessorParams(auxNumber: number) {
   const aux = Math.round(auxNumber);
+
+  if (isAx32ProfileActive()) {
+    const base = 2890 + (aux - 1) * 109;
+
+    if (aux < 1 || aux > AX32_AUX_COUNT) {
+      throw new Error("AUX invalido. Use valores de 1 a 14.");
+    }
+
+    const params = {
+      fader: base,
+      phase: base + 1,
+      compEnabled: base + 6,
+      compRatio: base + 7,
+      compAttack: base + 8,
+      compRelease: base + 9,
+      compThreshold: base + 10,
+      compGain: base + 11,
+      eqEnabled: base + 15,
+      hpfTypeSlope: base + 17,
+      hpfFreq: base + 18,
+      lpfTypeSlope: base + 19,
+      lpfFreq: base + 20,
+      eqBandBase: base + 22,
+    };
+
+    return {
+      ...params,
+      eqBand1Freq: params.eqBandBase,
+      eqBand1Gain: params.eqBandBase + 1,
+      eqBand1Q: params.eqBandBase + 2,
+      eqBand2Freq: params.eqBandBase + 4,
+      eqBand2Gain: params.eqBandBase + 5,
+      eqBand2Q: params.eqBandBase + 6,
+      eqBand3Freq: params.eqBandBase + 8,
+      eqBand3Gain: params.eqBandBase + 9,
+      eqBand3Q: params.eqBandBase + 10,
+      eqBand4Freq: params.eqBandBase + 12,
+      eqBand4Gain: params.eqBandBase + 13,
+      eqBand4Q: params.eqBandBase + 14,
+      eqBand5Freq: params.eqBandBase + 16,
+      eqBand5Gain: params.eqBandBase + 17,
+      eqBand5Q: params.eqBandBase + 18,
+      eqBand6Freq: params.eqBandBase + 20,
+      eqBand6Gain: params.eqBandBase + 21,
+      eqBand6Q: params.eqBandBase + 22,
+      eqBand7Freq: params.eqBandBase + 24,
+      eqBand7Gain: params.eqBandBase + 25,
+      eqBand7Q: params.eqBandBase + 26,
+    };
+  }
 
   const table: Record<number, {
     fader: number;
@@ -1270,6 +1896,14 @@ function filterTypeSlopeToRaw(
   return slope === 24 ? base + 12 : base;
 }
 
+function frequencyToRawValue(freqHz: number) {
+  if (freqHz === 0) return 0;
+  if (freqHz < 100) {
+    return 32768 + Math.round(freqHz * 10);
+  }
+  return Math.round(freqHz);
+}
+
 function inferHpfEnabledFromRaw(rawValue: number, currentEnabled = true) {
   void currentEnabled;
   if (rawValue === 0) return false;
@@ -1306,6 +1940,70 @@ function meterByteToDb(byte: number) {
   return byte >= 128 ? byte - 256 : byte;
 }
 
+function decodeSingleMeterWord(value: number) {
+  const hi = meterByteToDb(value >> 8);
+  const lo = meterByteToDb(value & 255);
+
+  const hiInRange = hi >= -90 && hi <= 20;
+  const loInRange = lo >= -90 && lo <= 20;
+
+  if (hiInRange && !loInRange) return hi;
+  if (loInRange && !hiInRange) return lo;
+
+  return lo;
+}
+
+type MasterMeterSourceId =
+  | "legacy47"
+  | "ax32_1947_1948"
+  | "ax32_4644_4753"
+  | "ax32_4645_4754"
+  | "ax32_2862";
+
+type MasterMeterCandidate = {
+  id: MasterMeterSourceId;
+  leftDb: number;
+  rightDb: number;
+  valid: boolean;
+};
+
+function decodeRawMeterDb(value: number) {
+  const normalized = Math.max(0, Math.min(65535, Math.round(value)));
+  const signed16 = normalized >= 32768 ? normalized - 65536 : normalized;
+  if (signed16 >= -90 && signed16 <= 20) return signed16;
+
+  return decodeSingleMeterWord(normalized);
+}
+
+function decodePackedStereoMeterWord(value: number) {
+  const normalized = Math.max(0, Math.min(65535, Math.round(value)));
+
+  // AX32 param 2862 reports 0x0000 while idle; treat it as silence.
+  if (normalized === 0) {
+    return {
+      leftDb: -90,
+      rightDb: -90,
+      hiDb: -90,
+      loDb: -90,
+    };
+  }
+
+  const hiDb = meterByteToDb((normalized >> 8) & 255);
+  const loDb = meterByteToDb(normalized & 255);
+
+  // Keep the same orientation already used for param 47: hi=R, lo=L.
+  return {
+    leftDb: loDb,
+    rightDb: hiDb,
+    hiDb,
+    loDb,
+  };
+}
+
+function isValidMeterDb(db: number) {
+  return db >= -90 && db <= 20;
+}
+
 function meterDbToLevel(db: number) {
   const points = [
     { db: -40, level: 0 },
@@ -1335,6 +2033,11 @@ function meterDbToLevel(db: number) {
   }
 
   return 0;
+}
+
+function clampMasterMeterForDisplay(db: number) {
+  // UX rule: the master meter should only react from -30 dB upward.
+  return db < -30 ? -90 : db;
 }
 
 function computeNextPeakState(
@@ -1372,9 +2075,11 @@ function computeNextPeakState(
 }
 
 function App() {
+  const isConstrainedDevice = useMemo(() => isConstrainedMobileDevice(), []);
   const [channelCount, setChannelCount] = useState(DEFAULT_CHANNEL_COUNT);
   const [appStage, setAppStage] = useState<AppStage>("splash");
-  const [ip, setIp] = useState(DEFAULT_MIXER_IP);
+  const [_ip, setIp] = useState(DEFAULT_MIXER_IP);
+  void _ip;
   const [status, setStatus] = useState("Desconectado");
   const [connectingSource, setConnectingSource] = useState<"manual" | "discovered" | null>(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -1402,31 +2107,26 @@ function App() {
   const [channels, setChannels] = useState<ChannelState[]>(
     createInitialChannelsState
   );
+  // Inicialização dinâmica dos estados baseada no perfil ativo
+  const initialAuxCount = channelCount >= AX32_CHANNEL_COUNT ? AX32_AUX_COUNT : AX16_24_AUX_COUNT;
+  const initialFxCount = channelCount >= AX32_CHANNEL_COUNT ? AX32_FX_COUNT : AX16_24_FX_COUNT;
+  const initialDcaIds = getDcaIdsForChannelCount(channelCount);
   const [auxStrips, setAuxStrips] = useState<ChannelState[]>(() =>
-    createVirtualStripsState(8, DEFAULT_AUX_COLOR_ID)
+    createVirtualStripsState(initialAuxCount, DEFAULT_AUX_COLOR_ID)
   );
   const [fxStrips, setFxStrips] = useState<ChannelState[]>(() =>
-    createVirtualStripsState(2, DEFAULT_FX_COLOR_ID)
+    createVirtualStripsState(initialFxCount, DEFAULT_FX_COLOR_ID)
   );
-  const [dcaNames, setDcaNames] = useState<string[]>(() => {
-    try {
-      const stored = localStorage.getItem(DCA_NAMES_STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored) as unknown[];
-        if (Array.isArray(parsed) && parsed.length === 4 && parsed.every((v) => typeof v === "string")) {
-          return parsed as string[];
-        }
-      }
-    } catch { /* ignore */ }
-    return Array.from({ length: 4 }, (_, index) => getDefaultDcaGroupName(index));
-  });
-  const [dcaGroups, setDcaGroups] = useState<DcaGroupState[]>(createInitialDcaState);
-  const [muteGroups, setMuteGroups] = useState<MuteGroupState[]>(createInitialMuteState);
+  const [dcaNames, setDcaNames] = useState<string[]>(() =>
+    initialDcaIds.map((_, index) => getDefaultDcaGroupName(index))
+  );
+  const [dcaGroups, setDcaGroups] = useState<DcaGroupState[]>(() => createInitialDcaState(channelCount));
+  const [muteGroups, setMuteGroups] = useState<MuteGroupState[]>(() => createInitialMuteState(channelCount));
   const [auxProcessorStates, setAuxProcessorStates] = useState<ProcessorState[]>(() =>
-    Array.from({ length: 8 }, () => createDefaultAuxProcessorState())
+    Array.from({ length: initialAuxCount }, () => createDefaultAuxProcessorState())
   );
   const [fxProcessorStates, setFxProcessorStates] = useState<ProcessorState[]>(() =>
-    Array.from({ length: 2 }, () => createDefaultProcessorState())
+    Array.from({ length: initialFxCount }, () => createDefaultProcessorState())
   );
   const [masterProcessorState, setMasterProcessorState] = useState<ProcessorState>(() =>
     createDefaultAuxProcessorState()
@@ -1452,7 +2152,7 @@ function App() {
   const [fxInputSendTapPoints, setFxInputSendTapPoints] =
     useState<Record<number, ChannelInputSendTapPointState>>({});
   const [selectedAuxSendsTarget, setSelectedAuxSendsTarget] = useState(1);
-  const [selectedFxSendsTarget, setSelectedFxSendsTarget] = useState<1 | 2>(1);
+  const [selectedFxSendsTarget, setSelectedFxSendsTarget] = useState(1);
   const [master, setMaster] = useState<MasterState>(createDefaultMasterState);
   const [mainMasterMeter, setMainMasterMeter] = useState<MainMasterMeterState>(
     createDefaultMainMasterMeterState
@@ -1460,41 +2160,55 @@ function App() {
   const [, setMonitorSoloMeter] = useState<MonitorSoloMeterState>(
     createDefaultMonitorSoloMeterState
   );
-  const [fxActivePresetId, setFxActivePresetId] = useState<FxPresetId>(1);
-  const [fxControlAValue, setFxControlAValue] = useState(0);
-  const [fxControlBValue, setFxControlBValue] = useState(0);
+  const [fxPresetStates, setFxPresetStates] = useState<FxPresetState[]>(() =>
+    createInitialFxPresetStates(initialFxCount)
+  );
   const [sceneUiRefreshNonce, setSceneUiRefreshNonce] = useState(0);
 
   const clientRef = useRef<Axios16Client | null>(null);
   const meterTimerRef = useRef<number | null>(null);
-  const [dcaColorIds, setDcaColorIds] = useState<number[]>(() => {
-    try {
-      const stored = localStorage.getItem(DCA_COLOR_IDS_STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored) as unknown[];
-        if (Array.isArray(parsed) && parsed.length === 4 && parsed.every((v) => typeof v === "number")) {
-          return parsed.map((value) => Math.max(0, Math.min(12, Math.round(value as number))));
-        }
-      }
-    } catch { /* ignore */ }
-
-    return DCA_IDS.map((id) => DCA_DEFAULT_COLOR_IDS[id]);
-  });
+  const activeDcaIds = getDcaIdsForChannelCount(channelCount);
+  const [dcaColorIds, setDcaColorIds] = useState<number[]>(() =>
+    getDcaIdsForChannelCount(DEFAULT_CHANNEL_COUNT).map(() => 6)
+  );
+  const [activeMixerCacheIdentity, setActiveMixerCacheIdentity] = useState<string | null>(null);
   const meterBusyRef = useRef(false);
+  const missingChannelMeterFramesRef = useRef(0);
+  const channelMeterLastUpdateAtRef = useRef<number[]>([]);
+  const masterMeterSourceRef = useRef<MasterMeterSourceId>("legacy47");
+  const masterMeterSourceScoreRef = useRef<Record<MasterMeterSourceId, number>>({
+    legacy47: 0,
+    ax32_1947_1948: 0,
+    ax32_4644_4753: 0,
+    ax32_4645_4754: 0,
+    ax32_2862: 0,
+  });
+  const masterMeterDebugLastAtRef = useRef(0);
   const auxLinkBusyRef = useRef(false);
   const meterUpdateLastAtRef = useRef(0);
   const isChannelsDraggingRef = useRef(false);
   const mixerChannelsScrollerRef = useRef<HTMLElement | null>(null);
   const mixerChannelsScrollLeftRef = useRef(0);
   const dragScrollRafRef = useRef<number | null>(null);
+  const dragMomentumRafRef = useRef<number | null>(null);
   const pendingDragScrollLeftRef = useRef<number | null>(null);
   const sendWriteTimersRef = useRef<Map<number, number>>(new Map());
   const sendWriteLastAtRef = useRef<Map<number, number>>(new Map());
   const sendWritePendingRef = useRef<Map<number, number>>(new Map());
+  const faderWriteRafRef = useRef<number | null>(null);
+  const pendingFaderWritesRef = useRef<Map<string, () => void>>(new Map());
+  const recentLocalParamWritesRef = useRef<Map<number, LocalParamWrite>>(new Map());
+  const localParamWriteUnsubscribeRef = useRef<(() => void) | null>(null);
+  const fastControlSyncInFlightRef = useRef(false);
+  const usbReturnPatchMapRef = useRef<Map<number, number>>(new Map());
+  const usbReturnPatchSyncInFlightRef = useRef(false);
   const backgroundLicenseRevalidationBusyRef = useRef(false);
   const lastBackgroundRevalidationAtRef = useRef(0);
   const strictStartupValidationDoneRef = useRef(false);
   const lastAppliedMuteGroupsSignatureRef = useRef("");
+  const channelLinkTransitionUntilRef = useRef<Map<string, number>>(new Map());
+  const auxLinkTransitionUntilRef = useRef<Map<string, number>>(new Map());
+  const masterLinkTransitionUntilRef = useRef(0);
   const sceneRefreshQueueRef = useRef<Promise<void>>(Promise.resolve());
   const dragScrollStateRef = useRef<DragScrollState>({
     pointerId: null,
@@ -1504,6 +2218,9 @@ function App() {
     startY: 0,
     startScrollLeft: 0,
     startAtMs: 0,
+    lastClientX: 0,
+    lastMoveAtMs: 0,
+    scrollVelocityPxPerMs: 0,
     dragging: false,
     suppressClick: false,
   });
@@ -1712,7 +2429,11 @@ function App() {
 
   useEffect(() => {
     return () => {
+      cancelPendingDragScrollFrame();
+      cancelDragMomentumFrame();
+      cancelScheduledFaderWrites();
       clearScheduledSendWrites();
+      clearLocalParamWriteTracking();
     };
   }, []);
 
@@ -1757,6 +2478,49 @@ function App() {
     pendingDragScrollLeftRef.current = null;
   }
 
+  function cancelDragMomentumFrame() {
+    if (dragMomentumRafRef.current !== null) {
+      cancelAnimationFrame(dragMomentumRafRef.current);
+      dragMomentumRafRef.current = null;
+    }
+  }
+
+  function runChannelsMomentumScroll(scrollerElement: HTMLElement, initialVelocityPxPerMs: number) {
+    const MIN_ABS_VELOCITY = 0.02;
+    const DECAY_PER_FRAME = 0.92;
+    let velocity = initialVelocityPxPerMs;
+    let lastAt = performance.now();
+
+    const tick = (now: number) => {
+      const dt = Math.max(1, Math.min(34, now - lastAt));
+      lastAt = now;
+
+      const maxScrollLeft = Math.max(0, scrollerElement.scrollWidth - scrollerElement.clientWidth);
+      const nextScrollLeft = Math.min(
+        maxScrollLeft,
+        Math.max(0, scrollerElement.scrollLeft + velocity * dt)
+      );
+      const reachedBoundary = nextScrollLeft <= 0 || nextScrollLeft >= maxScrollLeft;
+
+      scrollerElement.scrollLeft = nextScrollLeft;
+      mixerChannelsScrollLeftRef.current = nextScrollLeft;
+
+      velocity *= Math.pow(DECAY_PER_FRAME, dt / 16.67);
+
+      if (Math.abs(velocity) < MIN_ABS_VELOCITY || reachedBoundary) {
+        cancelDragMomentumFrame();
+        setIsChannelsDragging(false);
+        return;
+      }
+
+      dragMomentumRafRef.current = requestAnimationFrame(tick);
+    };
+
+    cancelDragMomentumFrame();
+    setIsChannelsDragging(true);
+    dragMomentumRafRef.current = requestAnimationFrame(tick);
+  }
+
   function resetDragScrollState() {
     cancelPendingDragScrollFrame();
     dragScrollStateRef.current.pointerId = null;
@@ -1766,6 +2530,9 @@ function App() {
     dragScrollStateRef.current.startY = 0;
     dragScrollStateRef.current.startScrollLeft = 0;
     dragScrollStateRef.current.startAtMs = 0;
+    dragScrollStateRef.current.lastClientX = 0;
+    dragScrollStateRef.current.lastMoveAtMs = 0;
+    dragScrollStateRef.current.scrollVelocityPxPerMs = 0;
     dragScrollStateRef.current.dragging = false;
     setIsChannelsDragging(false);
   }
@@ -1775,6 +2542,8 @@ function App() {
   ) {
     if (event.pointerType === "mouse" && event.button !== 0) return;
     if (shouldPrioritizeLocalControl(event.target)) return;
+
+    cancelDragMomentumFrame();
 
     dragScrollStateRef.current.pointerId = event.pointerId;
     dragScrollStateRef.current.pointerType =
@@ -1787,7 +2556,10 @@ function App() {
     dragScrollStateRef.current.startY = event.clientY;
     dragScrollStateRef.current.scrollerElement = event.currentTarget;
     dragScrollStateRef.current.startScrollLeft = event.currentTarget.scrollLeft;
-    dragScrollStateRef.current.startAtMs = Date.now();
+    dragScrollStateRef.current.startAtMs = performance.now();
+    dragScrollStateRef.current.lastClientX = event.clientX;
+    dragScrollStateRef.current.lastMoveAtMs = performance.now();
+    dragScrollStateRef.current.scrollVelocityPxPerMs = 0;
     dragScrollStateRef.current.dragging = false;
     dragScrollStateRef.current.suppressClick = false;
   }
@@ -1799,11 +2571,12 @@ function App() {
 
     const deltaX = event.clientX - dragScrollStateRef.current.startX;
     const deltaY = event.clientY - dragScrollStateRef.current.startY;
+    const now = performance.now();
 
     if (!dragScrollStateRef.current.dragging) {
       const profile = getDragScrollProfile(dragScrollStateRef.current.pointerType);
       const holdElapsed =
-        Date.now() - dragScrollStateRef.current.startAtMs >= profile.holdMs;
+        now - dragScrollStateRef.current.startAtMs >= profile.holdMs;
       const passedThreshold = Math.abs(deltaX) >= profile.thresholdPx;
       const horizontalIntent =
         Math.abs(deltaX) > Math.abs(deltaY) * profile.horizontalBias;
@@ -1823,16 +2596,35 @@ function App() {
       scrollerElement,
       dragScrollStateRef.current.startScrollLeft - deltaX
     );
+
+    const dt = Math.max(1, now - dragScrollStateRef.current.lastMoveAtMs);
+    const pointerDeltaX = event.clientX - dragScrollStateRef.current.lastClientX;
+    const instantScrollVelocity = -pointerDeltaX / dt;
+    dragScrollStateRef.current.scrollVelocityPxPerMs =
+      dragScrollStateRef.current.scrollVelocityPxPerMs * 0.72 +
+      instantScrollVelocity * 0.28;
+    dragScrollStateRef.current.lastClientX = event.clientX;
+    dragScrollStateRef.current.lastMoveAtMs = now;
   }
 
   function handleChannelsPointerUp(
     event: React.PointerEvent<HTMLElement>
   ) {
     if (dragScrollStateRef.current.pointerId !== event.pointerId) return;
+
+    const wasDragging = dragScrollStateRef.current.dragging;
+    const flingVelocity = dragScrollStateRef.current.scrollVelocityPxPerMs;
+    const scrollerElement =
+      dragScrollStateRef.current.scrollerElement ?? event.currentTarget;
+
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     resetDragScrollState();
+
+    if (wasDragging && Math.abs(flingVelocity) >= 0.025) {
+      runChannelsMomentumScroll(scrollerElement, flingVelocity);
+    }
   }
 
   function handleChannelsPointerCancel(
@@ -1859,13 +2651,20 @@ function App() {
     channelNumber: number,
     patch: Partial<ChannelState>
   ) {
-    setChannels((current) =>
-      current.map((channelState, index) =>
-        index === channelNumber - 1
-          ? { ...channelState, ...patch }
-          : channelState
-      )
-    );
+    setChannels((current) => {
+      const targetIndex = channelNumber - 1;
+      const currentChannel = current[targetIndex];
+      if (!currentChannel) return current;
+
+      const changed = Object.entries(patch).some(([key, value]) =>
+        currentChannel[key as keyof ChannelState] !== value
+      );
+      if (!changed) return current;
+
+      const next = [...current];
+      next[targetIndex] = { ...currentChannel, ...patch };
+      return next;
+    });
   }
 
   function updateMasterState(patch: Partial<MasterState>) {
@@ -1878,11 +2677,20 @@ function App() {
         ? patch
         : { ...patch, colorId: normalizeAuxColorId(patch.colorId) };
 
-    setAuxStrips((current) =>
-      current.map((strip, currentIndex) =>
-        currentIndex === index - 1 ? { ...strip, ...normalizedPatch } : strip
-      )
-    );
+    setAuxStrips((current) => {
+      const targetIndex = index - 1;
+      const currentStrip = current[targetIndex];
+      if (!currentStrip) return current;
+
+      const changed = Object.entries(normalizedPatch).some(([key, value]) =>
+        currentStrip[key as keyof ChannelState] !== value
+      );
+      if (!changed) return current;
+
+      const next = [...current];
+      next[targetIndex] = { ...currentStrip, ...normalizedPatch };
+      return next;
+    });
   }
 
   function updateFxStripState(index: number, patch: Partial<ChannelState>) {
@@ -1891,11 +2699,83 @@ function App() {
         ? patch
         : { ...patch, colorId: normalizeFxColorId(patch.colorId) };
 
-    setFxStrips((current) =>
-      current.map((strip, currentIndex) =>
-        currentIndex === index - 1 ? { ...strip, ...normalizedPatch } : strip
-      )
-    );
+    setFxStrips((current) => {
+      const targetIndex = index - 1;
+      const currentStrip = current[targetIndex];
+      if (!currentStrip) return current;
+
+      const changed = Object.entries(normalizedPatch).some(([key, value]) =>
+        currentStrip[key as keyof ChannelState] !== value
+      );
+      if (!changed) return current;
+
+      const next = [...current];
+      next[targetIndex] = { ...currentStrip, ...normalizedPatch };
+      return next;
+    });
+  }
+
+  function updateChannelFaderStates(targets: number[], position: number, db: number) {
+    setChannels((current) => {
+      let changed = false;
+      const next = [...current];
+
+      targets.forEach((target) => {
+        const targetIndex = target - 1;
+        const currentChannel = current[targetIndex];
+        if (!currentChannel) return;
+        if (currentChannel.faderPosition === position && currentChannel.faderDb === db) return;
+
+        changed = true;
+        next[targetIndex] = {
+          ...currentChannel,
+          faderPosition: position,
+          faderDb: db,
+        };
+      });
+
+      return changed ? next : current;
+    });
+  }
+
+  function updateAuxFaderStates(targets: number[], position: number, db: number) {
+    setAuxStrips((current) => {
+      let changed = false;
+      const next = [...current];
+
+      targets.forEach((target) => {
+        const targetIndex = target - 1;
+        const currentStrip = current[targetIndex];
+        if (!currentStrip) return;
+        if (currentStrip.faderPosition === position && currentStrip.faderDb === db) return;
+
+        changed = true;
+        next[targetIndex] = {
+          ...currentStrip,
+          faderPosition: position,
+          faderDb: db,
+        };
+      });
+
+      return changed ? next : current;
+    });
+  }
+
+  function updateFxFaderState(index: number, position: number, db: number) {
+    setFxStrips((current) => {
+      const targetIndex = index - 1;
+      const currentStrip = current[targetIndex];
+      if (!currentStrip) return current;
+      if (currentStrip.faderPosition === position && currentStrip.faderDb === db) return current;
+
+      const next = [...current];
+      next[targetIndex] = {
+        ...currentStrip,
+        faderPosition: position,
+        faderDb: db,
+      };
+      return next;
+    });
   }
 
   function updateDcaGroupState(id: DcaGroupId, patch: Partial<DcaGroupState>) {
@@ -1934,7 +2814,7 @@ function App() {
 
       if (member.startsWith("AUX_")) {
         const aux = Number(member.slice(4));
-        if (Number.isFinite(aux) && aux >= 1 && aux <= 8) {
+        if (Number.isFinite(aux) && aux >= 1 && aux <= getAuxBusCount()) {
           for (const target of getLinkedAuxTargets(aux)) {
             expanded.add(`AUX_${target}` as AssignableMemberId);
           }
@@ -1954,30 +2834,62 @@ function App() {
     return assignableMemberIds.filter((member) => expanded.has(member));
   }
 
-  async function syncAllGroupStates() {
+  async function syncAllGroupStates(options?: { ignoreConnectionState?: boolean; suppressManagedMuteWrites?: boolean }) {
     const client = clientRef.current;
-    if (!client || !isConnected) {
+    if (!client || (!isConnected && !options?.ignoreConnectionState)) {
       lastAppliedMuteGroupsSignatureRef.current = "";
       return;
     }
 
+    const dcaIdsSnapshot = getDcaIdsForActiveProfile();
+    const muteIdsSnapshot = getMuteIdsForActiveProfile();
+
     const params = [
-      ...DCA_IDS.flatMap((id) => [
+      ...dcaIdsSnapshot.flatMap((id) => [
         getDcaOnOffParam(id),
         getDcaFaderParam(id),
         ...getDcaMemberParams(id),
       ]),
-      ...MUTE_IDS.flatMap((id) => [
+      ...muteIdsSnapshot.flatMap((id) => [
         getMuteGroupActiveParam(id),
         ...getMuteGroupMemberParams(id),
       ]),
     ];
-    const response = await client.readParams(params, 1000);
-    const values = new Map(response.map((item) => [item.param, item.value]));
+    const values = new Map<number, number>();
+    const chunkSize = isAx32ProfileActive() ? 20 : 44;
+
+    for (let offset = 0; offset < params.length; offset += chunkSize) {
+      const chunk = params.slice(offset, offset + chunkSize);
+
+      if (chunk.length === 0) continue;
+
+      const response = await client.readParams(chunk, 1200);
+      response.forEach((item) => {
+        values.set(item.param, item.value);
+      });
+    }
+
+    if (values.size === 0) {
+      throw new Error("Nao foi possivel ler grupos da mesa.");
+    }
+
+    const dcaCoreParams = dcaIdsSnapshot.flatMap((id) => [
+      getDcaOnOffParam(id),
+      getDcaFaderParam(id),
+    ]);
+    const dcaCoreCoverage = dcaCoreParams.reduce((count, param) => count + (values.has(param) ? 1 : 0), 0);
+
+    if (dcaCoreCoverage === 0) {
+      throw new Error("Mesa nao retornou parametros de DCA no sync de grupos.");
+    }
 
     setDcaGroups((current) =>
-      current.map((group, index) => {
-        const id = DCA_IDS[index];
+      dcaIdsSnapshot.map((id, index) => {
+        const group = current[index] ?? {
+          enabled: true,
+          faderPosition: dcaValueToPosition(1200),
+          members: [] as GroupMember[],
+        };
         const rawEnabled = values.get(getDcaOnOffParam(id));
         const rawFader = values.get(getDcaFaderParam(id));
         const words = getDcaMemberParams(id).map((param) => values.get(param));
@@ -1997,8 +2909,8 @@ function App() {
     );
 
     setMuteGroups((current) => {
-      const next = current.map((group, index) => {
-        const id = MUTE_IDS[index];
+      const next = muteIdsSnapshot.map((id, index) => {
+        const group = current[index] ?? { active: false, members: [] as GroupMember[] };
         const rawActive = values.get(getMuteGroupActiveParam(id));
         const words = getMuteGroupMemberParams(id).map((param) => values.get(param));
         const nextMembers = words.every((word) => word !== undefined)
@@ -2014,14 +2926,16 @@ function App() {
         };
       });
 
-      applyManagedMutes(next);
+      if (!options?.suppressManagedMuteWrites) {
+        applyManagedMutes(next, options);
+      }
       return next;
     });
   }
 
-  function applyManagedMutes(nextGroups: MuteGroupState[]) {
+  function applyManagedMutes(nextGroups: MuteGroupState[], options?: { ignoreConnectionState?: boolean }) {
     const client = clientRef.current;
-    if (!client || !isConnected) {
+    if (!client || (!isConnected && !options?.ignoreConnectionState)) {
       lastAppliedMuteGroupsSignatureRef.current = "";
       return;
     }
@@ -2059,12 +2973,15 @@ function App() {
 
   useEffect(() => {
     const client = clientRef.current;
-    if (!client || !isConnected) {
+    const groupsViewActive = mainView === "dcaGroups" || mainView === "muteGroups";
+
+    if (!client || !isConnected || isSyncing || !groupsViewActive) {
       lastAppliedMuteGroupsSignatureRef.current = "";
       return;
     }
 
-    let disposed = false;
+    let _disposed = false;
+    void _disposed;
 
     const syncGroupStates = async () => {
       try {
@@ -2075,19 +2992,23 @@ function App() {
     };
 
     syncGroupStates();
-    const timer = window.setInterval(syncGroupStates, 1500);
+    const timer = window.setInterval(syncGroupStates, 2500);
 
     return () => {
-      disposed = true;
+      _disposed = true;
       window.clearInterval(timer);
     };
-  }, [assignableMemberIds, isConnected]);
+  }, [assignableMemberIds, isConnected, isSyncing, mainView]);
 
   function handleDcaGroupToggleEnabled(id: DcaGroupId) {
+    const group = dcaGroups[id - 1];
+    if (!group) return;
+
+    const nextEnabled = !group.enabled;
+
     const client = clientRef.current;
     if (!client || !isConnected) return;
 
-    const nextEnabled = !dcaGroups[id - 1].enabled;
     try {
       sendGroupMessages(client, buildSetDcaEnabledMessages(id, nextEnabled));
     } catch (error) {
@@ -2104,7 +3025,9 @@ function App() {
 
     try {
       const message = buildSetDcaFaderMessage(id, dcaPositionToValue(position));
-      client.sendParam(message.param, message.value);
+      scheduleFaderWrite(`dca:${id}`, () => {
+        clientRef.current?.sendParam(message.param, message.value);
+      });
     } catch (error) {
       console.error("[DCA] fader error:", error);
       return;
@@ -2146,11 +3069,11 @@ function App() {
   }
 
   function handleDcaGroupMembersChange(id: DcaGroupId, members: GroupMember[]) {
-    const client = clientRef.current;
-    if (!client || !isConnected) return;
-
     const currentMembers = dcaGroups[id - 1]?.members ?? [];
     const normalizedMembers = normalizeDcaMembersForLinkedChannels(currentMembers, members);
+
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
 
     try {
       sendGroupMessages(client, buildSetDcaMembersMessages(id, normalizedMembers));
@@ -2191,7 +3114,8 @@ function App() {
       }
     }
 
-    for (let odd = 1; odd < 8; odd += 2) {
+    const auxCount = getAuxBusCount();
+    for (let odd = 1; odd < auxCount; odd += 2) {
       const even = odd + 1;
       const key = pairKey(odd, even);
       if (!auxLinks[key]) continue;
@@ -2249,10 +3173,14 @@ function App() {
   }
 
   function handleMuteGroupToggleActive(id: MuteGroupId) {
+    const group = muteGroups[id - 1];
+    if (!group) return;
+
+    const nextActive = !group.active;
+
     const client = clientRef.current;
     if (!client || !isConnected) return;
 
-    const nextActive = !muteGroups[id - 1].active;
     try {
       sendGroupMessages(client, buildSetMuteGroupActiveMessages(id, nextActive));
     } catch (error) {
@@ -2264,11 +3192,11 @@ function App() {
   }
 
   function handleMuteGroupMembersChange(id: MuteGroupId, members: GroupMember[]) {
-    const client = clientRef.current;
-    if (!client || !isConnected) return;
-
     const currentMembers = muteGroups[id - 1]?.members ?? [];
     const normalizedMembers = normalizeMuteGroupMembersForLinkedTargets(currentMembers, members);
+
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
 
     try {
       sendGroupMessages(client, buildSetMuteGroupMembersMessages(id, normalizedMembers));
@@ -2295,22 +3223,18 @@ function App() {
   }
 
   function handleMuteGroupAllMuted(id: MuteGroupId) {
+    const mappedMembers = assignableMemberIds.filter((member) => member !== "MASTER_L" && member !== "MASTER_R");
+
     const client = clientRef.current;
     if (!client || !isConnected) return;
 
     try {
-      sendGroupMessages(
-        client,
-        buildAllMutedMuteGroupMessages(id, {
-          allowDerived: MUTE_GROUPS_CONFIG[id].isDerived ?? false,
-        })
-      );
+      sendGroupMessages(client, buildSetMuteGroupMembersMessages(id, mappedMembers as GroupMember[]));
     } catch (error) {
       console.error("[Mute] all muted error:", error);
       return;
     }
 
-    const mappedMembers = assignableMemberIds.filter((member) => member !== "MASTER_L" && member !== "MASTER_R");
     updateMuteGroupState(id, { members: mappedMembers as GroupMember[] });
   }
 
@@ -2321,9 +3245,31 @@ function App() {
   }
 
   function applyMixerChannelProfile(nextChannelCount: number) {
+    ACTIVE_CHANNEL_PROFILE = channelCountToProtocolProfile(nextChannelCount);
+    setGroupProtocolProfile(ACTIVE_CHANNEL_PROFILE);
+    setBitmaskProtocolProfile(ACTIVE_CHANNEL_PROFILE);
+    const nextAuxCount = getAuxBusCount();
+    const nextFxCount = getFxBusCount();
+    const nextDcaIds = getDcaIdsForChannelCount(nextChannelCount);
+
     setChannelCount(nextChannelCount);
     setChannels(createInitialChannelsState(nextChannelCount));
     setProcessorStates(createInitialProcessorStates(nextChannelCount));
+    setAuxStrips(createVirtualStripsState(nextAuxCount, DEFAULT_AUX_COLOR_ID));
+    setFxStrips(createVirtualStripsState(nextFxCount, DEFAULT_FX_COLOR_ID));
+    setAuxProcessorStates(Array.from({ length: nextAuxCount }, () => createDefaultAuxProcessorState()));
+    setFxProcessorStates(Array.from({ length: nextFxCount }, () => createDefaultProcessorState()));
+    setFxPresetStates(createInitialFxPresetStates(nextFxCount));
+    setSelectedAuxSendsTarget((current) => Math.max(1, Math.min(nextAuxCount, current)));
+    setSelectedFxSendsTarget((current) => Math.max(1, Math.min(nextFxCount, current)));
+    setDcaNames((current) => Array.from({ length: nextDcaIds.length }, (_, index) => current[index] ?? getDefaultDcaGroupName(index)));
+    setDcaColorIds((current) => Array.from({ length: nextDcaIds.length }, (_, index) => {
+      const stored = current[index];
+      if (typeof stored === "number") return Math.max(0, Math.min(12, Math.round(stored)));
+      return DCA_DEFAULT_COLOR_IDS[nextDcaIds[index]];
+    }));
+    setDcaGroups(createInitialDcaState(nextChannelCount));
+    setMuteGroups(createInitialMuteState(nextChannelCount));
     setChannelLinks({});
     setChannelSendValues(createDefaultSendValues());
     setSendTapPoints(createDefaultSendTapPoints());
@@ -2331,6 +3277,24 @@ function App() {
     setAuxInputSendTapPoints({});
     setFxInputSendValues({});
     setFxInputSendTapPoints({});
+  }
+
+  function hydrateDcaCacheForMixer(mixerCacheIdentity: string | null, channelTotal: number) {
+    const dcaIds = getDcaIdsForChannelCount(channelTotal);
+    const cachedNames = readScopedDcaNames(mixerCacheIdentity, dcaIds.length);
+    const cachedColorIds = readScopedDcaColorIds(mixerCacheIdentity, dcaIds);
+
+    if (cachedNames) {
+      setDcaNames(cachedNames);
+    } else {
+      setDcaNames(dcaIds.map((_, index) => getDefaultDcaGroupName(index)));
+    }
+
+    if (cachedColorIds) {
+      setDcaColorIds(cachedColorIds);
+    } else {
+      setDcaColorIds(dcaIds.map((id) => DCA_DEFAULT_COLOR_IDS[id]));
+    }
   }
 
   // Removed setSelectedForSection - no longer used in new component structure
@@ -2357,6 +3321,17 @@ function App() {
     );
   }
 
+  function updateFxPresetState(
+    fxNumber: number,
+    updater: (current: FxPresetState) => FxPresetState
+  ) {
+    setFxPresetStates((current) =>
+      current.map((presetState, index) =>
+        index === fxNumber - 1 ? updater(presetState) : presetState
+      )
+    );
+  }
+
   function updateFxProcessorState(
     fxNumber: number,
     updater: (current: ProcessorState) => ProcessorState
@@ -2377,6 +3352,60 @@ function App() {
     return [odd, even];
   }
 
+  function lockChannelPairTransition(key: string, durationMs = 1300) {
+    channelLinkTransitionUntilRef.current.set(key, Date.now() + durationMs);
+  }
+
+  function unlockChannelPairTransition(key: string) {
+    channelLinkTransitionUntilRef.current.delete(key);
+  }
+
+  function isChannelPairTransitionLocked(key: string, now = Date.now()) {
+    const until = channelLinkTransitionUntilRef.current.get(key);
+    if (!until) return false;
+    if (now > until) {
+      channelLinkTransitionUntilRef.current.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  function lockAuxPairTransition(key: string, durationMs = 1300) {
+    auxLinkTransitionUntilRef.current.set(key, Date.now() + durationMs);
+  }
+
+  function unlockAuxPairTransition(key: string) {
+    auxLinkTransitionUntilRef.current.delete(key);
+  }
+
+  function isAuxPairTransitionLocked(key: string, now = Date.now()) {
+    const until = auxLinkTransitionUntilRef.current.get(key);
+    if (!until) return false;
+    if (now > until) {
+      auxLinkTransitionUntilRef.current.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  function lockMasterLinkTransition(durationMs = 1300) {
+    masterLinkTransitionUntilRef.current = Date.now() + durationMs;
+  }
+
+  function unlockMasterLinkTransition() {
+    masterLinkTransitionUntilRef.current = 0;
+  }
+
+  function isMasterLinkTransitionLocked(now = Date.now()) {
+    const until = masterLinkTransitionUntilRef.current;
+    if (!until) return false;
+    if (now > until) {
+      masterLinkTransitionUntilRef.current = 0;
+      return false;
+    }
+    return true;
+  }
+
   function getLinkedAuxTargets(auxNumber: number) {
     const [odd, even] = getAuxPair(auxNumber);
     const key = pairKey(odd, even);
@@ -2389,29 +3418,37 @@ function App() {
   async function syncChannelPairContext(channelNumber: number) {
     const client = clientRef.current;
     if (!client) return;
+    const isAx32 = isAx32ProfileActive();
 
     const [odd, even] = getChannelPair(channelNumber);
     const key = pairKey(odd, even);
 
     await Promise.all([syncChannelState(odd), syncChannelState(even)]);
 
-    const response = await client.readParams([
+    const mirrorParams = CHANNEL_LINK_MIRROR_BASES.flatMap((base) => [
+      channelParam(odd, base),
+      channelParam(even, base),
+    ]);
+
+    const values = await readValuesMapChunked(
+      client,
+      [
       channelParam(odd, 75),
       channelParam(even, 75),
       channelParam(odd, 85),
       channelParam(odd, 86),
       channelParam(even, 85),
       channelParam(even, 86),
+      ...(isAx32 ? [getChannelLinkParam()] : []),
+      ...mirrorParams,
       channelColorParam(odd),
       channelColorParam(even),
-    ]);
-    const values = new Map(response.map((item) => [item.param, item.value]));
+      ],
+      isAx32 ? 24 : 40,
+      isAx32 ? 900 : 2200
+    );
     const oddPan = valueToPan(values.get(channelParam(odd, 75)) ?? 100);
     const evenPan = valueToPan(values.get(channelParam(even, 75)) ?? 100);
-    const oddMasterLSend = values.get(channelParam(odd, 85)) ?? 1200;
-    const oddMasterRSend = values.get(channelParam(odd, 86)) ?? 1200;
-    const evenMasterLSend = values.get(channelParam(even, 85)) ?? 1200;
-    const evenMasterRSend = values.get(channelParam(even, 86)) ?? 1200;
     const oddColor = normalizeColorByScope(
       "input",
       valueToColorId(values.get(channelColorParam(odd)) ?? 1)
@@ -2420,38 +3457,63 @@ function App() {
       "input",
       valueToColorId(values.get(channelColorParam(even)) ?? 1)
     );
-    const linked = Boolean(channelLinks[key]);
+    let linked: boolean;
 
-    setChannelLinks((current) => ({
-      ...current,
-      [key]: linked,
-    }));
+    if (isAx32) {
+      const linkMask = values.get(getChannelLinkParam()) ?? 0;
+      const pairBit = 1 << Math.floor((odd - 1) / 2);
+      linked = (linkMask & pairBit) !== 0;
+    } else {
+      let mirroredControls = 0;
+      let comparedControls = 0;
+
+      CHANNEL_LINK_MIRROR_BASES.forEach((base) => {
+        const oddValue = values.get(channelParam(odd, base));
+        const evenValue = values.get(channelParam(even, base));
+        if (oddValue === undefined || evenValue === undefined) return;
+        comparedControls += 1;
+        if (oddValue === evenValue) mirroredControls += 1;
+      });
+
+      const hasPanLock = oddPan === 0 && evenPan === 200;
+      const hasDeskUnlinkSignature = oddPan === 0 && evenPan === 0;
+      const hasStrongMirrorSignature =
+        comparedControls >= 6 &&
+        mirroredControls >= Math.max(5, Math.ceil(comparedControls * 0.5));
+
+      const linkedFromPanLock = hasPanLock && hasStrongMirrorSignature;
+      const hasEnoughEvidence = comparedControls >= 6;
+      const linkedFromEvidence = hasDeskUnlinkSignature && hasStrongMirrorSignature
+        ? false
+        : linkedFromPanLock;
+      linked = hasEnoughEvidence
+        ? linkedFromEvidence
+        : hasPanLock || Boolean(channelLinks[key]);
+    }
+
+    setChannelLinks((current) => {
+      if (isChannelPairTransitionLocked(key)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [key]: linked,
+      };
+    });
 
     if (linked) {
-      if (oddPan !== 0 || evenPan !== 200) {
-        client.setPan(odd, 0);
-        client.setPan(even, 200);
-      }
-
-      // Strict stereo routing: odd channel feeds only L, even channel feeds only R.
-      // This removes residual crossfeed in master meters when only one side has source.
-      if (oddMasterRSend !== 0 || evenMasterLSend !== 0 || evenMasterRSend !== oddMasterLSend) {
-        client.sendParam(channelParam(odd, 86), 0);
-        client.sendParam(channelParam(even, 85), 0);
-        client.sendParam(channelParam(even, 86), oddMasterLSend);
-      }
-
       setChannels((current) => {
         const next = [...current];
         next[odd - 1] = {
           ...next[odd - 1],
-          pan: 0,
+          pan: oddPan,
           colorId: oddColor,
         };
         next[even - 1] = {
           ...next[even - 1],
           ...next[odd - 1],
-          pan: 200,
+          pan: evenPan,
           colorId: oddColor,
           iconId: next[odd - 1].iconId,
         };
@@ -2468,9 +3530,135 @@ function App() {
     const client = clientRef.current;
     if (!client) return;
 
-    const params = {
+    const params = getChannelStateParams(channelNumber);
+
+    const response = await client.readParams(Object.values(params), 2000);
+    const values = new Map(response.map((item) => [item.param, item.value]));
+
+    applyChannelStateFromValues(channelNumber, values, params);
+  }
+
+  async function syncChannelProcessorState(channelNumber: number) {
+    const client = clientRef.current;
+    if (!client) return;
+
+    const params = processorParams(channelNumber);
+    const response = await client.readParams(Object.values(params), 2500);
+    const values = new Map(response.map((item) => [item.param, item.value]));
+    applyChannelProcessorStateFromValues(channelNumber, values, params);
+  }
+
+  function getUsbReturnPatchParamsForActiveProfile() {
+    if (!isAx32ProfileActive()) return [];
+
+    return Array.from(
+      { length: AX32_USB_RETURN_PATCH_SIZE },
+      (_, index) => AX32_USB_RETURN_PATCH_BASE + index
+    );
+  }
+
+  function resolveInputSourceControlChannel(channelNumber: number) {
+    if (!isAx32ProfileActive()) {
+      return channelNumber;
+    }
+
+    const mappedChannel = usbReturnPatchMapRef.current.get(channelNumber);
+    if (mappedChannel === undefined) {
+      return channelNumber;
+    }
+
+    if (mappedChannel < 1 || mappedChannel > channelCount) {
+      return channelNumber;
+    }
+
+    return mappedChannel;
+  }
+
+  async function refreshResolvedInputSourceStates() {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    const readParams = Array.from({ length: channelCount }, (_, index) => {
+      const channelNumber = index + 1;
+      const controlChannel = resolveInputSourceControlChannel(channelNumber);
+      return inputSourceParam(controlChannel);
+    });
+    const uniqueReadParams = Array.from(new Set(readParams));
+
+    const timeoutMs = isAx32ProfileActive() ? 700 : 900;
+    const values = await readValuesMapChunked(client, uniqueReadParams, 24, timeoutMs);
+
+    for (let channelNumber = 1; channelNumber <= channelCount; channelNumber += 1) {
+      const controlChannel = resolveInputSourceControlChannel(channelNumber);
+      const sourceParam = inputSourceParam(controlChannel);
+      const rawValue = values.get(sourceParam);
+      if (rawValue === undefined) continue;
+
+      updateChannelState(channelNumber, { usbInputOn: rawValue === 0 });
+    }
+  }
+
+  async function syncUsbReturnPatchMap(options?: { refreshInputStates?: boolean }) {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    const patchParams = getUsbReturnPatchParamsForActiveProfile();
+
+    if (patchParams.length === 0) {
+      if (usbReturnPatchMapRef.current.size > 0) {
+        usbReturnPatchMapRef.current = new Map();
+      }
+      return;
+    }
+
+    const response = await client.readParams(patchParams, 1200);
+    const nextPatchMap = new Map<number, number>();
+
+    response.forEach(({ param, value }) => {
+      const destinationChannel = param - AX32_USB_RETURN_PATCH_BASE + 1;
+      if (destinationChannel < 1 || destinationChannel > AX32_USB_RETURN_PATCH_SIZE) {
+        return;
+      }
+
+      const sourceChannel = Math.round(value);
+      if (sourceChannel < 1 || sourceChannel > AX32_USB_RETURN_PATCH_SIZE) {
+        return;
+      }
+
+      nextPatchMap.set(destinationChannel, sourceChannel);
+    });
+
+    if (nextPatchMap.size === 0) {
+      return;
+    }
+
+    let changed = nextPatchMap.size !== usbReturnPatchMapRef.current.size;
+    if (!changed) {
+      for (const [destination, source] of nextPatchMap.entries()) {
+        if (usbReturnPatchMapRef.current.get(destination) !== source) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    usbReturnPatchMapRef.current = nextPatchMap;
+
+    if (options?.refreshInputStates !== false) {
+      await refreshResolvedInputSourceStates();
+    }
+  }
+
+  function getChannelStateParams(channelNumber: number) {
+    const controlChannel = resolveInputSourceControlChannel(channelNumber);
+
+    return {
       hiZ: channelParam(channelNumber, 64),
-      inputSource: 2846 + channelNumber,
+      inputSource: inputSourceParam(controlChannel),
       phantom: channelParam(channelNumber, 65),
       gain: channelParam(channelNumber, 72),
       phase: channelParam(channelNumber, 73),
@@ -2481,131 +3669,684 @@ function App() {
       soloLeft: channelParam(channelNumber, 87),
       soloRight: channelParam(channelNumber, 88),
     };
+  }
 
-    const response = await client.readParams(Object.values(params), 2000);
-    const values = new Map(response.map((item) => [item.param, item.value]));
+  function applyChannelStateFromValues(
+    channelNumber: number,
+    values: Map<number, number>,
+    params: ReturnType<typeof getChannelStateParams>,
+    options?: { shouldApplyParam?: (param: number, value: number) => boolean }
+  ) {
+    const shouldApplyParam = options?.shouldApplyParam;
+    const patch: Partial<ChannelState> = {};
 
-    const faderDb = valueToFaderDb(values.get(params.fader) ?? 1200);
+    const readAccepted = (param: number) => {
+      const value = values.get(param);
+      if (value === undefined) return undefined;
+      if (shouldApplyParam && !shouldApplyParam(param, value)) return undefined;
+      return value;
+    };
 
-    updateChannelState(channelNumber, {
-      hiZOn: valueToBoolean(values.get(params.hiZ) ?? 0),
-      usbInputOn: (values.get(2846 + channelNumber) ?? 0) === 0,
-      phantomOn: valueToBoolean(values.get(params.phantom) ?? 0),
-      gain: valueToGain(values.get(params.gain) ?? 0),
-      phasePositive: valueToBoolean(values.get(params.phase) ?? 1),
-      colorId: normalizeColorByScope(
-        "input",
-        valueToColorId(values.get(params.color) ?? 1)
-      ),
-      muted: valueToMute(values.get(params.mute) ?? 1),
-      pan: valueToPan(values.get(params.pan) ?? 100),
-      faderDb,
-      faderPosition: dbToFaderPosition(faderDb),
-      soloOn: (values.get(params.soloLeft) ?? 0) > 0 || (values.get(params.soloRight) ?? 0) > 0,
+    const hiZ = readAccepted(params.hiZ);
+    if (hiZ !== undefined) {
+      patch.hiZOn = valueToBoolean(hiZ);
+    }
+
+    const inputSource = readAccepted(params.inputSource);
+    if (inputSource !== undefined) {
+      patch.usbInputOn = inputSource === 0;
+    }
+
+    const phantom = readAccepted(params.phantom);
+    if (phantom !== undefined) {
+      patch.phantomOn = valueToBoolean(phantom);
+    }
+
+    const gain = readAccepted(params.gain);
+    if (gain !== undefined) {
+      patch.gain = valueToGain(gain);
+    }
+
+    const phase = readAccepted(params.phase);
+    if (phase !== undefined) {
+      patch.phasePositive = valueToBoolean(phase);
+    }
+
+    const color = readAccepted(params.color);
+    if (color !== undefined) {
+      patch.colorId = normalizeColorByScope("input", valueToColorId(color));
+    }
+
+    const mute = readAccepted(params.mute);
+    if (mute !== undefined) {
+      patch.muted = valueToMute(mute);
+    }
+
+    const pan = readAccepted(params.pan);
+    if (pan !== undefined) {
+      patch.pan = valueToPan(pan);
+    }
+
+    const fader = readAccepted(params.fader);
+    if (fader !== undefined) {
+      const faderDb = valueToFaderDb(fader);
+      patch.faderDb = faderDb;
+      patch.faderPosition = dbToFaderPosition(faderDb);
+    }
+
+    const soloLeft = readAccepted(params.soloLeft);
+    const soloRight = readAccepted(params.soloRight);
+    if (soloLeft !== undefined && soloRight !== undefined) {
+      patch.soloOn = soloLeft > 0 || soloRight > 0;
+    }
+
+    if (Object.keys(patch).length === 0) return;
+    updateChannelState(channelNumber, patch);
+  }
+
+  function applyChannelProcessorStateFromValues(
+    channelNumber: number,
+    values: Map<number, number>,
+    params: ReturnType<typeof processorParams>
+  ) {
+    const getValue = (param: number, fallback: number) => values.get(param) ?? fallback;
+
+    setProcessorStates((current) => {
+      const next = [...current];
+      const index = channelNumber - 1;
+      const currentState = current[index];
+      if (!currentState) return current;
+
+      const rawHpfFreq = getValue(params.hpfFreq, 0);
+      const rawLpfFreq = getValue(params.lpfFreq, 0);
+      const nextHpfEnabled = inferHpfEnabledFromRaw(rawHpfFreq, currentState.eq.hpfEnabled);
+      const nextLpfEnabled = inferLpfEnabledFromRaw(rawLpfFreq, currentState.eq.lpfEnabled);
+
+      const parsedState: ProcessorState = {
+        gate: {
+          enabled: valueToBoolean(getValue(params.gateEnabled, 0)),
+          threshold: valueToGateThreshold(getValue(params.gateThreshold, 50)),
+          attack: valueToGateAttack(getValue(params.gateAttack, 15)),
+          decay: valueToGateDecay(getValue(params.gateDecay, 2)),
+          hold: valueToGateHold(getValue(params.gateHold, 120)),
+        },
+        comp: {
+          enabled: valueToBoolean(getValue(params.compEnabled, 0)),
+          ratio: valueToCompRatio(getValue(params.compRatio, 100)),
+          attack: valueToCompTime(getValue(params.compAttack, 300)),
+          release: valueToCompTime(getValue(params.compRelease, 1450)),
+          threshold: valueToCompThreshold(getValue(params.compThreshold, 0)),
+          gain: valueToCompGain(getValue(params.compGain, 1200)),
+        },
+        eq: {
+          enabled: valueToBoolean(getValue(params.eqEnabled, 0)),
+          hpfEnabled: nextHpfEnabled,
+          hpfType: valueToHpfTypeSlope(getValue(params.hpfTypeSlope, 8)).type,
+          hpfSlope: valueToHpfTypeSlope(getValue(params.hpfTypeSlope, 8)).slope,
+          hpfFreq: shouldKeepCachedHpfFreq(rawHpfFreq)
+            ? currentState.eq.hpfFreq
+            : resolveHpfFreqFromRaw(rawHpfFreq, currentState.eq.hpfFreq),
+          lpfEnabled: nextLpfEnabled,
+          lpfType: valueToLpfTypeSlope(getValue(params.lpfTypeSlope, 13)).type,
+          lpfSlope: valueToLpfTypeSlope(getValue(params.lpfTypeSlope, 13)).slope,
+          lpfFreq: shouldKeepCachedLpfFreq(rawLpfFreq)
+            ? currentState.eq.lpfFreq
+            : resolveLpfFreqFromRaw(rawLpfFreq, currentState.eq.lpfFreq),
+          bands: [
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(params.eqBand1Freq, 120)),
+              gain: valueToEqGain(getValue(params.eqBand1Gain, 470)),
+              q: valueToEqQ(getValue(params.eqBand1Q, 120)),
+            },
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(params.eqBand2Freq, 393)),
+              gain: valueToEqGain(getValue(params.eqBand2Gain, 477)),
+              q: valueToEqQ(getValue(params.eqBand2Q, 121)),
+            },
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(params.eqBand3Freq, 1010)),
+              gain: valueToEqGain(getValue(params.eqBand3Gain, 478)),
+              q: valueToEqQ(getValue(params.eqBand3Q, 121)),
+            },
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(params.eqBand4Freq, 11000)),
+              gain: valueToEqGain(getValue(params.eqBand4Gain, 526)),
+              q: valueToEqQ(getValue(params.eqBand4Q, 121)),
+            },
+          ],
+        },
+      };
+
+      next[index] = parsedState;
+
+      const [odd, even] = getChannelPair(channelNumber);
+      const key = pairKey(odd, even);
+      if (channelLinks[key]) {
+        const oddIndex = odd - 1;
+        const evenIndex = even - 1;
+        // For linked pairs, always fan out the latest parsed processor state to both sides.
+        // This avoids stale rollback when updates arrive from the even channel first.
+        next[oddIndex] = cloneProcessorState(parsedState);
+        next[evenIndex] = cloneProcessorState(parsedState);
+      }
+
+      return next;
     });
   }
 
-  async function syncChannelProcessorState(channelNumber: number) {
+  async function readValuesMapChunked(
+    client: Axios16Client,
+    params: number[],
+    chunkSize: number,
+    timeoutMs: number
+  ) {
+    const values = new Map<number, number>();
+
+    for (let index = 0; index < params.length; index += chunkSize) {
+      const chunk = params.slice(index, index + chunkSize);
+
+      try {
+        const response = await client.readParams(chunk, timeoutMs);
+        response.forEach((item) => values.set(item.param, item.value));
+      } catch {
+        // Keep partial sync progress; don't fall back to per-channel slow path.
+      }
+    }
+
+    return values;
+  }
+
+  function getChannelSyncParams(channelNumber: number) {
+    return [
+      ...Object.values(getChannelStateParams(channelNumber)),
+      ...Object.values(processorParams(channelNumber)),
+    ];
+  }
+
+  function hasCoreChannelValues(values: Map<number, number>, channelNumber: number) {
+    const stateParams = getChannelStateParams(channelNumber);
+    const procParams = processorParams(channelNumber);
+
+    return (
+      values.has(stateParams.fader) ||
+      values.has(stateParams.gain) ||
+      values.has(procParams.eqEnabled)
+    );
+  }
+
+  async function syncChannelCombinedRead(channelNumber: number) {
     const client = clientRef.current;
     if (!client) return;
 
-    const params = processorParams(channelNumber);
-    const response = await client.readParams(Object.values(params), 2500);
+    const params = getChannelSyncParams(channelNumber);
+    const timeoutMs = isAx32ProfileActive() ? 900 : AX16_24_READ_TIMEOUT_MS;
+    const response = await client.readParams(params, timeoutMs);
     const values = new Map(response.map((item) => [item.param, item.value]));
-    const getValue = (param: number, fallback: number) =>
-      values.get(param) ?? fallback;
 
-    updateProcessorState(channelNumber, (current) => {
-      const rawHpfFreq = getValue(params.hpfFreq, 0);
-      const rawLpfFreq = getValue(params.lpfFreq, 0);
-      const nextHpfEnabled = inferHpfEnabledFromRaw(rawHpfFreq, current.eq.hpfEnabled);
-      const nextLpfEnabled = inferLpfEnabledFromRaw(rawLpfFreq, current.eq.lpfEnabled);
+    applyChannelStateFromValues(channelNumber, values, getChannelStateParams(channelNumber));
+    applyChannelProcessorStateFromValues(channelNumber, values, processorParams(channelNumber));
+  }
 
-      return ({
-      gate: {
-        enabled: valueToBoolean(getValue(params.gateEnabled, 0)),
-        threshold: valueToGateThreshold(getValue(params.gateThreshold, 50)),
-        attack: valueToGateAttack(getValue(params.gateAttack, 15)),
-        decay: valueToGateDecay(getValue(params.gateDecay, 2)),
-        hold: valueToGateHold(getValue(params.gateHold, 120)),
-      },
-      comp: {
-        enabled: valueToBoolean(getValue(params.compEnabled, 0)),
-        ratio: valueToCompRatio(getValue(params.compRatio, 100)),
-        attack: valueToCompTime(getValue(params.compAttack, 300)),
-        release: valueToCompTime(getValue(params.compRelease, 1450)),
-        threshold: valueToCompThreshold(getValue(params.compThreshold, 0)),
-        gain: valueToCompGain(getValue(params.compGain, 1200)),
-      },
-      eq: {
-        enabled: valueToBoolean(getValue(params.eqEnabled, 0)),
-        hpfEnabled: nextHpfEnabled,
-        hpfType: valueToHpfTypeSlope(
-          getValue(params.hpfTypeSlope, 8)
-        ).type,
-        hpfSlope: valueToHpfTypeSlope(
-          getValue(params.hpfTypeSlope, 8)
-        ).slope,
-        hpfFreq:
-          shouldKeepCachedHpfFreq(rawHpfFreq)
-            ? current.eq.hpfFreq
-            : resolveHpfFreqFromRaw(rawHpfFreq, current.eq.hpfFreq),
-        lpfEnabled: nextLpfEnabled,
-        lpfType: valueToLpfTypeSlope(
-          getValue(params.lpfTypeSlope, 13)
-        ).type,
-        lpfSlope: valueToLpfTypeSlope(
-          getValue(params.lpfTypeSlope, 13)
-        ).slope,
-        lpfFreq:
-          shouldKeepCachedLpfFreq(rawLpfFreq)
-            ? current.eq.lpfFreq
-            : resolveLpfFreqFromRaw(rawLpfFreq, current.eq.lpfFreq),
-        bands: [
-          {
-            enabled: true,
-            freq: valueToFrequency(getValue(params.eqBand1Freq, 120)),
-            gain: valueToEqGain(getValue(params.eqBand1Gain, 470)),
-            q: valueToEqQ(getValue(params.eqBand1Q, 120)),
-          },
-          {
-            enabled: true,
-            freq: valueToFrequency(getValue(params.eqBand2Freq, 393)),
-            gain: valueToEqGain(getValue(params.eqBand2Gain, 477)),
-            q: valueToEqQ(getValue(params.eqBand2Q, 121)),
-          },
-          {
-            enabled: true,
-            freq: valueToFrequency(getValue(params.eqBand3Freq, 1010)),
-            gain: valueToEqGain(getValue(params.eqBand3Gain, 478)),
-            q: valueToEqQ(getValue(params.eqBand3Q, 121)),
-          },
-          {
-            enabled: true,
-            freq: valueToFrequency(getValue(params.eqBand4Freq, 11000)),
-            gain: valueToEqGain(getValue(params.eqBand4Gain, 526)),
-            q: valueToEqQ(getValue(params.eqBand4Q, 121)),
-          },
-        ],
-      },
-    })
+  async function syncChannelBatch(channelNumbers: number[]) {
+    const client = clientRef.current;
+    if (!client || channelNumbers.length === 0) return;
+
+    const params = channelNumbers.flatMap((channelNumber) =>
+      getChannelSyncParams(channelNumber)
+    );
+
+    const chunkSize = isAx32ProfileActive() ? 24 : AX16_24_BATCH_CHANNEL_CHUNK;
+    const timeoutMs = isAx32ProfileActive() ? 700 : AX16_24_READ_TIMEOUT_MS;
+    const values = await readValuesMapChunked(client, params, chunkSize, timeoutMs);
+
+    if (values.size === 0) {
+      throw new Error("Nao foi possivel ler os canais da mesa.");
+    }
+
+    const missingChannels: number[] = [];
+
+    for (const channelNumber of channelNumbers) {
+      if (!hasCoreChannelValues(values, channelNumber)) {
+        missingChannels.push(channelNumber);
+        continue;
+      }
+
+      applyChannelStateFromValues(channelNumber, values, getChannelStateParams(channelNumber));
+      applyChannelProcessorStateFromValues(channelNumber, values, processorParams(channelNumber));
+    }
+
+    for (const channelNumber of missingChannels) {
+      try {
+        await syncChannelCombinedRead(channelNumber);
+      } catch {
+        // Keep other channels synced even if one fallback read fails.
+      }
+    }
+  }
+
+  function getAuxStateParams(auxNumber: number) {
+    const params = auxProcessorParams(auxNumber);
+
+    return {
+      fader: params.fader,
+      phase: params.phase,
+      color: auxColorParam(auxNumber),
+      mute: auxMuteParam(auxNumber),
+    };
+  }
+
+  function applyAuxStateFromValues(
+    auxNumber: number,
+    values: Map<number, number>,
+    params: ReturnType<typeof getAuxStateParams>,
+    options?: { shouldApplyParam?: (param: number, value: number) => boolean }
+  ) {
+    const shouldApplyParam = options?.shouldApplyParam;
+    const patch: Partial<ChannelState> = {};
+
+    const readAccepted = (param: number) => {
+      const value = values.get(param);
+      if (value === undefined) return undefined;
+      if (shouldApplyParam && !shouldApplyParam(param, value)) return undefined;
+      return value;
+    };
+
+    const fader = readAccepted(params.fader);
+    if (fader !== undefined) {
+      const faderDb = valueToFaderDb(fader);
+      patch.faderDb = faderDb;
+      patch.faderPosition = dbToFaderPosition(faderDb);
+    }
+
+    const phase = readAccepted(params.phase);
+    if (phase !== undefined) {
+      patch.phasePositive = valueToBoolean(phase);
+    }
+
+    const mute = readAccepted(params.mute);
+    if (mute !== undefined) {
+      patch.muted = valueToMute(mute);
+    }
+
+    const rawColor = readAccepted(params.color);
+    if (rawColor !== undefined) {
+      // Nunca envie cor para a mesa durante sync/leitura, apenas ajuste local
+      const nextColorId = resolveMesaColorByScope(
+        "aux",
+        rawColor,
+        undefined // nunca envie autofix durante sync
+      );
+      if (nextColorId !== undefined) {
+        patch.colorId = nextColorId;
+      }
+    }
+
+    if (Object.keys(patch).length === 0) return;
+    updateAuxStripState(auxNumber, patch);
+  }
+
+  function applyAuxProcessorStateFromValues(
+    auxNumber: number,
+    values: Map<number, number>,
+    params: ReturnType<typeof auxProcessorParams>
+  ) {
+    const getValue = (param: number, fallback: number) => values.get(param) ?? fallback;
+
+    updateAuxProcessorState(auxNumber, (current) => {
+      const rawHpfFreq = values.get(params.hpfFreq);
+      const rawLpfFreq = values.get(params.lpfFreq);
+      const nextHpfEnabled =
+        rawHpfFreq === undefined
+          ? current.eq.hpfEnabled
+          : inferHpfEnabledFromRaw(rawHpfFreq, current.eq.hpfEnabled);
+      const nextLpfEnabled =
+        rawLpfFreq === undefined
+          ? current.eq.lpfEnabled
+          : inferLpfEnabledFromRaw(rawLpfFreq, current.eq.lpfEnabled);
+
+      return {
+        ...current,
+        comp: {
+          enabled: valueToBoolean(getValue(params.compEnabled, 0)),
+          ratio: valueToCompRatio(getValue(params.compRatio, 100)),
+          attack: valueToCompTime(getValue(params.compAttack, 300)),
+          release: valueToCompTime(getValue(params.compRelease, 1450)),
+          threshold: valueToCompThreshold(getValue(params.compThreshold, 0)),
+          gain: valueToCompGain(getValue(params.compGain, 1200)),
+        },
+        eq: {
+          ...current.eq,
+          enabled: valueToBoolean(getValue(params.eqEnabled, current.eq.enabled ? 1 : 0)),
+          hpfEnabled: nextHpfEnabled,
+          hpfType:
+            values.get(params.hpfTypeSlope) === undefined
+              ? current.eq.hpfType
+              : valueToHpfTypeSlope(values.get(params.hpfTypeSlope) as number).type,
+          hpfSlope:
+            values.get(params.hpfTypeSlope) === undefined
+              ? current.eq.hpfSlope
+              : valueToHpfTypeSlope(values.get(params.hpfTypeSlope) as number).slope,
+          hpfFreq:
+            shouldKeepCachedHpfFreq(values.get(params.hpfFreq))
+              ? current.eq.hpfFreq
+              : resolveHpfFreqFromRaw(values.get(params.hpfFreq), current.eq.hpfFreq),
+          lpfEnabled: nextLpfEnabled,
+          lpfType:
+            values.get(params.lpfTypeSlope) === undefined
+              ? current.eq.lpfType
+              : valueToLpfTypeSlope(values.get(params.lpfTypeSlope) as number).type,
+          lpfSlope:
+            values.get(params.lpfTypeSlope) === undefined
+              ? current.eq.lpfSlope
+              : valueToLpfTypeSlope(values.get(params.lpfTypeSlope) as number).slope,
+          lpfFreq:
+            shouldKeepCachedLpfFreq(values.get(params.lpfFreq))
+              ? current.eq.lpfFreq
+              : resolveLpfFreqFromRaw(values.get(params.lpfFreq), current.eq.lpfFreq),
+          bands: [
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(params.eqBand1Freq, 63)),
+              gain: valueToEqGain(getValue(params.eqBand1Gain, 500)),
+              q: valueToEqQ(getValue(params.eqBand1Q, 100)),
+            },
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(params.eqBand2Freq, 160)),
+              gain: valueToEqGain(getValue(params.eqBand2Gain, 500)),
+              q: valueToEqQ(getValue(params.eqBand2Q, 100)),
+            },
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(params.eqBand3Freq, 400)),
+              gain: valueToEqGain(getValue(params.eqBand3Gain, 500)),
+              q: valueToEqQ(getValue(params.eqBand3Q, 100)),
+            },
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(params.eqBand4Freq, 1000)),
+              gain: valueToEqGain(getValue(params.eqBand4Gain, 500)),
+              q: valueToEqQ(getValue(params.eqBand4Q, 100)),
+            },
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(params.eqBand5Freq, 2500)),
+              gain: valueToEqGain(getValue(params.eqBand5Gain, 500)),
+              q: valueToEqQ(getValue(params.eqBand5Q, 100)),
+            },
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(params.eqBand6Freq, 6300)),
+              gain: valueToEqGain(getValue(params.eqBand6Gain, 500)),
+              q: valueToEqQ(getValue(params.eqBand6Q, 100)),
+            },
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(params.eqBand7Freq, 16000)),
+              gain: valueToEqGain(getValue(params.eqBand7Gain, 500)),
+              q: valueToEqQ(getValue(params.eqBand7Q, 100)),
+            },
+          ],
+        },
+      };
     });
   }
 
-  async function syncAllChannels() {
+  function getAuxSyncParams(auxNumber: number) {
+    return [
+      ...Object.values(getAuxStateParams(auxNumber)),
+      ...Object.values(auxProcessorParams(auxNumber)),
+    ];
+  }
+
+  function hasCoreAuxValues(values: Map<number, number>, auxNumber: number) {
+    const stateParams = getAuxStateParams(auxNumber);
+    const processor = auxProcessorParams(auxNumber);
+
+    return (
+      values.has(stateParams.fader) ||
+      values.has(stateParams.phase) ||
+      values.has(processor.eqEnabled)
+    );
+  }
+
+  async function syncAuxCombinedRead(auxNumber: number) {
+    const client = clientRef.current;
+    if (!client) return;
+
+    const timeoutMs = isAx32ProfileActive() ? 900 : AX16_24_READ_TIMEOUT_MS;
+    const response = await client.readParams(getAuxSyncParams(auxNumber), timeoutMs);
+    const values = new Map(response.map((item) => [item.param, item.value]));
+
+    applyAuxStateFromValues(auxNumber, values, getAuxStateParams(auxNumber));
+    applyAuxProcessorStateFromValues(auxNumber, values, auxProcessorParams(auxNumber));
+  }
+
+  async function syncAuxBatch(auxNumbers: number[]) {
+    const client = clientRef.current;
+    if (!client || auxNumbers.length === 0) return;
+
+    const params = auxNumbers.flatMap((auxNumber) => getAuxSyncParams(auxNumber));
+
+    const chunkSize = isAx32ProfileActive() ? 22 : AX16_24_BATCH_AUX_CHUNK;
+    const timeoutMs = isAx32ProfileActive() ? 700 : AX16_24_READ_TIMEOUT_MS;
+    const values = await readValuesMapChunked(client, params, chunkSize, timeoutMs);
+
+    if (values.size === 0) {
+      throw new Error("Nao foi possivel ler os auxiliares da mesa.");
+    }
+
+    const missingAux: number[] = [];
+
+    for (const auxNumber of auxNumbers) {
+      if (!hasCoreAuxValues(values, auxNumber)) {
+        missingAux.push(auxNumber);
+        continue;
+      }
+
+      applyAuxStateFromValues(auxNumber, values, getAuxStateParams(auxNumber));
+      applyAuxProcessorStateFromValues(auxNumber, values, auxProcessorParams(auxNumber));
+    }
+
+    for (const auxNumber of missingAux) {
+      try {
+        await syncAuxCombinedRead(auxNumber);
+      } catch {
+        // Keep other AUX synced even if one fallback read fails.
+      }
+    }
+  }
+
+  function applyFxStateFromValues(
+    fxNumber: number,
+    values: Map<number, number>,
+    params: ReturnType<typeof getFxStateParams>,
+    options?: { shouldApplyParam?: (param: number, value: number) => boolean }
+  ) {
+    const shouldApplyParam = options?.shouldApplyParam;
+    const patch: Partial<ChannelState> = {};
+
+    const readAccepted = (param: number) => {
+      const value = values.get(param);
+      if (value === undefined) return undefined;
+      if (shouldApplyParam && !shouldApplyParam(param, value)) return undefined;
+      return value;
+    };
+
+    const mute = readAccepted(params.mute);
+    if (mute !== undefined) {
+      patch.muted = valueToMute(mute);
+    }
+
+    const fader = readAccepted(params.fader);
+    if (fader !== undefined) {
+      const faderDb = valueToFaderDb(fader);
+      patch.faderDb = faderDb;
+      patch.faderPosition = dbToFaderPosition(faderDb);
+    }
+
+    if (Object.keys(patch).length > 0) {
+      updateFxStripState(fxNumber, patch);
+    }
+
+    const processorParams = getFxProcessorParams(fxNumber);
+    if (!processorParams) return;
+    if (!values.has(processorParams.eqEnabled)) return;
+
+    updateFxProcessorState(fxNumber, (current) => {
+      const getValue = (param: number, fallback: number) => values.get(param) ?? fallback;
+      const rawHpfFreq = values.get(processorParams.hpfFreq);
+      const rawLpfFreq = values.get(processorParams.lpfFreq);
+      const rawHpfTypeSlope = values.get(processorParams.hpfTypeSlope);
+      const rawLpfTypeSlope = values.get(processorParams.lpfTypeSlope);
+      const nextHpfEnabled =
+        rawHpfFreq === undefined
+          ? current.eq.hpfEnabled
+          : inferHpfEnabledFromRaw(rawHpfFreq, current.eq.hpfEnabled);
+      const nextLpfEnabled =
+        rawLpfFreq === undefined
+          ? current.eq.lpfEnabled
+          : inferLpfEnabledFromRaw(rawLpfFreq, current.eq.lpfEnabled);
+
+      return {
+        ...current,
+        eq: {
+          ...current.eq,
+          enabled: valueToBoolean(values.get(processorParams.eqEnabled) ?? (current.eq.enabled ? 1 : 0)),
+          hpfEnabled: nextHpfEnabled,
+          hpfType:
+            rawHpfTypeSlope === undefined
+              ? current.eq.hpfType
+              : valueToHpfTypeSlope(rawHpfTypeSlope).type,
+          hpfSlope:
+            rawHpfTypeSlope === undefined
+              ? current.eq.hpfSlope
+              : valueToHpfTypeSlope(rawHpfTypeSlope).slope,
+          hpfFreq:
+            shouldKeepCachedHpfFreq(rawHpfFreq)
+              ? current.eq.hpfFreq
+              : resolveHpfFreqFromRaw(rawHpfFreq, current.eq.hpfFreq),
+          lpfEnabled: nextLpfEnabled,
+          lpfType:
+            rawLpfTypeSlope === undefined
+              ? current.eq.lpfType
+              : valueToLpfTypeSlope(rawLpfTypeSlope).type,
+          lpfSlope:
+            rawLpfTypeSlope === undefined
+              ? current.eq.lpfSlope
+              : valueToLpfTypeSlope(rawLpfTypeSlope).slope,
+          lpfFreq:
+            shouldKeepCachedLpfFreq(rawLpfFreq)
+              ? current.eq.lpfFreq
+              : resolveLpfFreqFromRaw(rawLpfFreq, current.eq.lpfFreq),
+          bands: [
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(processorParams.eqBand1Freq, frequencyToRawValue(DEFAULT_EQ.bands[0].freq))),
+              gain: valueToEqGain(getValue(processorParams.eqBand1Gain, 500)),
+              q: valueToEqQ(getValue(processorParams.eqBand1Q, 100)),
+            },
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(processorParams.eqBand2Freq, frequencyToRawValue(DEFAULT_EQ.bands[1].freq))),
+              gain: valueToEqGain(getValue(processorParams.eqBand2Gain, 500)),
+              q: valueToEqQ(getValue(processorParams.eqBand2Q, 100)),
+            },
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(processorParams.eqBand3Freq, frequencyToRawValue(DEFAULT_EQ.bands[2].freq))),
+              gain: valueToEqGain(getValue(processorParams.eqBand3Gain, 500)),
+              q: valueToEqQ(getValue(processorParams.eqBand3Q, 100)),
+            },
+            {
+              enabled: true,
+              freq: valueToFrequency(getValue(processorParams.eqBand4Freq, frequencyToRawValue(DEFAULT_EQ.bands[3].freq))),
+              gain: valueToEqGain(getValue(processorParams.eqBand4Gain, 500)),
+              q: valueToEqQ(getValue(processorParams.eqBand4Q, 100)),
+            },
+          ],
+        },
+      };
+    });
+  }
+
+  async function syncFxState(fxNumber: number) {
+    const client = clientRef.current;
+    if (!client) return;
+
+    const params = getFxStateParams(fxNumber);
+    const processorParams = getFxProcessorParams(fxNumber);
+    const paramsToRead = [
+      params.fader,
+      params.mute,
+      ...(processorParams
+        ? [
+            processorParams.eqEnabled,
+            processorParams.hpfTypeSlope,
+            processorParams.hpfFreq,
+            processorParams.lpfTypeSlope,
+            processorParams.lpfFreq,
+            processorParams.eqBand1Freq,
+            processorParams.eqBand1Gain,
+            processorParams.eqBand1Q,
+            processorParams.eqBand2Freq,
+            processorParams.eqBand2Gain,
+            processorParams.eqBand2Q,
+            processorParams.eqBand3Freq,
+            processorParams.eqBand3Gain,
+            processorParams.eqBand3Q,
+            processorParams.eqBand4Freq,
+            processorParams.eqBand4Gain,
+            processorParams.eqBand4Q,
+          ]
+        : []),
+    ];
+    const response = await client.readParams(paramsToRead, 1200);
+    const values = new Map(response.map((item) => [item.param, item.value]));
+
+    applyFxStateFromValues(fxNumber, values, params);
+  }
+
+  async function syncAllFxState() {
+    const fxCount = getFxBusCount();
+
+    for (let fx = 1; fx <= fxCount; fx += 1) {
+      await syncFxState(fx);
+    }
+  }
+
+  async function syncAllChannels(channelTotal = channelCount) {
     try {
       setIsSyncing(true);
       setStatus("Sincronizando canais...");
 
-      for (let channel = 1; channel <= channelCount; channel++) {
-        await syncChannelState(channel);
-        await syncChannelProcessorState(channel);
+      if (isAx32ProfileActive()) {
+        const channelBatchSize = 6;
+        for (let channel = 1; channel <= channelTotal; channel += channelBatchSize) {
+          const batch = Array.from(
+            { length: Math.min(channelBatchSize, channelTotal - channel + 1) },
+            (_, index) => channel + index
+          );
+
+          await syncChannelBatch(batch);
+        }
+      } else {
+        for (let channel = 1; channel <= channelTotal; channel++) {
+          await syncChannelState(channel);
+          await syncChannelProcessorState(channel);
+        }
       }
 
       await syncChannelPairVisualState();
+      await syncAllFxState();
       await syncFxColors();
-      await syncFxPresetState();
+      await syncAllFxPresetState();
       await syncMasterState();
+      await syncMasterProcessorState();
       await syncLinkStates();
       await syncAllAux();
 
@@ -2620,19 +4361,296 @@ function App() {
     }
   }
 
-  async function syncChannelEqPreviewStates() {
+  function applyMasterControlFromValues(
+    values: Map<number, number>,
+    params: ReturnType<typeof getMasterParams>,
+    options?: { shouldApplyParam?: (param: number, value: number) => boolean }
+  ) {
+    const shouldApplyParam = options?.shouldApplyParam;
+    const patch: Partial<MasterState> = {};
+
+    const readAccepted = (param: number) => {
+      const value = values.get(param);
+      if (value === undefined) return undefined;
+      if (shouldApplyParam && !shouldApplyParam(param, value)) return undefined;
+      return value;
+    };
+
+    const leftMute = readAccepted(params.leftMute);
+    if (leftMute !== undefined) {
+      patch.leftMuted = valueToMute(leftMute);
+    }
+
+    const rightMute = readAccepted(params.rightMute);
+    if (rightMute !== undefined) {
+      patch.rightMuted = valueToMute(rightMute);
+    }
+
+    const leftFader = readAccepted(params.leftFader);
+    if (leftFader !== undefined) {
+      const leftFaderDb = valueToFaderDb(leftFader);
+      patch.leftFaderDb = leftFaderDb;
+      patch.leftFaderPosition = dbToFaderPosition(leftFaderDb);
+    }
+
+    const rightFader = readAccepted(params.rightFader);
+    if (rightFader !== undefined) {
+      const rightFaderDb = valueToFaderDb(rightFader);
+      patch.rightFaderDb = rightFaderDb;
+      patch.rightFaderPosition = dbToFaderPosition(rightFaderDb);
+    }
+
+    if (Object.keys(patch).length === 0) return;
+    updateMasterState(patch);
+  }
+
+  function getChannelRealtimeControlParams(channelNumber: number) {
+    const params = getChannelStateParams(channelNumber);
+    return [
+      params.mute,
+      params.inputSource,
+      params.pan,
+      params.fader,
+      params.phase,
+      params.soloLeft,
+      params.soloRight,
+    ];
+  }
+
+  function getAuxRealtimeControlParams(auxNumber: number) {
+    const params = getAuxStateParams(auxNumber);
+    return [params.mute, params.fader, params.phase];
+  }
+
+  function getFxRealtimeControlParams(fxNumber: number) {
+    const params = getFxStateParams(fxNumber);
+    return [params.mute, params.fader];
+  }
+
+  async function syncFastControlStates() {
+    const client = clientRef.current;
+    if (!client || !isConnected || isSyncing) return;
+    const skipNonMasterFastPass = isChannelsDraggingRef.current;
+
+    const now = Date.now();
+    cleanupStaleLocalWriteTracking(now);
+    const shouldApplyParam = (param: number, value: number) =>
+      !shouldSuppressRemoteParam(param, value, now);
+
+    if (!skipNonMasterFastPass) {
+      const channelParams = Array.from({ length: channelCount }, (_, index) =>
+        getChannelRealtimeControlParams(index + 1)
+      ).flat();
+      const channelValues = await readValuesMapChunked(
+        client,
+        channelParams,
+        isAx32ProfileActive() ? 32 : AX16_24_FAST_CHANNEL_CHUNK,
+        450
+      );
+
+      for (let channel = 1; channel <= channelCount; channel++) {
+        applyChannelStateFromValues(channel, channelValues, getChannelStateParams(channel), {
+          shouldApplyParam,
+        });
+      }
+
+      const auxCount = getAuxBusCount();
+      const auxParams = Array.from({ length: auxCount }, (_, index) =>
+        getAuxRealtimeControlParams(index + 1)
+      ).flat();
+      const auxValues = await readValuesMapChunked(
+        client,
+        auxParams,
+        24,
+        450
+      );
+
+      for (let aux = 1; aux <= auxCount; aux++) {
+        applyAuxStateFromValues(aux, auxValues, getAuxStateParams(aux), {
+          shouldApplyParam,
+        });
+      }
+
+      const fxCount = getFxBusCount();
+      const fxParams = Array.from({ length: fxCount }, (_, index) =>
+        getFxRealtimeControlParams(index + 1)
+      ).flat();
+      const fxValues = await readValuesMapChunked(client, fxParams, 24, 450);
+
+      for (let fx = 1; fx <= fxCount; fx++) {
+        applyFxStateFromValues(fx, fxValues, getFxStateParams(fx), {
+          shouldApplyParam,
+        });
+      }
+    }
+
+    const masterParams = getMasterParams();
+    const linkMaskParam = getLinkMaskParam();
+    const masterResponse = await client.readParams([
+      masterParams.leftFader,
+      masterParams.leftMute,
+      masterParams.rightFader,
+      masterParams.rightMute,
+      masterSoloLeftParam(),
+      masterSoloAuxLeftParam(),
+      masterSoloRightParam(),
+      masterSoloAuxRightParam(),
+      linkMaskParam,
+    ], 450);
+    const masterValues = new Map(masterResponse.map((item) => [item.param, item.value]));
+    applyMasterControlFromValues(masterValues, masterParams, { shouldApplyParam });
+
+    const masterSoloLeft = masterValues.get(masterSoloLeftParam());
+    const masterSoloAuxLeft = masterValues.get(masterSoloAuxLeftParam());
+    const masterSoloRight = masterValues.get(masterSoloRightParam());
+    const masterSoloAuxRight = masterValues.get(masterSoloAuxRightParam());
+
+    if (
+      masterSoloLeft !== undefined ||
+      masterSoloAuxLeft !== undefined ||
+      masterSoloRight !== undefined ||
+      masterSoloAuxRight !== undefined
+    ) {
+      const leftSoloOn =
+        (masterSoloLeft ?? 0) > 0 ||
+        (masterSoloAuxLeft ?? 0) > 0;
+      const rightSoloOn =
+        (masterSoloRight ?? 0) > 0 ||
+        (masterSoloAuxRight ?? 0) > 0;
+      const masterSoloOn =
+        leftSoloOn || rightSoloOn;
+      updateMasterState({ leftSoloOn, rightSoloOn, soloOn: masterSoloOn });
+    }
+
+    const linkMask = masterValues.get(linkMaskParam);
+    if (linkMask !== undefined && shouldApplyParam(linkMaskParam, linkMask)) {
+      applyLinkStateFrom3056(linkMask);
+    }
+  }
+
+  async function syncGlobalControlStates() {
+    const client = clientRef.current;
+    if (!client || !isConnected || isSyncing) return;
+    if (meterBusyRef.current) return;
+
+    const now = Date.now();
+    cleanupStaleLocalWriteTracking(now);
+    const shouldApplyParam = (param: number, value: number) =>
+      !shouldSuppressRemoteParam(param, value, now);
+
+    const channelParams = Array.from({ length: channelCount }, (_, index) =>
+      Object.values(getChannelStateParams(index + 1))
+    ).flat();
+
+    const channelChunkSize = isAx32ProfileActive() ? 24 : AX16_24_BATCH_CHANNEL_CHUNK;
+    const channelTimeout = isAx32ProfileActive() ? 700 : 1000;
+    const channelValues = await readValuesMapChunked(
+      client,
+      channelParams,
+      channelChunkSize,
+      channelTimeout
+    );
+
+    for (let channel = 1; channel <= channelCount; channel++) {
+      applyChannelStateFromValues(
+        channel,
+        channelValues,
+        getChannelStateParams(channel),
+        { shouldApplyParam }
+      );
+    }
+
+    const auxCount = getAuxBusCount();
+    const auxParams = Array.from({ length: auxCount }, (_, index) =>
+      Object.values(getAuxStateParams(index + 1))
+    ).flat();
+    const auxValues = await readValuesMapChunked(
+      client,
+      auxParams,
+      isAx32ProfileActive() ? 24 : AX16_24_BATCH_AUX_CHUNK,
+      isAx32ProfileActive() ? 700 : 1000
+    );
+
+    for (let aux = 1; aux <= auxCount; aux++) {
+      applyAuxStateFromValues(aux, auxValues, getAuxStateParams(aux), {
+        shouldApplyParam,
+      });
+    }
+
+    const fxCount = getFxBusCount();
+    const fxParams = Array.from({ length: fxCount }, (_, index) =>
+      Object.values(getFxStateParams(index + 1))
+    ).flat();
+    const fxValues = await readValuesMapChunked(
+      client,
+      fxParams,
+      24,
+      900
+    );
+
+    for (let fx = 1; fx <= fxCount; fx++) {
+      applyFxStateFromValues(fx, fxValues, getFxStateParams(fx), {
+        shouldApplyParam,
+      });
+    }
+
+    const masterParams = getMasterParams();
+    const linkMaskParam = getLinkMaskParam();
+    const masterResponse = await client.readParams([
+      masterParams.leftFader,
+      masterParams.leftMute,
+      masterParams.rightFader,
+      masterParams.rightMute,
+      masterSoloLeftParam(),
+      masterSoloAuxLeftParam(),
+      masterSoloRightParam(),
+      masterSoloAuxRightParam(),
+      linkMaskParam,
+    ]);
+    const masterValues = new Map(masterResponse.map((item) => [item.param, item.value]));
+    applyMasterControlFromValues(masterValues, masterParams, { shouldApplyParam });
+
+    const masterSoloLeft = masterValues.get(masterSoloLeftParam());
+    const masterSoloAuxLeft = masterValues.get(masterSoloAuxLeftParam());
+    const masterSoloRight = masterValues.get(masterSoloRightParam());
+    const masterSoloAuxRight = masterValues.get(masterSoloAuxRightParam());
+
+    if (
+      masterSoloLeft !== undefined ||
+      masterSoloAuxLeft !== undefined ||
+      masterSoloRight !== undefined ||
+      masterSoloAuxRight !== undefined
+    ) {
+      const leftSoloOn =
+        (masterSoloLeft ?? 0) > 0 ||
+        (masterSoloAuxLeft ?? 0) > 0;
+      const rightSoloOn =
+        (masterSoloRight ?? 0) > 0 ||
+        (masterSoloAuxRight ?? 0) > 0;
+      const masterSoloOn =
+        leftSoloOn || rightSoloOn;
+      updateMasterState({ leftSoloOn, rightSoloOn, soloOn: masterSoloOn });
+    }
+
+    const linkMask = masterValues.get(linkMaskParam);
+    if (linkMask !== undefined && shouldApplyParam(linkMaskParam, linkMask)) {
+      applyLinkStateFrom3056(linkMask);
+    }
+  }
+
+  async function syncChannelEqPreviewStates(channelTotal = channelCount) {
     const client = clientRef.current;
     if (!client) return;
 
     const eqEnabledParams = Array.from(
-      { length: channelCount },
+      { length: channelTotal },
       (_, index) => processorParams(index + 1).eqEnabled
     );
     const response = await client.readParams(eqEnabledParams, 1400);
     const values = new Map(response.map((item) => [item.param, item.value]));
 
-    setProcessorStates((current) =>
-      current.map((processorState, index) => {
+    setProcessorStates((current) => {
+      const next = current.map((processorState, index) => {
         const param = eqEnabledParams[index];
         const raw = values.get(param);
         if (raw === undefined) {
@@ -2646,19 +4664,38 @@ function App() {
             enabled: valueToBoolean(raw),
           },
         };
-      })
-    );
+      });
+
+      for (let odd = 1; odd < channelTotal; odd += 2) {
+        const even = odd + 1;
+        const key = pairKey(odd, even);
+        if (!channelLinks[key]) continue;
+
+        next[even - 1] = {
+          ...next[even - 1],
+          eq: {
+            ...next[even - 1].eq,
+            enabled: next[odd - 1].eq.enabled,
+          },
+        };
+      }
+
+      return next;
+    });
   }
 
-  async function syncAllStripNames(options?: { forceFromMixer?: boolean }) {
+  async function syncAllStripNames(options?: { forceFromMixer?: boolean; channelTotal?: number; writeBackDefaults?: boolean }) {
     const client = clientRef.current;
     if (!client) return;
     const forceFromMixer = options?.forceFromMixer === true;
+    const channelTotal = options?.channelTotal ?? channelCount;
+    const writeBackDefaults = options?.writeBackDefaults === true;
+    const pendingNameWrites: Array<{ target: NameTarget; mixerName: string }> = [];
 
     const [channelNames, auxNames, fxNames] = await Promise.all([
-      client.readChannelNames(channelCount, 600),
+      client.readChannelNames(channelTotal, 600),
       client.readAuxNames(600),
-      client.readFxNames(600),
+      client.readFxNames(600, getFxBusCount()),
     ]);
 
     setChannels((current) =>
@@ -2670,6 +4707,12 @@ function App() {
         const localName = channelState.channelName.trim();
         const hasUserLocalName =
           localName.length > 0 && !isLocalDefaultDisplayName(target, localName);
+        if (writeBackDefaults && (mixerName.length === 0 || mixerIsDefault)) {
+          pendingNameWrites.push({
+            target,
+            mixerName: hasUserLocalName ? toMixerSafeName(channelState.channelName) : getDefaultMixerAlias(target),
+          });
+        }
         const displayName =
           !forceFromMixer && hasUserLocalName
             ? channelState.channelName
@@ -2694,6 +4737,12 @@ function App() {
         const localName = strip.channelName.trim();
         const hasUserLocalName =
           localName.length > 0 && !isLocalDefaultDisplayName(target, localName);
+        if (writeBackDefaults && (mixerName.length === 0 || mixerIsDefault)) {
+          pendingNameWrites.push({
+            target,
+            mixerName: hasUserLocalName ? toMixerSafeName(strip.channelName) : getDefaultMixerAlias(target),
+          });
+        }
         const displayName =
           !forceFromMixer && hasUserLocalName
             ? strip.channelName
@@ -2718,6 +4767,12 @@ function App() {
         const localName = strip.channelName.trim();
         const hasUserLocalName =
           localName.length > 0 && !isLocalDefaultDisplayName(target, localName);
+        if (writeBackDefaults && (mixerName.length === 0 || mixerIsDefault)) {
+          pendingNameWrites.push({
+            target,
+            mixerName: hasUserLocalName ? toMixerSafeName(strip.channelName) : getDefaultMixerAlias(target),
+          });
+        }
         const displayName =
           !forceFromMixer && hasUserLocalName
             ? strip.channelName
@@ -2732,16 +4787,39 @@ function App() {
         };
       })
     );
+
+    if (pendingNameWrites.length > 0) {
+      pendingNameWrites.forEach(({ target, mixerName }) => {
+        if (target.type === "channel") {
+          client.setChannelName(target.channel, mixerName);
+          return;
+        }
+
+        if (target.type === "aux") {
+          client.setAuxName(target.aux, mixerName);
+          return;
+        }
+
+        client.setFxName(target.fx, mixerName);
+      });
+    }
   }
 
   function handleDcaGroupRename(id: DcaGroupId, name: string) {
     const trimmed = name.trim();
     const finalName = trimmed.length > 0 ? trimmed : getDefaultDcaGroupName(id - 1);
+    const storageKey = getScopedStorageKey(
+      DCA_NAMES_STORAGE_KEY_BASE,
+      activeMixerCacheIdentity
+    );
+
     setDcaNames((current) => {
       const next = [...current];
       next[id - 1] = finalName;
       try {
-        localStorage.setItem(DCA_NAMES_STORAGE_KEY, JSON.stringify(next));
+        if (storageKey) {
+          localStorage.setItem(storageKey, JSON.stringify(next));
+        }
       } catch { /* ignore */ }
       return next;
     });
@@ -2749,12 +4827,18 @@ function App() {
 
   function handleDcaGroupColorChange(id: DcaGroupId, colorId: number) {
     const normalizedColorId = Math.max(0, Math.min(12, Math.round(colorId)));
+    const storageKey = getScopedStorageKey(
+      DCA_COLOR_IDS_STORAGE_KEY_BASE,
+      activeMixerCacheIdentity
+    );
 
     setDcaColorIds((current) => {
       const next = [...current];
       next[id - 1] = normalizedColorId;
       try {
-        localStorage.setItem(DCA_COLOR_IDS_STORAGE_KEY, JSON.stringify(next));
+        if (storageKey) {
+          localStorage.setItem(storageKey, JSON.stringify(next));
+        }
       } catch { /* ignore */ }
       return next;
     });
@@ -2768,6 +4852,7 @@ function App() {
   async function syncChannelPairVisualState() {
     const client = clientRef.current;
     if (!client) return;
+    const isAx32 = isAx32ProfileActive();
 
     const params: number[] = [];
 
@@ -2776,28 +4861,98 @@ function App() {
     for (let odd = 1; odd <= maxPairOdd; odd += 2) {
       params.push(channelParam(odd, 75));
       params.push(channelParam(odd + 1, 75));
+      CHANNEL_LINK_MIRROR_BASES.forEach((base) => {
+        params.push(channelParam(odd, base));
+        params.push(channelParam(odd + 1, base));
+      });
       params.push(channelColorParam(odd));
       params.push(channelColorParam(odd + 1));
     }
 
-    const response = await client.readParams(params, 2600);
-    const values = new Map(response.map((item) => [item.param, item.value]));
+    const values = await readValuesMapChunked(
+      client,
+      params,
+      isAx32 ? 24 : 40,
+      isAx32 ? 900 : 2200
+    );
+    let ax32LinkMask = 0;
+    if (isAx32) {
+      const linkResponse = await client.readParams([getChannelLinkParam()], 900);
+      ax32LinkMask = linkResponse[0]?.value ?? 0;
+    }
+    const now = Date.now();
+    cleanupStaleLocalWriteTracking(now);
 
     const linksFromMesa: PairLinkState = {};
 
     for (let odd = 1; odd <= maxPairOdd; odd += 2) {
       const even = odd + 1;
       const key = pairKey(odd, even);
-      const oddPan = valueToPan(values.get(channelParam(odd, 75)) ?? 100);
-      const evenPan = valueToPan(values.get(channelParam(even, 75)) ?? 100);
-      // Visual linked state comes from pair pan lock on the hardware.
-      linksFromMesa[key] = oddPan === 0 && evenPan === 200;
+      const oddPanParam = channelParam(odd, 75);
+      const evenPanParam = channelParam(even, 75);
+      const oddPanRaw = values.get(oddPanParam);
+      const evenPanRaw = values.get(evenPanParam);
+
+      if (oddPanRaw === undefined || evenPanRaw === undefined) continue;
+      if (shouldSuppressRemoteParam(oddPanParam, oddPanRaw, now)) continue;
+      if (shouldSuppressRemoteParam(evenPanParam, evenPanRaw, now)) continue;
+
+      const oddPan = valueToPan(oddPanRaw);
+      const evenPan = valueToPan(evenPanRaw);
+
+      if (isAx32) {
+        const pairBit = 1 << Math.floor((odd - 1) / 2);
+        linksFromMesa[key] = (ax32LinkMask & pairBit) !== 0;
+        continue;
+      }
+
+      // Link inference uses broad odd->even mirror signature observed on desk link.
+      // Pan lock alone is insufficient; mirror signature alone is risky when channels
+      // are intentionally matched. We require both signals together.
+      let mirroredControls = 0;
+      let comparedControls = 0;
+
+      CHANNEL_LINK_MIRROR_BASES.forEach((base) => {
+        const oddParam = channelParam(odd, base);
+        const evenParam = channelParam(even, base);
+        const oddValue = values.get(oddParam);
+        const evenValue = values.get(evenParam);
+
+        if (oddValue === undefined || evenValue === undefined) return;
+        if (shouldSuppressRemoteParam(oddParam, oddValue, now)) return;
+        if (shouldSuppressRemoteParam(evenParam, evenValue, now)) return;
+
+        comparedControls += 1;
+        if (oddValue === evenValue) mirroredControls += 1;
+      });
+
+      const hasPanLock = oddPan === 0 && evenPan === 200;
+      const hasDeskUnlinkSignature = oddPan === 0 && evenPan === 0;
+      const hasStrongMirrorSignature =
+        comparedControls >= 6 &&
+        mirroredControls >= Math.max(5, Math.ceil(comparedControls * 0.5));
+
+      if (hasDeskUnlinkSignature && hasStrongMirrorSignature) {
+        linksFromMesa[key] = false;
+        continue;
+      }
+
+      linksFromMesa[key] =
+        comparedControls >= 6
+          ? hasPanLock && hasStrongMirrorSignature
+          : hasPanLock || Boolean(channelLinks[key]);
     }
 
-    setChannelLinks((current) => ({
-      ...current,
-      ...linksFromMesa,
-    }));
+    setChannelLinks((current) => {
+      const next = { ...current };
+
+      for (const [key, linked] of Object.entries(linksFromMesa)) {
+        if (isChannelPairTransitionLocked(key)) continue;
+        next[key] = linked;
+      }
+
+      return next;
+    });
 
     setChannels((current) => {
       const next = [...current];
@@ -2805,8 +4960,16 @@ function App() {
       for (let odd = 1; odd <= maxPairOdd; odd += 2) {
         const even = odd + 1;
         const key = pairKey(odd, even);
-        const oddPan = valueToPan(values.get(channelParam(odd, 75)) ?? 100);
-        const evenPan = valueToPan(values.get(channelParam(even, 75)) ?? 100);
+        const oddPanParam = channelParam(odd, 75);
+        const evenPanParam = channelParam(even, 75);
+        const oddPanRaw = values.get(oddPanParam);
+        const evenPanRaw = values.get(evenPanParam);
+        if (oddPanRaw === undefined || evenPanRaw === undefined) continue;
+        if (shouldSuppressRemoteParam(oddPanParam, oddPanRaw, now)) continue;
+        if (shouldSuppressRemoteParam(evenPanParam, evenPanRaw, now)) continue;
+
+        const oddPan = valueToPan(oddPanRaw);
+        const evenPan = valueToPan(evenPanRaw);
         const oddColor = normalizeColorByScope(
           "input",
           valueToColorId(values.get(channelColorParam(odd)) ?? 1)
@@ -2831,24 +4994,39 @@ function App() {
 
       return next;
     });
+
+    setProcessorStates((current) => {
+      const next = [...current];
+
+      for (let odd = 1; odd <= maxPairOdd; odd += 2) {
+        const even = odd + 1;
+        const key = pairKey(odd, even);
+        if (!linksFromMesa[key]) continue;
+
+        next[even - 1] = cloneProcessorState(next[odd - 1]);
+      }
+
+      return next;
+    });
   }
 
   async function syncMasterState() {
     const client = clientRef.current;
     if (!client) return;
 
-    const response = await client.readParams(Object.values(MASTER_PARAMS));
+    const masterParams = getMasterParams();
+    const response = await client.readParams(Object.values(masterParams));
     const values = new Map(response.map((item) => [item.param, item.value]));
 
     const leftFaderDb = valueToFaderDb(
-      values.get(MASTER_PARAMS.leftFader) ?? 1200
+      values.get(masterParams.leftFader) ?? 1200
     );
     const rightFaderDb = valueToFaderDb(
-      values.get(MASTER_PARAMS.rightFader) ?? 1200
+      values.get(masterParams.rightFader) ?? 1200
     );
 
-    const rawLeftColor = values.get(MASTER_PARAMS.leftColor);
-    const rawRightColor = values.get(MASTER_PARAMS.rightColor);
+    const rawLeftColor = values.get(masterParams.leftColor);
+    const rawRightColor = values.get(masterParams.rightColor);
 
     if (rawLeftColor !== undefined && Math.round(rawLeftColor) !== MASTER_FIXED_COLOR_ID) {
       client.setMasterColor("left", MASTER_FIXED_COLOR_ID);
@@ -2859,8 +5037,8 @@ function App() {
     }
 
     updateMasterState({
-      leftMuted: valueToMute(values.get(MASTER_PARAMS.leftMute) ?? 1),
-      rightMuted: valueToMute(values.get(MASTER_PARAMS.rightMute) ?? 1),
+      leftMuted: valueToMute(values.get(masterParams.leftMute) ?? 1),
+      rightMuted: valueToMute(values.get(masterParams.rightMute) ?? 1),
       leftColorId: MASTER_FIXED_COLOR_ID,
       rightColorId: MASTER_FIXED_COLOR_ID,
       leftFaderDb,
@@ -2870,27 +5048,136 @@ function App() {
     });
   }
 
+  async function syncMasterProcessorState(side: "left" | "right" = "left") {
+    const client = clientRef.current;
+    if (!client) return;
+
+    const p = masterProcessorParams(side);
+    const eqBandParams = Array.from({ length: 7 }, (_, index) => p.eqBandBase + index * 4);
+    const params = [
+      p.compEnabled,
+      p.compRatio,
+      p.compAttack,
+      p.compRelease,
+      p.compThreshold,
+      p.compGain,
+      p.eqEnabled,
+      p.hpfTypeSlope,
+      p.hpfFreq,
+      p.lpfTypeSlope,
+      p.lpfFreq,
+      ...eqBandParams.flatMap((bandBase) => [bandBase, bandBase + 1, bandBase + 2]),
+    ];
+
+    const response = await client.readParams(params, 1400);
+    const values = new Map(response.map((item) => [item.param, item.value]));
+
+    setMasterProcessorState((current) => {
+      const rawHpfFreq = values.get(p.hpfFreq);
+      const rawLpfFreq = values.get(p.lpfFreq);
+      const rawHpfTypeSlope = values.get(p.hpfTypeSlope);
+      const rawLpfTypeSlope = values.get(p.lpfTypeSlope);
+      const nextHpfEnabled =
+        rawHpfFreq === undefined
+          ? current.eq.hpfEnabled
+          : inferHpfEnabledFromRaw(rawHpfFreq, current.eq.hpfEnabled);
+      const nextLpfEnabled =
+        rawLpfFreq === undefined
+          ? current.eq.lpfEnabled
+          : inferLpfEnabledFromRaw(rawLpfFreq, current.eq.lpfEnabled);
+
+      return {
+        ...current,
+        comp: {
+          ...current.comp,
+          enabled: valueToBoolean(values.get(p.compEnabled) ?? (current.comp.enabled ? 1 : 0)),
+          ratio: valueToCompRatio(values.get(p.compRatio) ?? Math.round(current.comp.ratio * 100)),
+          attack: valueToCompTime(values.get(p.compAttack) ?? Math.round(current.comp.attack * 10)),
+          release: valueToCompTime(values.get(p.compRelease) ?? Math.round(current.comp.release * 10)),
+          threshold:
+            values.get(p.compThreshold) !== undefined
+              ? valueToCompThreshold(values.get(p.compThreshold) as number)
+              : current.comp.threshold,
+          gain: valueToCompGain(values.get(p.compGain) ?? 1200 + Math.round(current.comp.gain * 10)),
+        },
+        eq: {
+          ...current.eq,
+          enabled: valueToBoolean(values.get(p.eqEnabled) ?? (current.eq.enabled ? 1 : 0)),
+          hpfEnabled: nextHpfEnabled,
+          hpfType:
+            rawHpfTypeSlope === undefined
+              ? current.eq.hpfType
+              : valueToHpfTypeSlope(rawHpfTypeSlope).type,
+          hpfSlope:
+            rawHpfTypeSlope === undefined
+              ? current.eq.hpfSlope
+              : valueToHpfTypeSlope(rawHpfTypeSlope).slope,
+          hpfFreq:
+            shouldKeepCachedHpfFreq(rawHpfFreq)
+              ? current.eq.hpfFreq
+              : resolveHpfFreqFromRaw(rawHpfFreq, current.eq.hpfFreq),
+          lpfEnabled: nextLpfEnabled,
+          lpfType:
+            rawLpfTypeSlope === undefined
+              ? current.eq.lpfType
+              : valueToLpfTypeSlope(rawLpfTypeSlope).type,
+          lpfSlope:
+            rawLpfTypeSlope === undefined
+              ? current.eq.lpfSlope
+              : valueToLpfTypeSlope(rawLpfTypeSlope).slope,
+          lpfFreq:
+            shouldKeepCachedLpfFreq(rawLpfFreq)
+              ? current.eq.lpfFreq
+              : resolveLpfFreqFromRaw(rawLpfFreq, current.eq.lpfFreq),
+          bands: current.eq.bands.map((bandState, index) => {
+            const bandBase = p.eqBandBase + index * 4;
+            const freqRaw = values.get(bandBase);
+            const gainRaw = values.get(bandBase + 1);
+            const qRaw = values.get(bandBase + 2);
+            const hasBandValue = freqRaw !== undefined || gainRaw !== undefined || qRaw !== undefined;
+
+            if (!hasBandValue) {
+              return bandState;
+            }
+
+            return {
+              ...bandState,
+              freq: freqRaw !== undefined ? valueToFrequency(freqRaw) : bandState.freq,
+              gain: gainRaw !== undefined ? valueToEqGain(gainRaw) : bandState.gain,
+              q: qRaw !== undefined ? valueToEqQ(qRaw) : bandState.q,
+            };
+          }),
+        },
+      };
+    });
+  }
+
   async function syncFxColors() {
     const client = clientRef.current;
     if (!client) return;
 
-    const response = await client.readParams([
-      FX_COLOR_PARAMS[1],
-      FX_COLOR_PARAMS[2],
-    ]);
+    const fxCount = getFxBusCount();
+    const params = Array.from({ length: fxCount }, (_, index) => fxColorParam(index + 1)).filter(
+      (param): param is number => typeof param === "number"
+    );
+
+    if (params.length === 0) return;
+
+    const response = await client.readParams(params);
     const values = new Map(response.map((item) => [item.param, item.value]));
 
     setFxStrips((current) =>
       current.map((strip, index) => {
-        const fx = (index + 1) as 1 | 2;
-        const raw = values.get(FX_COLOR_PARAMS[fx]);
+        const fx = index + 1;
+        if (fx > fxCount) return strip;
+
+        const colorParam = fxColorParam(fx);
+        if (colorParam === undefined) return strip;
+
+        const raw = values.get(colorParam);
         if (raw === undefined) return strip;
 
-        const nextColorId = resolveMesaColorByScope(
-          "fx",
-          raw,
-          () => client.setFxColor(fx, DEFAULT_FX_COLOR_ID)
-        );
+        const nextColorId = resolveMesaColorByScope("fx", raw);
 
         if (nextColorId === undefined) return strip;
 
@@ -2902,32 +5189,39 @@ function App() {
     );
   }
 
-  async function syncFxPresetState() {
+  async function syncFxPresetState(fxNumber = 1) {
     const client = clientRef.current;
     if (!client) return;
 
+    const presetParams = getFxPresetParams(fxNumber);
+
     try {
-      const response = await client.readParams([3097, 2940, 2941], 1200);
+      const response = await client.readParams(
+        [presetParams.preset, presetParams.controlA, presetParams.controlB],
+        1200
+      );
       const values = new Map(response.map((item) => [item.param, item.value]));
 
-      const presetRaw = values.get(3097) ?? 1;
-      const controlARaw = values.get(2940) ?? 0;
-      const controlBRaw = values.get(2941) ?? 0;
+      const presetRaw = values.get(presetParams.preset) ?? 1;
+      const controlARaw = values.get(presetParams.controlA) ?? 0;
+      const controlBRaw = values.get(presetParams.controlB) ?? 0;
 
       const presetId = validateFxPresetId(presetRaw);
-      if (presetId === null) {
-        setFxActivePresetId(1);
-      } else {
-        setFxActivePresetId(presetId);
-      }
-
-      setFxControlAValue(Math.max(0, Math.min(127, controlARaw)));
-      setFxControlBValue(Math.max(0, Math.min(127, controlBRaw)));
+      updateFxPresetState(fxNumber, () => ({
+        presetId: presetId ?? 1,
+        controlAValue: Math.max(0, Math.min(127, controlARaw)),
+        controlBValue: Math.max(0, Math.min(127, controlBRaw)),
+      }));
     } catch {
-      // Inicializar com valores padrão se houver erro na leitura
-      setFxActivePresetId(1);
-      setFxControlAValue(0);
-      setFxControlBValue(0);
+      updateFxPresetState(fxNumber, () => createDefaultFxPresetState());
+    }
+  }
+
+  async function syncAllFxPresetState() {
+    const fxCount = getFxBusCount();
+
+    for (let fx = 1; fx <= fxCount; fx += 1) {
+      await syncFxPresetState(fx);
     }
   }
 
@@ -2935,10 +5229,21 @@ function App() {
     const client = clientRef.current;
     if (!client) return;
 
-    const response = await client.readParams([3056]);
+    const linkMaskParam = getLinkMaskParam();
+    const response = await client.readParams([linkMaskParam]);
     const value3056 = response[0]?.value ?? 0;
 
-    applyLinkStateFrom3056(value3056);
+    applyLinkStateFromRead(value3056, linkMaskParam);
+  }
+
+  function applyLinkStateFromRead(value: number, linkMaskParam = getLinkMaskParam()) {
+    const now = Date.now();
+    cleanupStaleLocalWriteTracking(now);
+    if (shouldSuppressRemoteParam(linkMaskParam, value, now)) {
+      return;
+    }
+
+    applyLinkStateFrom3056(value);
   }
 
   function clearScheduledSendWrites() {
@@ -2948,6 +5253,68 @@ function App() {
     sendWriteTimersRef.current.clear();
     sendWriteLastAtRef.current.clear();
     sendWritePendingRef.current.clear();
+  }
+
+  function clearLocalParamWriteTracking() {
+    localParamWriteUnsubscribeRef.current?.();
+    localParamWriteUnsubscribeRef.current = null;
+    recentLocalParamWritesRef.current.clear();
+  }
+
+  function handleLocalParamWrite(write: LocalParamWrite) {
+    recentLocalParamWritesRef.current.set(write.param, write);
+  }
+
+  function shouldSuppressRemoteParam(param: number, value: number, now = Date.now()) {
+    const recentWrite = recentLocalParamWritesRef.current.get(param);
+    if (!recentWrite) return false;
+
+    if (now - recentWrite.at > LOCAL_WRITE_ECHO_SUPPRESSION_MS) {
+      recentLocalParamWritesRef.current.delete(param);
+      return false;
+    }
+
+    if (recentWrite.value === value) {
+      recentLocalParamWritesRef.current.delete(param);
+      return false;
+    }
+
+    return true;
+  }
+
+  function cleanupStaleLocalWriteTracking(now = Date.now()) {
+    recentLocalParamWritesRef.current.forEach((write, param) => {
+      if (now - write.at > LOCAL_WRITE_ECHO_SUPPRESSION_MS) {
+        recentLocalParamWritesRef.current.delete(param);
+      }
+    });
+  }
+
+  function cancelScheduledFaderWrites() {
+    if (faderWriteRafRef.current !== null) {
+      cancelAnimationFrame(faderWriteRafRef.current);
+      faderWriteRafRef.current = null;
+    }
+
+    pendingFaderWritesRef.current.clear();
+  }
+
+  function scheduleFaderWrite(key: string, write: () => void) {
+    pendingFaderWritesRef.current.set(key, write);
+
+    if (faderWriteRafRef.current !== null) {
+      return;
+    }
+
+    faderWriteRafRef.current = requestAnimationFrame(() => {
+      faderWriteRafRef.current = null;
+      const writes = Array.from(pendingFaderWritesRef.current.values());
+      pendingFaderWritesRef.current.clear();
+
+      writes.forEach((runWrite) => {
+        runWrite();
+      });
+    });
   }
 
   function writeSendParamNow(param: number, value: number) {
@@ -2999,7 +5366,13 @@ function App() {
     if (!sendId.startsWith("aux")) return [sendId];
 
     const auxNumber = Number(sendId.replace("aux", ""));
+    if (!Number.isFinite(auxNumber) || auxNumber < 1 || auxNumber > getAuxBusCount()) {
+      return [sendId];
+    }
     const [odd, even] = getAuxPair(auxNumber);
+    if (even > getAuxBusCount()) {
+      return [sendId];
+    }
     const key = pairKey(odd, even);
 
     if (!auxLinks[key]) return [sendId];
@@ -3011,15 +5384,17 @@ function App() {
     const client = clientRef.current;
     if (!client) return;
 
-    const sendParams = SEND_IDS.map((id) => sendIdToParam(channelNumber, id));
-    const response = await client.readParams([...sendParams, 3056], 2200);
+    const sendIds = getActiveSendIds();
+    const sendParams = sendIds.map((id) => sendIdToParam(channelNumber, id));
+    const linkMaskParam = getLinkMaskParam();
+    const response = await client.readParams([...sendParams, linkMaskParam], 2200);
     const values = new Map(response.map((item) => [item.param, item.value]));
 
     setChannelSendValues(() => {
       const next = createDefaultSendValues();
       const nextTapPoints = createDefaultSendTapPoints();
 
-      SEND_IDS.forEach((id) => {
+      sendIds.forEach((id) => {
         const param = sendIdToParam(channelNumber, id);
         const decoded = decodeSendRawValue(values.get(param));
         next[id] = decoded.value;
@@ -3031,8 +5406,8 @@ function App() {
       return next;
     });
 
-    const value3056 = values.get(3056) ?? 0;
-    applyLinkStateFrom3056(value3056);
+    const value3056 = values.get(linkMaskParam) ?? 0;
+    applyLinkStateFromRead(value3056, linkMaskParam);
   }
 
   async function syncBusInputSendsState(busType: "aux" | "fx", busNumber: number) {
@@ -3040,10 +5415,11 @@ function App() {
     if (!client) return;
 
     const mappedSendId = `${busType}${busNumber}` as SendStripId;
-    const params = Array.from({ length: channelCount }, (_, index) =>
+    const sendParams = Array.from({ length: channelCount }, (_, index) =>
       sendIdToParam(index + 1, mappedSendId)
     );
-    const response = await client.readParams(params, 2200);
+    const linkMaskParam = getLinkMaskParam();
+    const response = await client.readParams([...sendParams, linkMaskParam], 2200);
     const valuesByParam = new Map(response.map((item) => [item.param, item.value]));
 
     const nextValues = createDefaultChannelInputSendValues(channelCount);
@@ -3056,6 +5432,9 @@ function App() {
       nextValues[id] = decoded.value;
       nextTapPoints[id] = decoded.tapPoint;
     }
+
+    const linkMaskValue = valuesByParam.get(linkMaskParam) ?? 0;
+    applyLinkStateFromRead(linkMaskValue, linkMaskParam);
 
     if (busType === "aux") {
       setAuxInputSendValues((current) => ({
@@ -3077,6 +5456,19 @@ function App() {
       ...current,
       [busNumber]: nextTapPoints,
     }));
+  }
+
+  async function syncAllBusInputSendsState() {
+    const auxCount = getAuxBusCount();
+    const fxCount = getFxBusCount();
+
+    for (let aux = 1; aux <= auxCount; aux++) {
+      await syncBusInputSendsState("aux", aux);
+    }
+
+    for (let fx = 1; fx <= fxCount; fx++) {
+      await syncBusInputSendsState("fx", fx);
+    }
   }
 
   function channelFromInputSendId(id: SendStripId) {
@@ -3160,42 +5552,48 @@ function App() {
     const nextTapByTarget = new Map<string, SendTapPoint>();
 
     if (busType === "aux") {
+      busTargets.forEach((target) => {
+        const currentTap = auxInputSendTapPoints[target]?.[sendId] ?? "post";
+        const toggled = currentTap === "post" ? "pre" : "post";
+
+        channelTargets.forEach((channelTarget) => {
+          nextTapByTarget.set(`${target}:${channelTarget}`, toggled);
+        });
+      });
+
       setAuxInputSendTapPoints((current) => {
         const next = { ...current };
+
         busTargets.forEach((target) => {
-          const currentTap = current[target]?.[sendId] ?? "post";
-          const toggled = currentTap === "post" ? "pre" : "post";
           next[target] = {
             ...(next[target] ?? createDefaultChannelInputSendTapPoints(channelCount)),
             ...channelTargets.reduce<Record<string, SendTapPoint>>((acc, channelTarget) => {
-              acc[channelTarget] = toggled;
+              acc[channelTarget] = nextTapByTarget.get(`${target}:${channelTarget}`) ?? "post";
               return acc;
             }, {}),
           };
-          channelTargets.forEach((channelTarget) => {
-            nextTapByTarget.set(`${target}:${channelTarget}`, toggled);
-          });
         });
+
         return next;
       });
     } else {
-      setFxInputSendTapPoints((current) => {
-        const currentTap = current[busNumber]?.[sendId] ?? "post";
-        const toggled = currentTap === "post" ? "pre" : "post";
-        channelTargets.forEach((channelTarget) => {
-          nextTapByTarget.set(`${busNumber}:${channelTarget}`, toggled);
-        });
-        return {
-          ...current,
-          [busNumber]: {
-            ...(current[busNumber] ?? createDefaultChannelInputSendTapPoints(channelCount)),
-            ...channelTargets.reduce<Record<string, SendTapPoint>>((acc, channelTarget) => {
-              acc[channelTarget] = toggled;
-              return acc;
-            }, {}),
-          },
-        };
+      const currentTap = fxInputSendTapPoints[busNumber]?.[sendId] ?? "post";
+      const toggled = currentTap === "post" ? "pre" : "post";
+
+      channelTargets.forEach((channelTarget) => {
+        nextTapByTarget.set(`${busNumber}:${channelTarget}`, toggled);
       });
+
+      setFxInputSendTapPoints((current) => ({
+        ...current,
+        [busNumber]: {
+          ...(current[busNumber] ?? createDefaultChannelInputSendTapPoints(channelCount)),
+          ...channelTargets.reduce<Record<string, SendTapPoint>>((acc, channelTarget) => {
+            acc[channelTarget] = nextTapByTarget.get(`${busNumber}:${channelTarget}`) ?? "post";
+            return acc;
+          }, {}),
+        },
+      }));
     }
 
     busTargets.forEach((busTarget) => {
@@ -3214,6 +5612,15 @@ function App() {
         scheduleSendParamWrite(param, encodeSendRawValue(baseValue, tapPoint), true);
       });
     });
+
+    // Re-read from desk shortly after toggling to avoid UI/desync drift.
+    window.setTimeout(() => {
+      busTargets.forEach((busTarget) => {
+        syncBusInputSendsState(busType, busTarget).catch(() => {
+          // Keep optimistic state if a transient read fails.
+        });
+      });
+    }, 180);
   }
 
   function handleSendValueChange(channelNumber: number, sendId: SendStripId, nextValue: number) {
@@ -3237,16 +5644,19 @@ function App() {
 
   function handleSendTapPointToggle(channelNumber: number, sendId: SendStripId) {
     const targets = getLinkedAuxSendTargets(sendId);
-
     const nextTapByTarget = new Map<SendStripId, SendTapPoint>();
+
+    targets.forEach((target) => {
+      const currentTap = sendTapPoints[target] ?? "post";
+      const toggled = currentTap === "post" ? "pre" : "post";
+      nextTapByTarget.set(target, toggled);
+    });
 
     setSendTapPoints((current) => {
       const next = { ...current };
 
       targets.forEach((target) => {
-        const toggled = current[target] === "post" ? "pre" : "post";
-        next[target] = toggled;
-        nextTapByTarget.set(target, toggled);
+        next[target] = nextTapByTarget.get(target) ?? "post";
       });
 
       return next;
@@ -3258,39 +5668,24 @@ function App() {
       const tapPoint = nextTapByTarget.get(target) ?? "post";
       scheduleSendParamWrite(param, encodeSendRawValue(baseValue, tapPoint), true);
     });
+
+    // Re-read from desk shortly after toggling to avoid UI/desync drift.
+    window.setTimeout(() => {
+      syncChannelSendsState(channelNumber).catch(() => {
+        // Keep optimistic state if a transient read fails.
+      });
+    }, 180);
   }
 
   async function syncAuxState(auxNumber: number) {
     const client = clientRef.current;
     if (!client) return;
 
-    const params = auxProcessorParams(auxNumber);
-    const response = await client.readParams([params.fader, params.phase]);
+    const params = getAuxStateParams(auxNumber);
+    const response = await client.readParams(Object.values(params), 2200);
     const values = new Map(response.map((item) => [item.param, item.value]));
-    const faderDb = valueToFaderDb(values.get(params.fader) ?? 1200);
 
-    let nextColorId: number | undefined;
-    const colorParam = auxColorParam(auxNumber);
-
-    try {
-      const colorResponse = await client.readParams([colorParam], 2200);
-      const rawColor = colorResponse[0]?.value;
-
-      nextColorId = resolveMesaColorByScope(
-        "aux",
-        rawColor,
-        () => client.sendParam(colorParam, DEFAULT_AUX_COLOR_ID)
-      );
-    } catch {
-      // Some firmwares may not expose AUX color params; keep local color in that case.
-    }
-
-    updateAuxStripState(auxNumber, {
-      faderDb,
-      faderPosition: dbToFaderPosition(faderDb),
-      phasePositive: valueToBoolean(values.get(params.phase) ?? 1),
-      ...(nextColorId === undefined ? {} : { colorId: nextColorId }),
-    });
+    applyAuxStateFromValues(auxNumber, values, params);
   }
 
   async function syncAuxProcessorState(auxNumber: number) {
@@ -3298,164 +5693,29 @@ function App() {
     if (!client) return;
 
     const params = auxProcessorParams(auxNumber);
-    const paramsToRead = [
-      params.compEnabled,
-      params.eqEnabled,
-      params.compRatio,
-      params.compAttack,
-      params.compRelease,
-      params.compThreshold,
-      params.compGain,
-      params.hpfTypeSlope,
-      params.hpfFreq,
-      params.lpfTypeSlope,
-      params.lpfFreq,
-      params.eqBand1Freq,
-      params.eqBand1Gain,
-      params.eqBand1Q,
-      params.eqBand2Freq,
-      params.eqBand2Gain,
-      params.eqBand2Q,
-      params.eqBand3Freq,
-      params.eqBand3Gain,
-      params.eqBand3Q,
-      params.eqBand4Freq,
-      params.eqBand4Gain,
-      params.eqBand4Q,
-      params.eqBand5Freq,
-      params.eqBand5Gain,
-      params.eqBand5Q,
-      params.eqBand6Freq,
-      params.eqBand6Gain,
-      params.eqBand6Q,
-      params.eqBand7Freq,
-      params.eqBand7Gain,
-      params.eqBand7Q,
-    ];
+    const response = await client.readParams(Object.values(params), 2200);
+    const values = new Map(response.map((item) => [item.param, item.value]));
 
-    const values = new Map<number, number>();
-    const chunkSize = 10;
-
-    for (let i = 0; i < paramsToRead.length; i += chunkSize) {
-      const chunk = paramsToRead.slice(i, i + chunkSize);
-
-      try {
-        const response = await client.readParams(chunk, 2200);
-        response.forEach((item) => values.set(item.param, item.value));
-      } catch {
-        // Keep partial state from successful chunks instead of failing all AUX detail sync.
-      }
-    }
-
-    if (values.size === 0) {
-      throw new Error("Nao foi possivel ler os parametros do AUX na mesa.");
-    }
-
-    const getValue = (param: number, fallback: number) =>
-      values.get(param) ?? fallback;
-
-    updateAuxProcessorState(auxNumber, (current) => {
-      const rawHpfFreq = values.get(params.hpfFreq);
-      const rawLpfFreq = values.get(params.lpfFreq);
-      const nextHpfEnabled =
-        rawHpfFreq === undefined
-          ? current.eq.hpfEnabled
-          : inferHpfEnabledFromRaw(rawHpfFreq, current.eq.hpfEnabled);
-      const nextLpfEnabled =
-        rawLpfFreq === undefined
-          ? current.eq.lpfEnabled
-          : inferLpfEnabledFromRaw(rawLpfFreq, current.eq.lpfEnabled);
-
-      return ({
-      ...current,
-      comp: {
-        enabled: valueToBoolean(getValue(params.compEnabled, 0)),
-        ratio: valueToCompRatio(getValue(params.compRatio, 100)),
-        attack: valueToCompTime(getValue(params.compAttack, 300)),
-        release: valueToCompTime(getValue(params.compRelease, 1450)),
-        threshold: valueToCompThreshold(getValue(params.compThreshold, 0)),
-        gain: valueToCompGain(getValue(params.compGain, 1200)),
-      },
-      eq: {
-        ...current.eq,
-        enabled: valueToBoolean(getValue(params.eqEnabled, current.eq.enabled ? 1 : 0)),
-        hpfEnabled: nextHpfEnabled,
-        hpfType:
-          values.get(params.hpfTypeSlope) === undefined
-            ? current.eq.hpfType
-            : valueToHpfTypeSlope(values.get(params.hpfTypeSlope) as number).type,
-        hpfSlope:
-          values.get(params.hpfTypeSlope) === undefined
-            ? current.eq.hpfSlope
-            : valueToHpfTypeSlope(values.get(params.hpfTypeSlope) as number).slope,
-        hpfFreq:
-          shouldKeepCachedHpfFreq(values.get(params.hpfFreq))
-            ? current.eq.hpfFreq
-            : resolveHpfFreqFromRaw(values.get(params.hpfFreq), current.eq.hpfFreq),
-        lpfEnabled: nextLpfEnabled,
-        lpfType:
-          values.get(params.lpfTypeSlope) === undefined
-            ? current.eq.lpfType
-            : valueToLpfTypeSlope(values.get(params.lpfTypeSlope) as number).type,
-        lpfSlope:
-          values.get(params.lpfTypeSlope) === undefined
-            ? current.eq.lpfSlope
-            : valueToLpfTypeSlope(values.get(params.lpfTypeSlope) as number).slope,
-        lpfFreq:
-          shouldKeepCachedLpfFreq(values.get(params.lpfFreq))
-            ? current.eq.lpfFreq
-            : resolveLpfFreqFromRaw(values.get(params.lpfFreq), current.eq.lpfFreq),
-        bands: [
-          {
-            enabled: true,
-            freq: valueToFrequency(getValue(params.eqBand1Freq, 63)),
-            gain: valueToEqGain(getValue(params.eqBand1Gain, 500)),
-            q: valueToEqQ(getValue(params.eqBand1Q, 100)),
-          },
-          {
-            enabled: true,
-            freq: valueToFrequency(getValue(params.eqBand2Freq, 160)),
-            gain: valueToEqGain(getValue(params.eqBand2Gain, 500)),
-            q: valueToEqQ(getValue(params.eqBand2Q, 100)),
-          },
-          {
-            enabled: true,
-            freq: valueToFrequency(getValue(params.eqBand3Freq, 400)),
-            gain: valueToEqGain(getValue(params.eqBand3Gain, 500)),
-            q: valueToEqQ(getValue(params.eqBand3Q, 100)),
-          },
-          {
-            enabled: true,
-            freq: valueToFrequency(getValue(params.eqBand4Freq, 1000)),
-            gain: valueToEqGain(getValue(params.eqBand4Gain, 500)),
-            q: valueToEqQ(getValue(params.eqBand4Q, 100)),
-          },
-          {
-            enabled: true,
-            freq: valueToFrequency(getValue(params.eqBand5Freq, 2500)),
-            gain: valueToEqGain(getValue(params.eqBand5Gain, 500)),
-            q: valueToEqQ(getValue(params.eqBand5Q, 100)),
-          },
-          {
-            enabled: true,
-            freq: valueToFrequency(getValue(params.eqBand6Freq, 6300)),
-            gain: valueToEqGain(getValue(params.eqBand6Gain, 500)),
-            q: valueToEqQ(getValue(params.eqBand6Q, 100)),
-          },
-          {
-            enabled: true,
-            freq: valueToFrequency(getValue(params.eqBand7Freq, 16000)),
-            gain: valueToEqGain(getValue(params.eqBand7Gain, 500)),
-            q: valueToEqQ(getValue(params.eqBand7Q, 100)),
-          },
-        ],
-      },
-    })
-    });
+    applyAuxProcessorStateFromValues(auxNumber, values, params);
   }
 
   async function syncAllAux() {
-    for (let aux = 1; aux <= 8; aux++) {
+    const auxCount = getAuxBusCount();
+    if (isAx32ProfileActive()) {
+      const auxBatchSize = 4;
+
+      for (let aux = 1; aux <= auxCount; aux += auxBatchSize) {
+        const batch = Array.from(
+          { length: Math.min(auxBatchSize, auxCount - aux + 1) },
+          (_, index) => aux + index
+        );
+
+        await syncAuxBatch(batch);
+      }
+      return;
+    }
+
+    for (let aux = 1; aux <= auxCount; aux++) {
       await syncAuxState(aux);
       await syncAuxProcessorState(aux);
     }
@@ -3463,7 +5723,10 @@ function App() {
 
   async function syncAllSoloStates() {
     const client = clientRef.current;
-    if (!client) return;
+    if (!client || meterBusyRef.current) return;
+
+    // Se os meters acabaram de atualizar, prioriza responsividade visual.
+    if (Date.now() - meterUpdateLastAtRef.current < 320) return;
 
     // Read solo left+right params for all visible channels (base=87, stride=62)
     const channelParams: number[] = [];
@@ -3474,13 +5737,30 @@ function App() {
 
     // Read aux solo params (base=1688, stride=109)
     const auxParams: number[] = [];
-    for (let aux = 1; aux <= 8; aux++) {
-      auxParams.push(1688 + (aux - 1) * 109);
-      auxParams.push(1689 + (aux - 1) * 109);
+    const auxCount = getAuxBusCount();
+    for (let aux = 1; aux <= auxCount; aux++) {
+      const left = auxSoloLeftParam(aux);
+      auxParams.push(left);
+      auxParams.push(left + 1);
     }
 
+    const fxParams: number[] = [];
+    const fxCount = getFxBusCount();
+    for (let fx = 1; fx <= fxCount; fx++) {
+      const left = fxSoloLeftParam(fx);
+      fxParams.push(left);
+      fxParams.push(left + 1);
+    }
+
+    const masterParams = [
+      masterSoloLeftParam(),
+      masterSoloAuxLeftParam(),
+      masterSoloRightParam(),
+      masterSoloAuxRightParam(),
+    ];
+
     try {
-      const chResponse = await client.readParams(channelParams, 1200);
+      const chResponse = await client.readParams(channelParams, 260);
       const chValues = new Map(chResponse.map((item) => [item.param, item.value]));
 
       setChannels((current) => {
@@ -3496,14 +5776,16 @@ function App() {
         return next;
       });
 
-      const auxResponse = await client.readParams(auxParams, 1200);
+      const auxResponse = await client.readParams(auxParams, 260);
       const auxValues = new Map(auxResponse.map((item) => [item.param, item.value]));
 
       setAuxStrips((current) => {
         const next = [...current];
-        for (let aux = 1; aux <= 8; aux++) {
-          const leftVal = auxValues.get(1688 + (aux - 1) * 109) ?? 0;
-          const rightVal = auxValues.get(1689 + (aux - 1) * 109) ?? 0;
+        const auxCount = getAuxBusCount();
+        for (let aux = 1; aux <= auxCount; aux++) {
+          const left = auxSoloLeftParam(aux);
+          const leftVal = auxValues.get(left) ?? 0;
+          const rightVal = auxValues.get(left + 1) ?? 0;
           const soloOn = leftVal > 0 || rightVal > 0;
           if (next[aux - 1].soloOn !== soloOn) {
             next[aux - 1] = { ...next[aux - 1], soloOn };
@@ -3511,6 +5793,37 @@ function App() {
         }
         return next;
       });
+
+      const fxResponse = await client.readParams(fxParams, 260);
+      const fxValues = new Map(fxResponse.map((item) => [item.param, item.value]));
+
+      setFxStrips((current) => {
+        const next = [...current];
+        const fxCount = getFxBusCount();
+        for (let fx = 1; fx <= fxCount; fx++) {
+          const left = fxSoloLeftParam(fx);
+          const leftVal = fxValues.get(left) ?? 0;
+          const rightVal = fxValues.get(left + 1) ?? 0;
+          const soloOn = leftVal > 0 || rightVal > 0;
+          if (next[fx - 1].soloOn !== soloOn) {
+            next[fx - 1] = { ...next[fx - 1], soloOn };
+          }
+        }
+        return next;
+      });
+
+      const masterResponse = await client.readParams(masterParams, 260);
+      const masterValues = new Map(masterResponse.map((item) => [item.param, item.value]));
+      const leftSoloOn =
+        (masterValues.get(masterSoloLeftParam()) ?? 0) > 0 ||
+        (masterValues.get(masterSoloAuxLeftParam()) ?? 0) > 0;
+      const rightSoloOn =
+        (masterValues.get(masterSoloRightParam()) ?? 0) > 0 ||
+        (masterValues.get(masterSoloAuxRightParam()) ?? 0) > 0;
+      const masterSoloOn =
+        leftSoloOn || rightSoloOn;
+
+      updateMasterState({ leftSoloOn, rightSoloOn, soloOn: masterSoloOn });
     } catch {
       // Ignore transient errors during solo sync
     }
@@ -3787,6 +6100,16 @@ function App() {
       return;
     }
 
+    if (detailView.type === "master") {
+      try {
+        await syncMasterProcessorState(detailView.side);
+      } catch {
+        // Ignore transient errors to avoid noisy status churn.
+      }
+
+      return;
+    }
+
     if (detailView.type !== "aux") {
       return;
     }
@@ -3894,6 +6217,89 @@ function App() {
   }, [isConnected, isSyncing, detailView]);
 
   useEffect(() => {
+    if (!isConnected || isSyncing) return;
+
+    const intervalMs = detailView
+      ? isConstrainedDevice
+        ? 700
+        : GLOBAL_CONTROL_FAST_POLL_INTERVAL_DETAIL_MS
+      : mainView === "mixer"
+        ? isConstrainedDevice
+          ? 420
+          : GLOBAL_CONTROL_FAST_POLL_INTERVAL_MIXER_MS
+        : isConstrainedDevice
+          ? 1000
+          : GLOBAL_CONTROL_FAST_POLL_INTERVAL_OTHER_MS;
+
+    const run = () => {
+      if (fastControlSyncInFlightRef.current) return;
+      fastControlSyncInFlightRef.current = true;
+      void syncFastControlStates().catch(() => {
+        // Ignore transient read failures in fast control polling.
+      }).finally(() => {
+        fastControlSyncInFlightRef.current = false;
+      });
+    };
+
+    run();
+
+    const timer = window.setInterval(run, intervalMs);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [channelCount, detailView, isConnected, isConstrainedDevice, isSyncing, mainView]);
+
+  useEffect(() => {
+    if (!isConnected || isSyncing) return;
+
+    const run = () => {
+      void syncGlobalControlStates().catch(() => {
+        // Ignore transient read failures in periodic control polling.
+      });
+    };
+
+    run();
+
+    const timer = window.setInterval(run, GLOBAL_CONTROL_POLL_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [channelCount, isConnected, isSyncing]);
+
+  useEffect(() => {
+    if (!isConnected || isSyncing) return;
+
+    const run = () => {
+      if (usbReturnPatchSyncInFlightRef.current) return;
+
+      usbReturnPatchSyncInFlightRef.current = true;
+      void syncUsbReturnPatchMap({ refreshInputStates: true }).catch(() => {
+        // Ignore transient read failures for USB return patch map polling.
+      }).finally(() => {
+        usbReturnPatchSyncInFlightRef.current = false;
+      });
+    };
+
+    run();
+
+    const timer = window.setInterval(run, USB_RETURN_PATCH_POLL_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [channelCount, isConnected, isSyncing]);
+
+  useEffect(() => {
+    if (!isConnected || isSyncing) return;
+
+    // Always refresh controls when returning to mixer or opening detail views.
+    if (mainView !== "mixer" && !detailView) return;
+
+    void syncGlobalControlStates().catch(() => {
+      // Ignore transient read failures on route-entry refresh.
+    });
+  }, [detailView, isConnected, isSyncing, mainView]);
+
+  useEffect(() => {
     if (!isConnected || !detailView || detailView.type !== "channel") return;
     if (activeProcessorModule !== "sends") return;
 
@@ -3935,28 +6341,76 @@ function App() {
   }, [detailView, isConnected, mainView, selectedAuxSendsTarget, selectedFxSendsTarget]);
 
   useEffect(() => {
-    if (!isConnected) return;
+    if (!isConnected || isSyncing) return;
 
     // Poll solo state from the hardware every 2.5 s so that changes made
     // directly on the mixer (hardware buttons) are reflected in the app.
     const timer = window.setInterval(() => {
+      if (meterBusyRef.current) return;
       syncAllSoloStates();
-    }, 2500);
+    }, 5000);
 
     return () => {
       window.clearInterval(timer);
     };
-  }, [isConnected]);
+  }, [isConnected, isSyncing]);
+
+  useEffect(() => {
+    if (!isConnected || isSyncing) return;
+
+    // Keep AUX link badges/state fresh even when user stays on sends views.
+    const timer = window.setInterval(() => {
+      if (meterBusyRef.current) return;
+      syncLinkStates().catch(() => {
+        // Ignore transient link read failures.
+      });
+    }, 4200);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [isConnected, isSyncing]);
+
+  useEffect(() => {
+    if (!isConnected || isSyncing) return;
+
+    const run = () => {
+      if (meterBusyRef.current || isChannelsDraggingRef.current) return;
+      void syncChannelPairVisualState().catch(() => {
+        // Ignore transient pair-state read failures.
+      });
+    };
+
+    run();
+    const timer = window.setInterval(run, isAx32ProfileActive() ? 1600 : 2200);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [channelCount, isConnected, isSyncing]);
 
   function applyLinkStateFrom3056(value3056: number) {
-    setAuxLinks({
-      "1-2": isAuxLinked(value3056, 1),
-      "3-4": isAuxLinked(value3056, 3),
-      "5-6": isAuxLinked(value3056, 5),
-      "7-8": isAuxLinked(value3056, 7),
+    const now = Date.now();
+
+    setAuxLinks((current) => {
+      const next = {
+        "1-2": isAuxLinked(value3056, 1),
+        "3-4": isAuxLinked(value3056, 3),
+        "5-6": isAuxLinked(value3056, 5),
+        "7-8": isAuxLinked(value3056, 7),
+      };
+
+      if (isAuxPairTransitionLocked("1-2", now)) next["1-2"] = current["1-2"];
+      if (isAuxPairTransitionLocked("3-4", now)) next["3-4"] = current["3-4"];
+      if (isAuxPairTransitionLocked("5-6", now)) next["5-6"] = current["5-6"];
+      if (isAuxPairTransitionLocked("7-8", now)) next["7-8"] = current["7-8"];
+
+      return next;
     });
 
-    setMasterLinked(isMasterLinked(value3056));
+    setMasterLinked((current) =>
+      isMasterLinkTransitionLocked(now) ? current : isMasterLinked(value3056)
+    );
   }
 
   function updateMetersFromResponse(
@@ -3966,19 +6420,155 @@ function App() {
     }[]
   ) {
     const now = Date.now();
-    if (isChannelsDraggingRef.current && now - meterUpdateLastAtRef.current < 140) {
+    const minDragMeterUpdateIntervalMs = isConstrainedDevice ? 170 : 140;
+    if (
+      isChannelsDraggingRef.current &&
+      now - meterUpdateLastAtRef.current < minDragMeterUpdateIntervalMs
+    ) {
       return;
     }
     meterUpdateLastAtRef.current = now;
 
     const CLIP_HOLD_MS = 2500;
     const mainMaster = response.find((item) => item.param === 47);
+    const ax32MasterL = response.find((item) => item.param === 1947);
+    const ax32MasterR = response.find((item) => item.param === 1948);
+    const ax32MasterAltLeftA = response.find((item) => item.param === 4644);
+    const ax32MasterAltRightA = response.find((item) => item.param === 4753);
+    const ax32MasterAltLeftB = response.find((item) => item.param === 4645);
+    const ax32MasterAltRightB = response.find((item) => item.param === 4754);
+    const ax32MasterProcessed = response.find((item) => item.param === 2862);
     const monitorSolo = response.find((item) => item.param === 48);
 
+    const meterCandidates: MasterMeterCandidate[] = [];
+
     if (mainMaster) {
-      // hiByte = R, loByte = L (firmware da mesa envia invertido).
-      const masterRDb = meterByteToDb(mainMaster.value >> 8);
-      const masterLDb = meterByteToDb(mainMaster.value & 255);
+      const rightDb = meterByteToDb(mainMaster.value >> 8);
+      const leftDb = meterByteToDb(mainMaster.value & 255);
+      meterCandidates.push({
+        id: "legacy47",
+        leftDb,
+        rightDb,
+        valid: isValidMeterDb(leftDb) && isValidMeterDb(rightDb),
+      });
+    }
+
+    if (isAx32ProfileActive()) {
+      if (ax32MasterL && ax32MasterR) {
+        const leftDb = decodeRawMeterDb(ax32MasterL.value);
+        const rightDb = decodeRawMeterDb(ax32MasterR.value);
+        meterCandidates.push({
+          id: "ax32_1947_1948",
+          leftDb,
+          rightDb,
+          valid: isValidMeterDb(leftDb) && isValidMeterDb(rightDb),
+        });
+      }
+
+      if (ax32MasterAltLeftA && ax32MasterAltRightA) {
+        const leftDb = decodeRawMeterDb(ax32MasterAltLeftA.value);
+        const rightDb = decodeRawMeterDb(ax32MasterAltRightA.value);
+        meterCandidates.push({
+          id: "ax32_4644_4753",
+          leftDb,
+          rightDb,
+          valid: isValidMeterDb(leftDb) && isValidMeterDb(rightDb),
+        });
+      }
+
+      if (ax32MasterAltLeftB && ax32MasterAltRightB) {
+        const leftDb = decodeRawMeterDb(ax32MasterAltLeftB.value);
+        const rightDb = decodeRawMeterDb(ax32MasterAltRightB.value);
+        meterCandidates.push({
+          id: "ax32_4645_4754",
+          leftDb,
+          rightDb,
+          valid: isValidMeterDb(leftDb) && isValidMeterDb(rightDb),
+        });
+      }
+
+      if (ax32MasterProcessed) {
+        const processed = decodePackedStereoMeterWord(ax32MasterProcessed.value);
+        meterCandidates.push({
+          id: "ax32_2862",
+          leftDb: processed.leftDb,
+          rightDb: processed.rightDb,
+          valid:
+            isValidMeterDb(processed.leftDb) &&
+            isValidMeterDb(processed.rightDb),
+        });
+      }
+    }
+
+    if (meterCandidates.length > 0) {
+      const scores = masterMeterSourceScoreRef.current;
+
+      meterCandidates.forEach((candidate) => {
+        const activity = Math.max(candidate.leftDb, candidate.rightDb);
+        const stereoDelta = Math.abs(candidate.leftDb - candidate.rightDb);
+        const hasActivity = activity > -70 ? 1 : 0;
+        const hasStereoVariation = stereoDelta >= 1.5 ? 0.4 : 0;
+        const validBonus = candidate.valid ? 0.2 : -0.3;
+        const sampleScore = hasActivity + hasStereoVariation + validBonus;
+        scores[candidate.id] = scores[candidate.id] * 0.88 + sampleScore;
+      });
+
+      let selected: MasterMeterCandidate;
+
+      if (isAx32ProfileActive()) {
+        const processedCandidate = meterCandidates.find(
+          (candidate) => candidate.id === "ax32_2862" && candidate.valid
+        );
+
+        if (processedCandidate) {
+          // Prefer mapped processed master source when present to avoid source hopping.
+          masterMeterSourceRef.current = "ax32_2862";
+          selected = processedCandidate;
+        } else {
+          const ranked = [...meterCandidates]
+            .filter((candidate) => candidate.valid)
+            .sort(
+              (a, b) =>
+                (scores[b.id] ?? Number.NEGATIVE_INFINITY) -
+                (scores[a.id] ?? Number.NEGATIVE_INFINITY)
+            );
+
+          if (ranked.length > 0 && (scores[ranked[0].id] ?? 0) > 0.25) {
+            masterMeterSourceRef.current = ranked[0].id;
+          }
+
+          selected =
+            meterCandidates.find(
+              (candidate) => candidate.id === masterMeterSourceRef.current
+            ) ?? meterCandidates[0];
+        }
+      } else {
+        selected =
+          meterCandidates.find((candidate) => candidate.id === "legacy47") ??
+          meterCandidates[0];
+      }
+
+      if (isAx32ProfileActive() && now - masterMeterDebugLastAtRef.current >= 550) {
+        masterMeterDebugLastAtRef.current = now;
+        const candidatesText = meterCandidates
+          .map((candidate) => {
+            const score = scores[candidate.id] ?? 0;
+            return `${candidate.id}:L=${candidate.leftDb.toFixed(1)} R=${candidate.rightDb.toFixed(1)} S=${score.toFixed(2)}`;
+          })
+          .join(" | ");
+        console.info(
+          `[MMDBG] selected=${selected.id} :: ${candidatesText}`
+        );
+        if (ax32MasterProcessed) {
+          const processed = decodePackedStereoMeterWord(ax32MasterProcessed.value);
+          console.info(
+            `[MMDBG2862] raw=${ax32MasterProcessed.value} hi=${processed.hiDb.toFixed(1)} lo=${processed.loDb.toFixed(1)} mappedL=${processed.leftDb.toFixed(1)} mappedR=${processed.rightDb.toFixed(1)}`
+          );
+        }
+      }
+
+      const masterLDb = clampMasterMeterForDisplay(selected.leftDb);
+      const masterRDb = clampMasterMeterForDisplay(selected.rightDb);
 
       setMainMasterMeter((current) => {
         const leftPeak = computeNextPeakState(
@@ -4036,6 +6626,18 @@ function App() {
       let next: ChannelState[] | null = null;
       const CHANNEL_IDLE_DB = -75;
       const CHANNEL_ACTIVE_MIN_DB = -40;
+      const CHANNEL_STALE_TIMEOUT_MS = 420;
+      const channelMeterItems = response.filter(
+        (item) => item.param >= 2 && item.param <= 9
+      );
+      const seenChannels = new Set<number>();
+      const hasAnyChannelMeterData = channelMeterItems.length > 0;
+
+      if (!hasAnyChannelMeterData) {
+        missingChannelMeterFramesRef.current += 1;
+      } else {
+        missingChannelMeterFramesRef.current = 0;
+      }
 
       function ensureNext() {
         if (!next) {
@@ -4045,37 +6647,45 @@ function App() {
         return next;
       }
 
+      function applyIdleChannelState(
+        index: number,
+        previous: ChannelState,
+        idleLevel: number
+      ) {
+        const alreadyIdle =
+          previous.meterDb === CHANNEL_IDLE_DB &&
+          previous.meterLevel === idleLevel &&
+          previous.peakDb <= CHANNEL_ACTIVE_MIN_DB &&
+          previous.peakLevel === 0 &&
+          previous.peakUntil === 0 &&
+          previous.clipUntil === 0;
+
+        if (alreadyIdle) return;
+
+        ensureNext()[index] = {
+          ...previous,
+          meterDb: CHANNEL_IDLE_DB,
+          meterLevel: idleLevel,
+          peakDb: CHANNEL_IDLE_DB,
+          peakLevel: 0,
+          peakUntil: 0,
+          clipUntil: 0,
+        };
+      }
+
       function updateOneChannel(channelNumber: number, channelDb: number) {
         if (channelNumber < 1 || channelNumber > channelCount) return;
 
+        seenChannels.add(channelNumber);
         const index = channelNumber - 1;
+        channelMeterLastUpdateAtRef.current[index] = now;
         const previous = (next ?? current)[index];
         const holdActive = previous.peakUntil > now || previous.clipUntil > now;
 
         // Ignore muted channels once hold has ended to prevent unnecessary re-renders.
         if (previous.muted && !holdActive) {
           const idleLevel = meterDbToLevel(CHANNEL_IDLE_DB);
-          const alreadyIdle =
-            previous.meterDb === CHANNEL_IDLE_DB &&
-            previous.meterLevel === idleLevel &&
-            previous.peakDb <= CHANNEL_ACTIVE_MIN_DB &&
-            previous.peakLevel === 0 &&
-            previous.peakUntil === 0 &&
-            previous.clipUntil === 0;
-
-          if (alreadyIdle) return;
-
-          const updated = {
-            ...previous,
-            meterDb: CHANNEL_IDLE_DB,
-            meterLevel: idleLevel,
-            peakDb: CHANNEL_IDLE_DB,
-            peakLevel: 0,
-            peakUntil: 0,
-            clipUntil: 0,
-          };
-
-          ensureNext()[index] = updated;
+          applyIdleChannelState(index, previous, idleLevel);
           return;
         }
 
@@ -4116,13 +6726,11 @@ function App() {
         ensureNext()[index] = updated;
       }
 
-      for (const { param, value } of response) {
-        if (param < 2 || param > 9) continue;
-
+      for (const { param, value } of channelMeterItems) {
         const firstChannel = (param - 2) * 2 + 1;
         const secondChannel = firstChannel + 1;
 
-        const hiByte = value >> 8;
+        const hiByte = (value >> 8) & 255;
         const loByte = value & 255;
 
         // A mesa envia cada par invertido:
@@ -4135,39 +6743,84 @@ function App() {
         updateOneChannel(secondChannel, evenChannelDb);
       }
 
+      if (!isChannelsDraggingRef.current) {
+        const idleLevel = meterDbToLevel(CHANNEL_IDLE_DB);
+        const staleBefore = now - CHANNEL_STALE_TIMEOUT_MS;
+        const channelLastUpdateAt = channelMeterLastUpdateAtRef.current;
+
+        for (let index = 0; index < channelCount; index++) {
+          const channelNumber = index + 1;
+          if (seenChannels.has(channelNumber)) continue;
+
+          const lastUpdateAt = channelLastUpdateAt[index] ?? 0;
+          if (lastUpdateAt >= staleBefore) continue;
+
+          const previous = (next ?? current)[index];
+          const holdActive = previous.peakUntil > now || previous.clipUntil > now;
+          if (holdActive) continue;
+
+          applyIdleChannelState(index, previous, idleLevel);
+        }
+      }
+
       return next ?? current;
     });
   }
 
   function startMeterPolling() {
     stopMeterPolling();
+    missingChannelMeterFramesRef.current = 0;
+    channelMeterLastUpdateAtRef.current = Array.from(
+      { length: channelCount },
+      () => Date.now()
+    );
 
     let cancelled = false;
-    const METER_POLL_INTERVAL_MS = 100;
-    const METER_POLL_INTERVAL_DRAGGING_MS = 165;
+    let meterPollCycle = 0;
+    const METER_POLL_INTERVAL_MS = isConstrainedDevice ? 82 : 70;
+    const METER_POLL_INTERVAL_DRAGGING_MS = isConstrainedDevice ? 125 : 110;
+    const METER_READ_TIMEOUT_MS = isConstrainedDevice ? 170 : 140;
+    const METER_MIN_RESCHEDULE_MS = 16;
 
     async function poll() {
       if (cancelled) return;
+      const startedAt = Date.now();
 
       const client = clientRef.current;
 
       if (client) {
         // Poll dos meters: canais (2-9) + main master (47) + monitor/solo (48).
         try {
+          meterBusyRef.current = true;
+          meterPollCycle += 1;
+          const includeExtendedAx32Meters =
+            !isConstrainedDevice || meterPollCycle % 3 === 0;
+          const meterParams = isAx32ProfileActive()
+            ? includeExtendedAx32Meters
+              ? [2, 3, 4, 5, 6, 7, 8, 9, 47, 48, 2862, 1947, 1948, 4644, 4645, 4753, 4754]
+              : [2, 3, 4, 5, 6, 7, 8, 9, 47, 48, 2862]
+            : [2, 3, 4, 5, 6, 7, 8, 9, 47, 48];
           const meterResponse = await client.readParams(
-            [2, 3, 4, 5, 6, 7, 8, 9, 47, 48],
-            100
+            meterParams,
+            METER_READ_TIMEOUT_MS
           );
           updateMetersFromResponse(meterResponse);
         } catch {
           // Falhas pontuais de meter são ignoradas.
+        } finally {
+          meterBusyRef.current = false;
         }
       }
 
       if (!cancelled) {
-        const nextDelay = isChannelsDraggingRef.current
+        const targetInterval = isChannelsDraggingRef.current
           ? METER_POLL_INTERVAL_DRAGGING_MS
           : METER_POLL_INTERVAL_MS;
+        const elapsed = Date.now() - startedAt;
+        const nextDelay = Math.max(
+          METER_MIN_RESCHEDULE_MS,
+          targetInterval - elapsed
+        );
         meterTimerRef.current = window.setTimeout(poll, nextDelay);
       }
     }
@@ -4194,9 +6847,15 @@ function App() {
     }
 
     meterBusyRef.current = false;
+    channelMeterLastUpdateAtRef.current = [];
   }
 
-  async function connectToMixer(targetIp: string, source: "manual" | "discovered") {
+  async function connectToMixer(
+    targetIp: string,
+    source: "manual" | "discovered",
+    forcedProfile?: AxiosProtocolProfile,
+    forcedChannelCount?: number
+  ) {
     const normalizedIp = targetIp.trim();
 
     if (!normalizedIp) {
@@ -4215,82 +6874,55 @@ function App() {
         setIp(normalizedIp);
       }
 
-      if (LICENSE_STRICT_SERVER_VALIDATION) {
-        const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
-        const cached = readCachedLicenseStatus();
-        const hasValidCache = isCacheValidForInstallation(cached, installationId);
-        const cacheExpired = isLicenseCacheExpired(cached, installationId);
-        const licenseExpiredByDate = isLicenseExpiredByDate(cached?.expiryDate ?? null);
-        const firstActivationPending = !hasValidCache;
-
-        if (!storedLicenseKey) {
-          setStatus("Licenca obrigatoria antes da conexao.");
-          setLicenseValidationMessage({ kind: "error", text: "Informe e valide a chave antes de conectar." });
-          setLicenseModalMandatory(true);
-          setLicenseModalOpen(true);
-          setConnectingSource(null);
-          return false;
-        }
-
-        if (licenseExpiredByDate) {
-          setStatus("Periodo de teste expirado.");
-          setLicenseValidationMessage({
-            kind: "error",
-            text: "Periodo de teste expirado. Entre em contato para adquirir a licenca.",
-          });
-          setLicenseModalMandatory(true);
-          setLicenseModalOpen(true);
-          setConnectingSource(null);
-          return false;
-        }
-
-        if (firstActivationPending || cacheExpired) {
-          if (!isOnline) {
-            setStatus("Sem internet para validar a licenca.");
-            setLicenseValidationMessage({
-              kind: "error",
-              text: firstActivationPending
-                ? "Primeira ativacao exige internet. Conecte-se para validar esta chave."
-                : "Revalidacao de 30 dias expirou. Conecte-se a internet para continuar.",
-            });
-            setLicenseModalMandatory(true);
-            setLicenseModalOpen(true);
-            setConnectingSource(null);
-            return false;
-          }
-
-          const validatedNow = await runBackgroundLicenseRevalidation(true, true);
-          if (!validatedNow) {
-            setStatus("Licenca invalida ou nao validada para este dispositivo.");
-            setConnectingSource(null);
-            return false;
-          }
-        } else if (isOnline) {
-          void runBackgroundLicenseRevalidation(true, false);
-        }
-      }
-
-      const client = new Axios16Client(normalizedIp);
+      const resolvedTarget = resolveConnectionTargetProfile(
+        normalizedIp,
+        discoveredMixers,
+        channelCount,
+        forcedProfile,
+        forcedChannelCount
+      );
+      const selectedProfile = resolvedTarget.profile;
+      const targetChannelCount = resolvedTarget.channelCount;
+      const mixerCacheIdentity = buildMixerCacheIdentity(
+        normalizedIp,
+        targetChannelCount,
+        discoveredMixers
+      );
+      const client = new Axios16Client(normalizedIp, 8088, selectedProfile);
       await client.connect();
+      clearLocalParamWriteTracking();
+      localParamWriteUnsubscribeRef.current = client.onLocalParamWrite(handleLocalParamWrite);
 
       client.setOnDisconnect(() => {
         // Keep UI/client state consistent when the socket drops unexpectedly.
         if (clientRef.current !== client) return;
         stopMeterPolling();
         clearScheduledSendWrites();
+        clearLocalParamWriteTracking();
         clientRef.current = null;
         setIsConnected(false);
         setStatus("Conexao com a mesa foi encerrada.");
       });
 
       clientRef.current = client;
-      setIsConnected(true);
       const connectedStatus = licenseRevalidationHint
         ? `Conectado em ${normalizedIp} - ${licenseRevalidationHint}`
         : `Conectado em ${normalizedIp}`;
 
-      setStatus(connectedStatus);
+      setStatus("Sincronizando mesa...");
       setAppStage("mixer");
+
+      if (channelCount !== targetChannelCount || ACTIVE_CHANNEL_PROFILE !== selectedProfile) {
+        applyMixerChannelProfile(targetChannelCount);
+      }
+
+      setActiveMixerCacheIdentity(mixerCacheIdentity);
+      hydrateDcaCacheForMixer(mixerCacheIdentity, targetChannelCount);
+
+      // Ensure profile/strip state updates are committed before the first full sync pass.
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, 0);
+      });
 
       if (!hasLicenseActivatedOnce && !LICENSE_STRICT_SERVER_VALIDATION) {
         setLicenseModalMandatory(true);
@@ -4301,44 +6933,101 @@ function App() {
         mixerChannelsScrollerRef.current.scrollLeft = 0;
       }
 
-      // Sync operations with better error isolation
-      try {
-        await syncAllChannels();
-      } catch (syncError) {
-        console.error("Erro ao sincronizar canais:", syncError);
-        setStatus("Conexão estabelecida, mas erro ao sincronizar canais");
-      }
+      setStatus("Sincronizando todos os parametros mapeados...");
+      const syncFailures: string[] = [];
 
-      try {
-        await syncChannelEqPreviewStates();
-      } catch (syncError) {
-        console.error("Erro ao sincronizar EQ:", syncError);
-      }
+      const runConnectSyncStep = async (label: string, task: () => Promise<void>) => {
+        try {
+          await task();
+        } catch (syncError) {
+          console.error(`Erro ao sincronizar ${label}:`, syncError);
+          syncFailures.push(label);
+        }
+      };
 
-      try {
-        await syncAllStripNames();
-      } catch (syncError) {
-        console.error("Erro ao sincronizar nomes:", syncError);
-      }
+      await runConnectSyncStep("canais", async () => {
+        await syncAllChannels(targetChannelCount);
+      });
 
-      try {
+      await runConnectSyncStep("EQ preview", async () => {
+        await syncChannelEqPreviewStates(targetChannelCount);
+      });
+
+      await runConnectSyncStep("nomes", async () => {
+        // Always prioritize names read from the currently connected mixer.
+        // This avoids carrying local names from a different desk/model.
+        await syncAllStripNames({
+          forceFromMixer: true,
+          channelTotal: targetChannelCount,
+          writeBackDefaults: true,
+        });
+      });
+
+      await runConnectSyncStep("solos", async () => {
+        await syncAllSoloStates();
+      });
+
+      await runConnectSyncStep("grupos", async () => {
+        await syncAllGroupStates({
+          ignoreConnectionState: true,
+          suppressManagedMuteWrites: true,
+        });
+      });
+
+      await runConnectSyncStep("sends", async () => {
         const channelForInitialSendSync =
           detailView && detailView.type === "channel" ? detailView.channel : 1;
         await syncChannelSendsState(channelForInitialSendSync);
-      } catch (syncError) {
-        console.error("Erro ao sincronizar sends:", syncError);
+        await syncAllBusInputSendsState();
+
+        if (detailView && activeProcessorModule === "sends") {
+          if (detailView.type === "channel") {
+            await syncChannelSendsState(detailView.channel);
+            return;
+          }
+
+          if (detailView.type === "aux") {
+            await syncBusInputSendsState("aux", detailView.aux);
+            return;
+          }
+
+          if (detailView.type === "fx") {
+            await syncBusInputSendsState("fx", detailView.fx);
+            return;
+          }
+        }
+
+        if (!detailView && mainView === "auxSends") {
+          await syncBusInputSendsState("aux", selectedAuxSendsTarget);
+          return;
+        }
+
+        if (!detailView && mainView === "fxSends") {
+          await syncBusInputSendsState("fx", selectedFxSendsTarget);
+        }
+      });
+
+      // Libera a interface somente quando a sincronizacao inicial completa terminar.
+      setIsConnected(true);
+
+      if (syncFailures.length > 0) {
+        setStatus(`${connectedStatus} (sync parcial: ${syncFailures.join(", ")})`);
+      } else {
+        setStatus(connectedStatus);
       }
 
+      rememberConnectedMixerIp(normalizedIp);
       startMeterPolling();
       setConnectingSource(null);
       return true;
     } catch (error) {
       stopMeterPolling();
+      clearLocalParamWriteTracking();
       setIsConnected(false);
-      setStatus(error instanceof Error ? error.message : "Erro ao conectar");
-      setConnectionError(
-        "Nao foi possivel conectar a mesa. Verifique se a mesa esta ligada e na mesma rede."
-      );
+      setActiveMixerCacheIdentity(null);
+      const detail = error instanceof Error ? error.message : "Erro ao conectar";
+      setStatus(detail);
+      setConnectionError(`Nao foi possivel conectar a mesa. ${detail}`);
       clientRef.current = null;
       setConnectingSource(null);
       return false;
@@ -4348,6 +7037,7 @@ function App() {
   function handleDisconnect() {
     stopMeterPolling();
     clearScheduledSendWrites();
+    clearLocalParamWriteTracking();
 
     clientRef.current?.disconnect();
     clientRef.current = null;
@@ -4359,6 +7049,7 @@ function App() {
     setSettingsDropdownOpen(false);
     setAppStage("device-selection");
     setConnectingSource(null);
+    setActiveMixerCacheIdentity(null);
     setLicenseModalOpen(false);
     setLicenseModalMandatory(false);
   }
@@ -4366,6 +7057,7 @@ function App() {
   function enforceLicenseBlock(message: string) {
     stopMeterPolling();
     clearScheduledSendWrites();
+    clearLocalParamWriteTracking();
 
     clientRef.current?.disconnect();
     clientRef.current = null;
@@ -4799,9 +7491,14 @@ function App() {
       return;
     }
 
-    applyMixerChannelProfile(normalizeSupportedChannelCount(mixer.channels));
+    const normalizedChannels =
+      resolveMixerChannelCount(mixer) ?? normalizeSupportedChannelCount(mixer.channels);
+    const protocolProfile = channelCountToProtocolProfile(normalizedChannels);
+    const connectSource = mixer.source === "manual" ? "manual" : "discovered";
+
+    applyMixerChannelProfile(normalizedChannels);
     setConnectionError(null);
-    void connectToMixer(mixer.ip, "discovered");
+    void connectToMixer(mixer.ip, connectSource, protocolProfile, normalizedChannels);
   }
 
   function toggleMute(channelNumber: number) {
@@ -4847,25 +7544,50 @@ function App() {
     });
   }
 
-  function toggleInputSource(channelNumber: number) {
+  async function toggleInputSource(channelNumber: number) {
+    const client = clientRef.current;
+    if (!client) return;
+
     const current = channels[channelNumber - 1];
     const nextValue = !current.usbInputOn;
-    clientRef.current?.setInputSource(channelNumber, nextValue ? "usb" : "input");
+    const expectedRawValue = nextValue ? 0 : 1;
+    const controlChannel = resolveInputSourceControlChannel(channelNumber);
+    const sourceParam = inputSourceParam(controlChannel);
+
+    client.setInputSource(controlChannel, nextValue ? "usb" : "input");
     updateChannelState(channelNumber, { usbInputOn: nextValue });
+
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const verify = await client.readParams([sourceParam], 900);
+        const rawValue = verify[0]?.value;
+
+        if (rawValue === undefined) continue;
+
+        updateChannelState(channelNumber, { usbInputOn: rawValue === 0 });
+        if (rawValue === expectedRawValue) {
+          return;
+        }
+      }
+
+      setStatus("Mesa nao confirmou a troca de INPUT/USB deste canal.");
+    } catch {
+      setStatus("Falha ao confirmar INPUT/USB na mesa.");
+    }
   }
 
   function handleFaderChange(channelNumber: number, position: number) {
     const targets = getLinkedChannelTargets(channelNumber);
     const db = faderPositionToDb(position);
+    const dbForSend = db <= -120 ? "-inf" : db;
 
     targets.forEach((target) => {
-      clientRef.current?.setFader(target, db <= -120 ? "-inf" : db);
-
-      updateChannelState(target, {
-        faderPosition: position,
-        faderDb: db,
+      scheduleFaderWrite(`ch:${target}`, () => {
+        clientRef.current?.setFader(target, dbForSend);
       });
     });
+
+    updateChannelFaderStates(targets, position, db);
   }
 
   function handlePanChange(channelNumber: number, value: number) {
@@ -4933,11 +7655,14 @@ function App() {
 
   async function toggleChannelLink(channelNumber: number) {
     const client = clientRef.current;
+    const isAx32 = isAx32ProfileActive();
     const [odd, even] = getChannelPair(channelNumber);
     const key = pairKey(odd, even);
     const isLinked = Boolean(channelLinks[key]);
     const nextLinked = !isLinked;
+    let confirmedLinked = nextLinked;
     let oddMasterLSendForStereo = 1200;
+    lockChannelPairTransition(key);
 
     try {
       if (nextLinked && client) {
@@ -4945,6 +7670,13 @@ function App() {
           66, 67, 69, 70, 71,
           72, 73, 74, 76,
           77, 78, 79, 80, 81, 82, 83, 84,
+          // Processor block: comp + EQ/filters (needed to match official desk link behavior).
+          93, 94, 95, 96, 97, 99,
+          100, 102, 103, 104, 105,
+          107, 108, 109,
+          111, 112, 113,
+          115, 116, 117,
+          119, 120, 121,
           65,
           ...(odd === 1 ? [64] : []),
         ];
@@ -4966,36 +7698,87 @@ function App() {
           sourceValues.get(channelParam(odd, 85)) ?? oddMasterLSendForStereo;
       }
 
-      const linkFlag = getChannelLinkFlag(odd, nextLinked);
-
       if (client) {
-        client.setPan(odd, nextLinked ? 0 : 100);
-        client.setPan(even, nextLinked ? 200 : 100);
-
         if (nextLinked) {
+          // Stereo link pan lock: odd hard-left (0), even hard-right (200).
+          client.setPan(odd, 0);
+          client.setPan(even, 200);
+        } else {
+          // On unlink, return both channels to center pan (C = 100).
+          client.setPan(odd, 100);
+          client.setPan(even, 100);
+        }
+
+        if (nextLinked && !isAx32) {
           client.sendParam(channelParam(odd, 86), 0);
           client.sendParam(channelParam(even, 85), 0);
           client.sendParam(channelParam(even, 86), oddMasterLSendForStereo);
         }
 
-        if (linkFlag !== null) {
-          client.sendParam(3055, linkFlag);
+        if (!isAx32) {
+          const linkFlag = getChannelLinkFlag(odd, nextLinked);
+          if (linkFlag !== null) {
+            client.sendParam(getChannelLinkParam(), linkFlag);
+          }
+        } else {
+          const linkParam = getChannelLinkParam();
+          const pairBit = 1 << Math.floor((odd - 1) / 2);
+          const currentLinkResponse = await client.readParams([linkParam], 900);
+          const currentMask = currentLinkResponse[0]?.value ?? 0;
+          const nextMask = nextLinked
+            ? (currentMask | pairBit)
+            : (currentMask & ~pairBit);
+          client.sendParam(linkParam, nextMask);
+        }
+
+        const verifyParams = [
+          channelParam(odd, 75),
+          channelParam(even, 75),
+          ...CHANNEL_LINK_MIRROR_BASES.flatMap((base) => [
+            channelParam(odd, base),
+            channelParam(even, base),
+          ]),
+        ];
+
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          const verify = await client.readParams(verifyParams, 900);
+          const values = new Map(verify.map((item) => [item.param, item.value]));
+          const oddPan = valueToPan(values.get(channelParam(odd, 75)) ?? 100);
+          const evenPan = valueToPan(values.get(channelParam(even, 75)) ?? 100);
+
+          if (!isAx32) {
+            confirmedLinked = oddPan === 0 && evenPan === 200;
+          } else {
+            const linkParam = getChannelLinkParam();
+            const pairBit = 1 << Math.floor((odd - 1) / 2);
+            const linkState = await client.readParams([linkParam], 900);
+            const mask = linkState[0]?.value ?? 0;
+            confirmedLinked = (mask & pairBit) !== 0;
+          }
+
+          if (confirmedLinked === nextLinked) {
+            break;
+          }
+        }
+
+        if (confirmedLinked !== nextLinked) {
+          throw new Error("A mesa nao confirmou o estado de link do canal.");
         }
       }
 
       setChannelLinks((current) => ({
         ...current,
-        [key]: nextLinked,
+        [key]: confirmedLinked,
       }));
 
-      if (nextLinked) {
+      if (confirmedLinked) {
         setChannels((current) => {
           const next = [...current];
           const primaryNameBase =
             stripLinkedNameSuffix(next[odd - 1].channelName) || `Canal ${odd}`;
 
           next[even - 1] = {
-            ...next[odd - 1],
+            ...next[even - 1],
             pan: 200,
             channelName: primaryNameBase,
           };
@@ -5022,13 +7805,20 @@ function App() {
           return next;
         });
       } else {
-        updateChannelState(odd, { pan: 100 });
-        updateChannelState(even, { pan: 100 });
+        const unlinkPan = 100;
+        updateChannelState(odd, { pan: unlinkPan });
+        updateChannelState(even, { pan: unlinkPan });
       }
+
+      await syncChannelPairContext(odd);
     } catch (error) {
       setStatus(
         error instanceof Error ? error.message : "Erro ao alternar link de canal"
       );
+    } finally {
+      window.setTimeout(() => {
+        unlockChannelPairTransition(key);
+      }, 900);
     }
   }
 
@@ -5037,6 +7827,7 @@ function App() {
     if (!client) return;
 
     const [odd, even] = getAuxPair(auxNumber);
+    const key = pairKey(odd, even);
     const bit = AUX_LINK_BITS[odd];
 
     if (!bit) {
@@ -5046,20 +7837,22 @@ function App() {
 
     const shouldResumeMeter = meterTimerRef.current !== null;
     auxLinkBusyRef.current = true;
+    lockAuxPairTransition(key);
 
     if (shouldResumeMeter) {
       stopMeterPolling();
     }
 
     try {
-      const initialMaskResponse = await client.readParams([3056], 2000);
+      const linkMaskParam = getLinkMaskParam();
+      const initialMaskResponse = await client.readParams([linkMaskParam], 2000);
       const currentMask = initialMaskResponse[0]?.value ?? 0;
       const isLinked = Boolean(currentMask & bit);
       const nextLinked = !isLinked;
 
       if (nextLinked) {
-        const sourceStart = AUX_BLOCK_STARTS[odd];
-        const targetStart = AUX_BLOCK_STARTS[even];
+        const sourceStart = auxBlockStart(odd);
+        const targetStart = auxBlockStart(even);
 
         if (!sourceStart || !targetStart) {
           throw new Error("Bloco de auxiliar nao encontrado para este par.");
@@ -5079,17 +7872,45 @@ function App() {
             client.sendParam(targetStart + offset, item.value);
           });
         }
+
+        // When AUX link is enabled from detail view, clone all channel sends
+        // from the odd bus to the even bus so StripSends stays consistent.
+        const sourceSendId = `aux${odd}` as SendStripId;
+        const targetSendId = `aux${even}` as SendStripId;
+        const sendParamPairs = Array.from({ length: channelCount }, (_, index) => {
+          const channel = index + 1;
+          return {
+            source: sendIdToParam(channel, sourceSendId),
+            target: sendIdToParam(channel, targetSendId),
+          };
+        });
+
+        const sendChunkSize = 18;
+        for (let i = 0; i < sendParamPairs.length; i += sendChunkSize) {
+          const chunkPairs = sendParamPairs.slice(i, i + sendChunkSize);
+          const response = await client.readParams(
+            chunkPairs.map((pair) => pair.source),
+            2600
+          );
+          const valuesByParam = new Map(response.map((item) => [item.param, item.value]));
+
+          chunkPairs.forEach((pair) => {
+            const sourceValue = valuesByParam.get(pair.source);
+            if (sourceValue === undefined) return;
+            client.sendParam(pair.target, sourceValue);
+          });
+        }
       }
 
       const nextMask = nextLinked
         ? currentMask | bit
         : currentMask & ~bit;
 
-      client.sendParam(3056, nextMask);
+      client.sendParam(linkMaskParam, nextMask);
 
       let confirmedMask = nextMask;
       for (let attempt = 0; attempt < 4; attempt++) {
-        const verify = await client.readParams([3056], 2000);
+        const verify = await client.readParams([linkMaskParam], 2000);
         const value = verify[0]?.value;
 
         if (value === undefined) continue;
@@ -5125,6 +7946,63 @@ function App() {
           };
           return next;
         });
+
+        setAuxInputSendValues((current) => {
+          const sourceValues = current[odd] ?? createDefaultChannelInputSendValues(channelCount);
+          return {
+            ...current,
+            [odd]: { ...sourceValues },
+            [even]: { ...sourceValues },
+          };
+        });
+
+        setAuxInputSendTapPoints((current) => {
+          const sourceTapPoints =
+            current[odd] ?? createDefaultChannelInputSendTapPoints(channelCount);
+          return {
+            ...current,
+            [odd]: { ...sourceTapPoints },
+            [even]: { ...sourceTapPoints },
+          };
+        });
+
+        setChannelSendValues((current) => {
+          const sourceId = `aux${odd}`;
+          const targetId = `aux${even}`;
+          const sourceValue = current[sourceId] ?? 1200;
+          return {
+            ...current,
+            [sourceId]: sourceValue,
+            [targetId]: sourceValue,
+          };
+        });
+
+        setSendTapPoints((current) => {
+          const sourceId = `aux${odd}`;
+          const targetId = `aux${even}`;
+          const sourceTapPoint = current[sourceId] ?? "post";
+          return {
+            ...current,
+            [sourceId]: sourceTapPoint,
+            [targetId]: sourceTapPoint,
+          };
+        });
+      }
+
+      // Re-sync pair sends after link toggle so UI and desk stay aligned,
+      // including the pre/post flag for all channel strips.
+      await Promise.allSettled([
+        syncBusInputSendsState("aux", odd),
+        syncBusInputSendsState("aux", even),
+      ]);
+
+      if (detailView?.type === "channel") {
+        await syncChannelSendsState(detailView.channel);
+      }
+
+      if (mainView === "auxSends") {
+        const currentAuxTarget = Math.max(1, Math.min(getAuxBusCount(), selectedAuxSendsTarget));
+        await syncBusInputSendsState("aux", currentAuxTarget);
       }
     } catch (error) {
       setStatus(
@@ -5132,6 +8010,9 @@ function App() {
       );
     } finally {
       auxLinkBusyRef.current = false;
+      window.setTimeout(() => {
+        unlockAuxPairTransition(key);
+      }, 900);
       if (shouldResumeMeter && isConnected) {
         startMeterPolling();
       }
@@ -5223,19 +8104,25 @@ function App() {
     }
 
     const db = faderPositionToDb(position);
+    const dbForSend = db <= -120 ? "-inf" : db;
 
     if (section === "aux") {
       const targets = getLinkedAuxTargets(index);
 
       targets.forEach((target) => {
-        clientRef.current?.setAuxMasterFader(target, db <= -120 ? "-inf" : db);
-        updateAuxStripState(target, { faderPosition: position, faderDb: db });
+        scheduleFaderWrite(`aux:${target}`, () => {
+          clientRef.current?.setAuxMasterFader(target, dbForSend);
+        });
       });
+
+      updateAuxFaderStates(targets, position, db);
       return;
     }
 
-    clientRef.current?.setFxMasterFader(index, db <= -120 ? "-inf" : db);
-    updateFxStripState(index, { faderPosition: position, faderDb: db });
+    scheduleFaderWrite(`fx:${index}`, () => {
+      clientRef.current?.setFxMasterFader(index, dbForSend);
+    });
+    updateFxFaderState(index, position, db);
   }
 
   function handleStripPanChange(section: StripSection, index: number, value: number) {
@@ -5271,8 +8158,9 @@ function App() {
 
     updateFxStripState(index, { gain: value });
   }
+    void _handleCustomizerIconChange;
 
-  function handleCustomizerIconChange(section: StripSection, index: number, iconId: number) {
+  function _handleCustomizerIconChange(section: StripSection, index: number, iconId: number) {
     if (section === "inputs") {
       handleIconChange(index, iconId);
       return;
@@ -5327,26 +8215,27 @@ function App() {
   }
 
   function handleCustomizerColorChange(section: StripSection, index: number, colorId: number) {
+
     if (section === "inputs") {
       handleColorChange(index, colorId);
       return;
     }
 
+    // Só envia para a mesa se for ação do usuário (customizer), nunca durante sync/leitura
     if (section === "aux") {
       const normalizedColorId = normalizeColorByScope("aux", colorId);
-      clientRef.current?.sendParam(auxColorParam(index), normalizedColorId);
+      if (!isSyncing) {
+        clientRef.current?.sendParam(auxColorParam(index), normalizedColorId);
+      }
       updateAuxStripState(index, { colorId: normalizedColorId });
       return;
     }
 
-    if (index === 1 || index === 2) {
-      const normalizedColorId = normalizeColorByScope("fx", colorId);
+    const normalizedColorId = normalizeColorByScope("fx", colorId);
+    if (index >= 1 && index <= getFxBusCount()) {
       clientRef.current?.setFxColor(index, normalizedColorId);
-      updateFxStripState(index, { colorId: normalizedColorId });
-      return;
     }
-
-    updateFxStripState(index, { colorId: normalizeColorByScope("fx", colorId) });
+    updateFxStripState(index, { colorId: normalizedColorId });
   }
 
   function handleCustomizerSave(
@@ -5619,18 +8508,27 @@ function App() {
     const current = master.soloOn;
     const nextValue = !current;
 
-    clientRef.current?.setMainMasterSolo(nextValue, { db: 0, tapPoint: "post" });
+    clientRef.current?.setDigiSolo(nextValue, { db: 0, tapPoint: "post" });
 
     updateMasterState({
+      leftSoloOn: nextValue,
+      rightSoloOn: nextValue,
       soloOn: nextValue,
     });
+
+    // Read back from desk to keep UI in sync with actual hardware state.
+    window.setTimeout(() => {
+      void syncAllSoloStates();
+    }, 180);
   }
 
   function handleMainMasterFaderChange(position: number) {
     const db = faderPositionToDb(position);
     const dbForSend = db <= -120 ? "-inf" : db;
 
-    clientRef.current?.setMainMasterFader(dbForSend);
+    scheduleFaderWrite("master:main", () => {
+      clientRef.current?.setMainMasterFader(dbForSend);
+    });
 
     updateMasterState({
       leftFaderPosition: position,
@@ -5649,7 +8547,9 @@ function App() {
       return;
     }
 
-    clientRef.current?.setMasterFader("left", dbForSend);
+    scheduleFaderWrite("master:left", () => {
+      clientRef.current?.setMasterFader("left", dbForSend);
+    });
 
     updateMasterState({
       leftFaderPosition: position,
@@ -5666,7 +8566,9 @@ function App() {
       return;
     }
 
-    clientRef.current?.setMasterFader("right", dbForSend);
+    scheduleFaderWrite("master:right", () => {
+      clientRef.current?.setMasterFader("right", dbForSend);
+    });
 
     updateMasterState({
       rightFaderPosition: position,
@@ -5674,19 +8576,101 @@ function App() {
     });
   }
 
+  function toggleMasterLeftMute() {
+    const nextValue = !master.leftMuted;
+    clientRef.current?.setMasterMute("left", nextValue);
+    updateMasterState({ leftMuted: nextValue });
+  }
+
+  function toggleMasterRightMute() {
+    const nextValue = !master.rightMuted;
+    clientRef.current?.setMasterMute("right", nextValue);
+    updateMasterState({ rightMuted: nextValue });
+  }
+
+  function toggleMasterLeftSolo() {
+    const nextValue = !master.leftSoloOn;
+    clientRef.current?.setMasterSolo("left", nextValue, { db: 0, tapPoint: "post" });
+    updateMasterState({
+      leftSoloOn: nextValue,
+      soloOn: nextValue || master.rightSoloOn,
+    });
+  }
+
+  function toggleMasterRightSolo() {
+    const nextValue = !master.rightSoloOn;
+    clientRef.current?.setMasterSolo("right", nextValue, { db: 0, tapPoint: "post" });
+    updateMasterState({
+      rightSoloOn: nextValue,
+      soloOn: master.leftSoloOn || nextValue,
+    });
+  }
+
   async function toggleMasterLink() {
     const client = clientRef.current;
     if (!client) return;
+    lockMasterLinkTransition();
 
-    const nextLinked = !masterLinked;
-    const response = await client.readParams([3056]);
-    const currentMask = response[0]?.value ?? 0;
-    const nextMask = nextLinked
-      ? currentMask | MASTER_LINK_BIT
-      : currentMask & ~MASTER_LINK_BIT;
+    try {
+      const nextLinked = !masterLinked;
+      // Optimistic UI update for immediate button feedback.
+      setMasterLinked(nextLinked);
 
-    client.sendParam(3056, nextMask);
-    applyLinkStateFrom3056(nextMask);
+      if (nextLinked) {
+        // Keep master link behavior aligned with channel/aux pairs: left side is source.
+        const sourceDb = master.leftFaderDb;
+        const sourceMuted = master.leftMuted;
+        const sourceSoloOn = master.leftSoloOn;
+        const dbForSend = sourceDb <= -120 ? "-inf" : sourceDb;
+        client.setMainMasterFader(dbForSend);
+        client.setMainMasterMute(sourceMuted);
+        client.setMainMasterSolo(sourceSoloOn, { db: 0, tapPoint: "post" });
+        updateMasterState({
+          leftMuted: sourceMuted,
+          rightMuted: sourceMuted,
+          leftSoloOn: sourceSoloOn,
+          rightSoloOn: sourceSoloOn,
+          soloOn: sourceSoloOn,
+          leftFaderDb: sourceDb,
+          rightFaderDb: sourceDb,
+          leftFaderPosition: dbToFaderPosition(sourceDb),
+          rightFaderPosition: dbToFaderPosition(sourceDb),
+        });
+      }
+
+      const linkMaskParam = getLinkMaskParam();
+      const response = await client.readParams([linkMaskParam], 450);
+      const currentMask = response[0]?.value ?? 0;
+      const masterLinkBit = getMasterLinkBit();
+      const nextMask = nextLinked
+        ? currentMask | masterLinkBit
+        : currentMask & ~masterLinkBit;
+
+      client.sendParam(linkMaskParam, nextMask);
+      let confirmedMask = nextMask;
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const verify = await client.readParams([linkMaskParam], 450);
+        const value = verify[0]?.value;
+
+        if (value === undefined) continue;
+
+        confirmedMask = value;
+        if (Boolean(value & masterLinkBit) === nextLinked) break;
+      }
+
+      const confirmedLinked = Boolean(confirmedMask & masterLinkBit);
+      applyLinkStateFrom3056(confirmedMask);
+      setMasterLinked(confirmedLinked);
+
+      if (confirmedLinked !== nextLinked) {
+        throw new Error("A mesa nao confirmou o estado de link do master.");
+      }
+    } finally {
+      window.setTimeout(() => {
+        unlockMasterLinkTransition();
+      }, 900);
+    }
   }
 
 
@@ -5699,13 +8683,16 @@ function App() {
       setActiveProcessorModule("eq");
     }
     setDetailView({ type: "channel", channel: nextChannel });
-    Promise.all([
-      syncLinkStates(),
-      syncChannelPairVisualState(),
-      syncChannelProcessorState(nextChannel),
-      syncChannelSendsState(nextChannel),
-      syncChannelPairContext(nextChannel),
-    ]).catch((error) => {
+    (async () => {
+      // Garante estado de link antes da leitura do processador do canal.
+      await syncLinkStates();
+      await syncChannelPairVisualState();
+      await Promise.all([
+        syncChannelProcessorState(nextChannel),
+        syncChannelSendsState(nextChannel),
+        syncChannelPairContext(nextChannel),
+      ]);
+    })().catch((error) => {
       setStatus(
         error instanceof Error
           ? error.message
@@ -5716,7 +8703,7 @@ function App() {
 
 
   function goToDetailAux(auxNumber: number, options?: { preserveActiveModule?: boolean }) {
-    const nextAux = Math.max(1, Math.min(8, auxNumber));
+    const nextAux = Math.max(1, Math.min(getAuxBusCount(), auxNumber));
     const [pairOdd, pairEven] = getAuxPair(nextAux);
     setMainView("mixer");
     if (!options?.preserveActiveModule) {
@@ -5729,8 +8716,9 @@ function App() {
       syncAuxProcessorState(nextAux),
       syncAuxState(pairOdd),
       syncAuxProcessorState(pairOdd),
-      syncAuxState(pairEven),
-      syncAuxProcessorState(pairEven),
+      ...(pairEven <= getAuxBusCount()
+        ? [syncAuxState(pairEven), syncAuxProcessorState(pairEven)]
+        : []),
     ]).then((results) => {
       const failed = results.find((result) => result.status === "rejected");
 
@@ -5746,68 +8734,115 @@ function App() {
   }
 
   function goToDetailFx(fxNumber: number) {
-    const nextFx = fxNumber === 2 ? 2 : 1;
+    const nextFx = Math.max(1, Math.min(getFxBusCount(), fxNumber));
     setMainView("mixer");
     setActiveProcessorModule("presets");
     setDetailView({ type: "fx", fx: nextFx });
+
+    Promise.allSettled([syncFxState(nextFx), syncFxPresetState(nextFx)]).then((results) => {
+      const failed = results.find((result) => result.status === "rejected");
+
+      if (failed && failed.status === "rejected") {
+        const reason = failed.reason;
+        setStatus(
+          reason instanceof Error
+            ? reason.message
+            : "Erro parcial ao sincronizar detalhe do FX"
+        );
+      }
+    });
   }
 
   function handleFxPresetChange(presetId: FxPresetId) {
     const client = clientRef.current;
     if (!client) return;
 
-    setFxActivePresetId(presetId);
+    const activeFxNumber = detailView?.type === "fx" ? detailView.fx : 1;
+    const presetParams = getFxPresetParams(activeFxNumber);
+
+    updateFxPresetState(activeFxNumber, (current) => ({
+      ...current,
+      presetId,
+    }));
 
     // Enviar novo preset para a mesa
-    client.sendParam(3097, presetId);
+    client.sendParam(presetParams.preset, presetId);
 
     // Sincronizar valores dos controles do hardware
     client
-      .readParams([2940, 2941])
+      .readParams([presetParams.controlA, presetParams.controlB])
       .then((commands) => {
+        let nextControlAValue = 0;
+        let nextControlBValue = 0;
+
         for (const cmd of commands) {
-          if (cmd.param === 2940) {
-            setFxControlAValue(cmd.value);
-          } else if (cmd.param === 2941) {
-            setFxControlBValue(cmd.value);
+          if (cmd.param === presetParams.controlA) {
+            nextControlAValue = cmd.value;
+          } else if (cmd.param === presetParams.controlB) {
+            nextControlBValue = cmd.value;
           }
         }
+
+        updateFxPresetState(activeFxNumber, (current) => ({
+          ...current,
+          controlAValue: nextControlAValue,
+          controlBValue: nextControlBValue,
+        }));
       })
       .catch(() => {
-        // Se falhar na leitura, reseta para 0
-        setFxControlAValue(0);
-        setFxControlBValue(0);
+        updateFxPresetState(activeFxNumber, (current) => ({
+          ...current,
+          controlAValue: 0,
+          controlBValue: 0,
+        }));
       });
   }
 
   function handleFxControlAChange(rawValue: number) {
-    if (!fxActivePresetId) return;
+    const activeFxNumber = detailView?.type === "fx" ? detailView.fx : 1;
+    const fxPresetState = fxPresetStates[activeFxNumber - 1];
+    if (!fxPresetState?.presetId) return;
     const client = clientRef.current;
     if (!client) return;
-    const controlConfig = getFxPresetConfig(fxActivePresetId).controls[0];
+    const presetParams = getFxPresetParams(activeFxNumber);
+    const controlConfig = getFxPresetConfig(fxPresetState.presetId).controls[0];
     const clamped = Math.max(controlConfig.rawMin, rawValue);
     const isSeconds = controlConfig.unit === "s";
     const nextValue = isSeconds ? clamped : Math.round(clamped);
-    setFxControlAValue(nextValue);
-    client.sendParam(controlConfig.param, Math.min(nextValue, controlConfig.rawMax));
+    updateFxPresetState(activeFxNumber, (current) => ({
+      ...current,
+      controlAValue: nextValue,
+    }));
+    client.sendParam(presetParams.controlA, Math.min(nextValue, controlConfig.rawMax));
   }
 
   function handleFxControlBChange(rawValue: number) {
-    if (!fxActivePresetId) return;
+    const activeFxNumber = detailView?.type === "fx" ? detailView.fx : 1;
+    const fxPresetState = fxPresetStates[activeFxNumber - 1];
+    if (!fxPresetState?.presetId) return;
     const client = clientRef.current;
     if (!client) return;
-    const controlConfig = getFxPresetConfig(fxActivePresetId).controls[1];
+    const presetParams = getFxPresetParams(activeFxNumber);
+    const controlConfig = getFxPresetConfig(fxPresetState.presetId).controls[1];
     const clamped = Math.max(controlConfig.rawMin, Math.min(controlConfig.rawMax, rawValue));
     const isSeconds = controlConfig.unit === "s";
     const nextValue = isSeconds ? clamped : Math.round(clamped);
-    setFxControlBValue(nextValue);
-    client.sendParam(controlConfig.param, nextValue);
+    updateFxPresetState(activeFxNumber, (current) => ({
+      ...current,
+      controlBValue: nextValue,
+    }));
+    client.sendParam(presetParams.controlB, nextValue);
   }
 
   function goToDetailMaster() {
     setMainView("mixer");
     setActiveProcessorModule("eq");
-    setDetailView({ type: "master" });
+    const side: "left" | "right" = "left";
+    setDetailView({ type: "master", side });
+
+    syncMasterProcessorState(side).catch(() => {
+      // Keep current values when a transient read fails.
+    });
   }
 
   function buildChannelInputSendsView(
@@ -5836,6 +8871,9 @@ function App() {
   }
 
   function renderFxPresetsContent() {
+    const activeFxNumber = detailView?.type === "fx" ? detailView.fx : 1;
+    const fxPresetState = fxPresetStates[activeFxNumber - 1] ?? createDefaultFxPresetState();
+
     return (
       <div
         style={{
@@ -5881,7 +8919,7 @@ function App() {
             }}
           >
             <FxPresetGrid
-              activePresetId={fxActivePresetId}
+              activePresetId={fxPresetState.presetId}
               disabled={!isConnected}
               onPresetSelect={handleFxPresetChange}
             />
@@ -5895,9 +8933,9 @@ function App() {
             }}
           >
             <FxPresetControlPanel
-              presetId={fxActivePresetId}
-              controlAValue={fxControlAValue}
-              controlBValue={fxControlBValue}
+              presetId={fxPresetState.presetId}
+              controlAValue={fxPresetState.controlAValue}
+              controlBValue={fxPresetState.controlBValue}
               disabled={!isConnected}
               onControlAChange={handleFxControlAChange}
               onControlBChange={handleFxControlBChange}
@@ -5923,108 +8961,42 @@ function App() {
             channelNumber === pairOdd ? "L" : "R"
           }`
         : channelState.channelName;
-    const sendsView: SendStripView[] = [
-      {
-        id: "fx1",
+    const fxSendsView: SendStripView[] = fxStrips.map((fxState, index) => {
+      const fxNumber = index + 1;
+      const id = `fx${fxNumber}`;
+
+      return {
+        id,
         type: "fx",
-        colorId: fxStrips[0]?.colorId ?? 7,
-        label: "FX 1",
-        name: fxStrips[0]?.channelName?.trim() || "Reverb",
-        value: sendDbToValue(sendValueToDb(channelSendValues.fx1)),
-        tapPoint: sendTapPoints.fx1,
+        colorId: fxState.colorId,
+        label: `FX ${fxNumber}`,
+        name: fxState.channelName?.trim() || `FX ${fxNumber}`,
+        value: channelSendValues[id] ?? 1200,
+        tapPoint: sendTapPoints[id] ?? "post",
         isLinked: false,
-      },
-      {
-        id: "fx2",
-        type: "fx",
-        colorId: fxStrips[1]?.colorId ?? 7,
-        label: "FX 2",
-        name: fxStrips[1]?.channelName?.trim() || "Delay",
-        value: sendDbToValue(sendValueToDb(channelSendValues.fx2)),
-        tapPoint: sendTapPoints.fx2,
-        isLinked: false,
-      },
-      {
-        id: "aux1",
+      };
+    });
+
+    const auxSendsView: SendStripView[] = auxStrips.map((auxState, index) => {
+      const auxNumber = index + 1;
+      const id = `aux${auxNumber}`;
+      const [odd, even] = getAuxPair(auxNumber);
+      const linkKey = pairKey(odd, even);
+      const linkedPairExists = even <= getAuxBusCount();
+
+      return {
+        id,
         type: "aux",
-        colorId: auxStrips[0]?.colorId ?? 8,
-        label: "AUX 1",
-        name: auxStrips[0]?.channelName?.trim() || "AUX 1",
-        value: sendDbToValue(sendValueToDb(channelSendValues.aux1)),
-        tapPoint: sendTapPoints.aux1,
-        isLinked: Boolean(auxLinks["1-2"]),
-      },
-      {
-        id: "aux2",
-        type: "aux",
-        colorId: auxStrips[1]?.colorId ?? 8,
-        label: "AUX 2",
-        name: auxStrips[1]?.channelName?.trim() || "AUX 2",
-        value: sendDbToValue(sendValueToDb(channelSendValues.aux2)),
-        tapPoint: sendTapPoints.aux2,
-        isLinked: Boolean(auxLinks["1-2"]),
-      },
-      {
-        id: "aux3",
-        type: "aux",
-        colorId: auxStrips[2]?.colorId ?? 8,
-        label: "AUX 3",
-        name: auxStrips[2]?.channelName?.trim() || "AUX 3",
-        value: sendDbToValue(sendValueToDb(channelSendValues.aux3)),
-        tapPoint: sendTapPoints.aux3,
-        isLinked: Boolean(auxLinks["3-4"]),
-      },
-      {
-        id: "aux4",
-        type: "aux",
-        colorId: auxStrips[3]?.colorId ?? 8,
-        label: "AUX 4",
-        name: auxStrips[3]?.channelName?.trim() || "AUX 4",
-        value: sendDbToValue(sendValueToDb(channelSendValues.aux4)),
-        tapPoint: sendTapPoints.aux4,
-        isLinked: Boolean(auxLinks["3-4"]),
-      },
-      {
-        id: "aux5",
-        type: "aux",
-        colorId: auxStrips[4]?.colorId ?? 8,
-        label: "AUX 5",
-        name: auxStrips[4]?.channelName?.trim() || "AUX 5",
-        value: sendDbToValue(sendValueToDb(channelSendValues.aux5)),
-        tapPoint: sendTapPoints.aux5,
-        isLinked: Boolean(auxLinks["5-6"]),
-      },
-      {
-        id: "aux6",
-        type: "aux",
-        colorId: auxStrips[5]?.colorId ?? 8,
-        label: "AUX 6",
-        name: auxStrips[5]?.channelName?.trim() || "AUX 6",
-        value: sendDbToValue(sendValueToDb(channelSendValues.aux6)),
-        tapPoint: sendTapPoints.aux6,
-        isLinked: Boolean(auxLinks["5-6"]),
-      },
-      {
-        id: "aux7",
-        type: "aux",
-        colorId: auxStrips[6]?.colorId ?? 8,
-        label: "AUX 7",
-        name: auxStrips[6]?.channelName?.trim() || "AUX 7",
-        value: sendDbToValue(sendValueToDb(channelSendValues.aux7)),
-        tapPoint: sendTapPoints.aux7,
-        isLinked: Boolean(auxLinks["7-8"]),
-      },
-      {
-        id: "aux8",
-        type: "aux",
-        colorId: auxStrips[7]?.colorId ?? 8,
-        label: "AUX 8",
-        name: auxStrips[7]?.channelName?.trim() || "AUX 8",
-        value: sendDbToValue(sendValueToDb(channelSendValues.aux8)),
-        tapPoint: sendTapPoints.aux8,
-        isLinked: Boolean(auxLinks["7-8"]),
-      },
-    ];
+        colorId: auxState.colorId,
+        label: `AUX ${auxNumber}`,
+        name: auxState.channelName?.trim() || `AUX ${auxNumber}`,
+        value: channelSendValues[id] ?? 1200,
+        tapPoint: sendTapPoints[id] ?? "post",
+        isLinked: linkedPairExists ? Boolean(auxLinks[linkKey]) : false,
+      };
+    });
+
+    const sendsView: SendStripView[] = [...fxSendsView, ...auxSendsView];
 
     return (
       <div
@@ -6191,7 +9163,7 @@ function App() {
                 </button>
                 <button
                   type="button"
-                  disabled={channelNumber === 16}
+                  disabled={channelNumber >= channelCount}
                   onClick={() => goToDetailChannel(channelNumber + 1, { preserveActiveModule: true })}
                   style={{
                     width: 28,
@@ -6202,8 +9174,8 @@ function App() {
                     color: "#fff",
                     fontWeight: 900,
                     fontSize: 14,
-                    cursor: channelNumber === 16 ? "not-allowed" : "pointer",
-                    opacity: channelNumber === 16 ? 0.4 : 1,
+                    cursor: channelNumber >= channelCount ? "not-allowed" : "pointer",
+                    opacity: channelNumber >= channelCount ? 0.4 : 1,
                   }}
                 >
                   ›
@@ -6503,7 +9475,7 @@ function App() {
               </button>
               <button
                 type="button"
-                disabled={auxNumber === 8}
+                disabled={auxNumber >= getAuxBusCount()}
                 onClick={() => goToDetailAux(auxNumber + 1, { preserveActiveModule: true })}
                 style={{
                   width: 28,
@@ -6514,8 +9486,8 @@ function App() {
                   color: "#fff",
                   fontWeight: 900,
                   fontSize: 14,
-                  cursor: auxNumber === 8 ? "not-allowed" : "pointer",
-                  opacity: auxNumber === 8 ? 0.4 : 1,
+                  cursor: auxNumber >= getAuxBusCount() ? "not-allowed" : "pointer",
+                  opacity: auxNumber >= getAuxBusCount() ? 0.4 : 1,
                 }}
               >
                 ›
@@ -6757,6 +9729,7 @@ function App() {
               });
             }}
             onResetEq={() => {
+              const client = clientRef.current;
               const targets = getLinkedAuxTargets(auxNumber);
               targets.forEach((target) => {
                 updateAuxProcessorState(target, (current) => ({
@@ -6772,6 +9745,17 @@ function App() {
                     })),
                   },
                 }));
+
+                if (!client) return;
+                // Envia todos os parâmetros default para a mesa
+                client.setAuxEqEnabled(target, true);
+                client.setAuxHpfFreq(target, DEFAULT_AUX_EQ.hpfFreq);
+                client.setAuxHpfTypeSlope(target, filterTypeSlopeToRaw("hpf", DEFAULT_AUX_EQ.hpfType, DEFAULT_AUX_EQ.hpfSlope));
+                client.setAuxLpfFreq(target, DEFAULT_AUX_EQ.lpfFreq);
+                client.setAuxLpfTypeSlope(target, filterTypeSlopeToRaw("lpf", DEFAULT_AUX_EQ.lpfType, DEFAULT_AUX_EQ.lpfSlope));
+                DEFAULT_AUX_EQ.bands.forEach((band, idx) => {
+                  client.setAuxEqBand(target, idx + 1, band.freq, band.gain, band.q);
+                });
               });
             }}
             onSendValueChange={(id, value) =>
@@ -6877,7 +9861,7 @@ function App() {
               </button>
               <button
                 type="button"
-                disabled={fxNumber === 2}
+                disabled={fxNumber >= getFxBusCount()}
                 onClick={() => goToDetailFx(fxNumber + 1)}
                 style={{
                   width: 28,
@@ -6888,8 +9872,8 @@ function App() {
                   color: "#fff",
                   fontWeight: 900,
                   fontSize: 14,
-                  cursor: fxNumber === 2 ? "not-allowed" : "pointer",
-                  opacity: fxNumber === 2 ? 0.4 : 1,
+                  cursor: fxNumber >= getFxBusCount() ? "not-allowed" : "pointer",
+                  opacity: fxNumber >= getFxBusCount() ? 0.4 : 1,
                 }}
               >
                 ›
@@ -6940,21 +9924,116 @@ function App() {
               onGateChange={() => {}}
               onCompChange={() => {}}
               onEqChange={(patch) => {
-                updateFxProcessorState(fxNumber, (current) => ({
-                  ...current,
-                  eq: mergeEqPatch(current.eq, patch),
-                }));
+                const client = clientRef.current;
+                const fxParams = getFxProcessorParams(fxNumber);
+
+                updateFxProcessorState(fxNumber, (current) => {
+                  const nextEq = mergeEqPatch(current.eq, patch);
+
+                  if (client && fxParams) {
+                    if (patch.enabled !== undefined) {
+                      client.sendParam(fxParams.eqEnabled, nextEq.enabled ? 1 : 0);
+                    }
+
+                    if (patch.hpfEnabled !== undefined) {
+                      client.sendParam(
+                        fxParams.hpfFreq,
+                        frequencyToRawValue(nextEq.hpfEnabled ? nextEq.hpfFreq : DEFAULT_EQ.hpfFreq)
+                      );
+                    } else if (patch.hpfFreq !== undefined && nextEq.hpfEnabled) {
+                      client.sendParam(fxParams.hpfFreq, frequencyToRawValue(nextEq.hpfFreq));
+                    }
+
+                    if (patch.lpfEnabled !== undefined) {
+                      client.sendParam(
+                        fxParams.lpfFreq,
+                        frequencyToRawValue(nextEq.lpfEnabled ? nextEq.lpfFreq : DEFAULT_EQ.lpfFreq)
+                      );
+                    } else if (patch.lpfFreq !== undefined && nextEq.lpfEnabled) {
+                      client.sendParam(fxParams.lpfFreq, frequencyToRawValue(nextEq.lpfFreq));
+                    }
+
+                    if (patch.hpfType !== undefined || patch.hpfSlope !== undefined) {
+                      client.sendParam(
+                        fxParams.hpfTypeSlope,
+                        filterTypeSlopeToRaw(
+                          "hpf",
+                          nextEq.hpfType as FilterType,
+                          nextEq.hpfSlope as FilterSlope
+                        )
+                      );
+                    }
+
+                    if (patch.lpfType !== undefined || patch.lpfSlope !== undefined) {
+                      client.sendParam(
+                        fxParams.lpfTypeSlope,
+                        filterTypeSlopeToRaw(
+                          "lpf",
+                          nextEq.lpfType as FilterType,
+                          nextEq.lpfSlope as FilterSlope
+                        )
+                      );
+                    }
+                  }
+
+                  return {
+                    ...current,
+                    eq: nextEq,
+                  };
+                });
               }}
               onEqBandChange={(band, patch) => {
-                updateFxProcessorState(fxNumber, (current) => ({
-                  ...current,
-                  eq: {
-                    ...current.eq,
-                    bands: current.eq.bands.map((bandState, index) =>
-                      index === band - 1 ? { ...bandState, ...patch } : bandState
-                    ),
-                  },
-                }));
+                const client = clientRef.current;
+                const fxParams = getFxProcessorParams(fxNumber);
+
+                updateFxProcessorState(fxNumber, (current) => {
+                  const currentBand = current.eq.bands[band - 1];
+                  const nextBand = { ...currentBand, ...patch };
+                  const defaultBand = DEFAULT_EQ.bands[band - 1];
+
+                  if (client && fxParams && band >= 1 && band <= 4) {
+                    const freqParam =
+                      band === 1
+                        ? fxParams.eqBand1Freq
+                        : band === 2
+                          ? fxParams.eqBand2Freq
+                          : band === 3
+                            ? fxParams.eqBand3Freq
+                            : fxParams.eqBand4Freq;
+                    const gainParam = freqParam + 1;
+                    const qParam = freqParam + 2;
+
+                    if (patch.enabled === false) {
+                      client.sendParam(freqParam, frequencyToRawValue(defaultBand.freq));
+                      client.sendParam(gainParam, 500);
+                      client.sendParam(qParam, 100);
+                    } else if (patch.enabled === true) {
+                      client.sendParam(freqParam, frequencyToRawValue(nextBand.freq));
+                      client.sendParam(gainParam, 500 + Math.round(Math.max(-12, Math.min(12, nextBand.gain)) * 10));
+                      client.sendParam(qParam, Math.round(Math.max(0.6, Math.min(28.08, nextBand.q)) * 100));
+                    } else if (nextBand.enabled) {
+                      if (patch.freq !== undefined) {
+                        client.sendParam(freqParam, frequencyToRawValue(patch.freq));
+                      }
+                      if (patch.gain !== undefined) {
+                        client.sendParam(gainParam, 500 + Math.round(Math.max(-12, Math.min(12, patch.gain)) * 10));
+                      }
+                      if (patch.q !== undefined) {
+                        client.sendParam(qParam, Math.round(Math.max(0.6, Math.min(28.08, patch.q)) * 100));
+                      }
+                    }
+                  }
+
+                  return {
+                    ...current,
+                    eq: {
+                      ...current.eq,
+                      bands: current.eq.bands.map((bandState, index) =>
+                        index === band - 1 ? { ...bandState, ...patch } : bandState
+                      ),
+                    },
+                  };
+                });
               }}
               onSendValueChange={(id, value) =>
                 handleBusInputSendValueChange("fx", fxNumber, id, value)
@@ -6965,6 +10044,9 @@ function App() {
               onResetGate={() => {}}
               onResetComp={() => {}}
               onResetEq={() => {
+                const client = clientRef.current;
+                const fxParams = getFxProcessorParams(fxNumber);
+
                 updateFxProcessorState(fxNumber, (current) => ({
                   ...current,
                   eq: {
@@ -6976,6 +10058,35 @@ function App() {
                     })),
                   },
                 }));
+
+                if (!client || !fxParams) return;
+
+                client.sendParam(fxParams.eqEnabled, processorState.eq.enabled ? 1 : 0);
+                client.sendParam(fxParams.hpfFreq, frequencyToRawValue(DEFAULT_EQ.hpfFreq));
+                client.sendParam(
+                  fxParams.hpfTypeSlope,
+                  filterTypeSlopeToRaw("hpf", DEFAULT_EQ.hpfType, DEFAULT_EQ.hpfSlope)
+                );
+                client.sendParam(fxParams.lpfFreq, frequencyToRawValue(DEFAULT_EQ.lpfFreq));
+                client.sendParam(
+                  fxParams.lpfTypeSlope,
+                  filterTypeSlopeToRaw("lpf", DEFAULT_EQ.lpfType, DEFAULT_EQ.lpfSlope)
+                );
+
+                DEFAULT_EQ.bands.forEach((bandState, index) => {
+                  const band = index + 1;
+                  const freqParam =
+                    band === 1
+                      ? fxParams.eqBand1Freq
+                      : band === 2
+                        ? fxParams.eqBand2Freq
+                        : band === 3
+                          ? fxParams.eqBand3Freq
+                          : fxParams.eqBand4Freq;
+                  client.sendParam(freqParam, frequencyToRawValue(bandState.freq));
+                  client.sendParam(freqParam + 1, 500 + Math.round(Math.max(-12, Math.min(12, bandState.gain)) * 10));
+                  client.sendParam(freqParam + 2, Math.round(Math.max(0.6, Math.min(28.08, bandState.q)) * 100));
+                });
               }}
             />
             {activeProcessorModule === "sends" && (
@@ -7011,6 +10122,22 @@ function App() {
     if (!detailView || detailView.type !== "master") return null;
 
     const sendsView = buildChannelInputSendsView(undefined, undefined, "TO MASTER");
+    const masterDetailSide = detailView.side;
+    const masterDetailTargets: ("left" | "right")[] = masterLinked
+      ? ["left", "right"]
+      : [masterDetailSide];
+    const masterDetailTitle = masterLinked
+      ? "Master Bus"
+      : masterDetailSide === "left"
+        ? "Master Bus L"
+        : "Master Bus R";
+
+    const navigateMasterDetail = (side: "left" | "right") => {
+      setDetailView({ type: "master", side });
+      syncMasterProcessorState(side).catch(() => {
+        // Keep current values when a transient read fails.
+      });
+    };
 
     return (
       <div
@@ -7035,7 +10162,7 @@ function App() {
             </div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 0, flex: "1 1 auto" }}>
               <div style={{ fontFamily: "Inter, system-ui, sans-serif", fontSize: 22, lineHeight: "30px", fontWeight: 700, color: "#ffffff" }}>
-                Master Bus
+                {masterDetailTitle}
               </div>
               <div
                 className="dca-matrix-row__tag"
@@ -7048,7 +10175,59 @@ function App() {
                 MASTER
               </div>
             </div>
-            <div style={{ width: 113, flexShrink: 0 }} />
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "flex-end",
+                gap: 6,
+                width: 113,
+                flexShrink: 0,
+              }}
+            >
+              {!masterLinked && (
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <button
+                    type="button"
+                    disabled={masterDetailSide === "left"}
+                    onClick={() => navigateMasterDetail("left")}
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: 6,
+                      border: "1px solid #334155",
+                      background: "#0b1220",
+                      color: "#fff",
+                      fontWeight: 900,
+                      fontSize: 14,
+                      cursor: masterDetailSide === "left" ? "not-allowed" : "pointer",
+                      opacity: masterDetailSide === "left" ? 0.4 : 1,
+                    }}
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    disabled={masterDetailSide === "right"}
+                    onClick={() => navigateMasterDetail("right")}
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: 6,
+                      border: "1px solid #334155",
+                      background: "#0b1220",
+                      color: "#fff",
+                      fontWeight: 900,
+                      fontSize: 14,
+                      cursor: masterDetailSide === "right" ? "not-allowed" : "pointer",
+                      opacity: masterDetailSide === "right" ? 0.4 : 1,
+                    }}
+                  >
+                    ›
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </section>
 
@@ -7057,10 +10236,14 @@ function App() {
             <MasterBus
               leftColorId={master.leftColorId}
               rightColorId={master.rightColorId}
-              muted={master.leftMuted}
+              leftMuted={master.leftMuted}
+              rightMuted={master.rightMuted}
+              leftSoloOn={master.leftSoloOn}
+              rightSoloOn={master.rightSoloOn}
               soloOn={master.soloOn}
               linked={masterLinked}
               leftFaderDb={master.leftFaderDb}
+              rightFaderDb={master.rightFaderDb}
               leftFaderPosition={master.leftFaderPosition}
               rightFaderPosition={master.rightFaderPosition}
               meterDbL={mainMasterMeter.leftDb}
@@ -7070,8 +10253,12 @@ function App() {
               clippedL={mainMasterMeter.leftClipUntil > Date.now()}
               clippedR={mainMasterMeter.rightClipUntil > Date.now()}
               disabled={!isConnected}
-              onToggleMute={toggleMainMasterMute}
-              onToggleSolo={toggleMainMasterSolo}
+              onToggleMainMute={toggleMainMasterMute}
+              onToggleMainSolo={toggleMainMasterSolo}
+              onToggleLeftMute={toggleMasterLeftMute}
+              onToggleLeftSolo={toggleMasterLeftSolo}
+              onToggleRightMute={toggleMasterRightMute}
+              onToggleRightSolo={toggleMasterRightSolo}
               onToggleLink={() => {
                 toggleMasterLink().catch((error) => {
                   setStatus(error instanceof Error ? error.message : "Erro ao alternar link de master");
@@ -7080,6 +10267,7 @@ function App() {
               onMainFaderChange={handleMainMasterFaderChange}
               onLeftFaderChange={handleMasterLeftFaderChange}
               onRightFaderChange={handleMasterRightFaderChange}
+              detailSide={!masterLinked ? masterDetailSide : undefined}
             />
           </aside>
 
@@ -7098,32 +10286,151 @@ function App() {
               onModuleChange={setActiveProcessorModule}
               onGateChange={() => {}}
               onCompChange={(patch) => {
+                const client = clientRef.current;
+                const targets = masterDetailTargets;
+
                 setMasterProcessorState((current) => ({
                   ...current,
                   comp: { ...current.comp, ...patch },
                 }));
+
+                if (!client) return;
+
+                targets.forEach((target) => {
+                  if (patch.enabled !== undefined) {
+                    client.setMasterCompEnabled(target, patch.enabled);
+                  }
+                  if (patch.ratio !== undefined) {
+                    client.setMasterCompRatio(target, patch.ratio);
+                  }
+                  if (patch.attack !== undefined) {
+                    client.setMasterCompAttack(target, patch.attack);
+                  }
+                  if (patch.release !== undefined) {
+                    client.setMasterCompRelease(target, patch.release);
+                  }
+                  if (patch.threshold !== undefined) {
+                    client.setMasterCompThreshold(target, patch.threshold);
+                  }
+                  if (patch.gain !== undefined) {
+                    client.setMasterCompGain(target, patch.gain);
+                  }
+                });
               }}
               onEqChange={(patch) => {
-                setMasterProcessorState((current) => ({
-                  ...current,
-                  eq: mergeEqPatch(current.eq, patch),
-                }));
+                const client = clientRef.current;
+                const targets = masterDetailTargets;
+
+                setMasterProcessorState((current) => {
+                  const nextEq = mergeEqPatch(current.eq, patch);
+
+                  if (client) {
+                    targets.forEach((target) => {
+                      if (patch.enabled !== undefined) {
+                        client.setMasterEqEnabled(target, nextEq.enabled);
+                      }
+
+                      if (patch.hpfEnabled !== undefined) {
+                        client.setMasterHpfFreq(
+                          target,
+                          nextEq.hpfEnabled ? nextEq.hpfFreq : DEFAULT_AUX_EQ.hpfFreq
+                        );
+                      } else if (patch.hpfFreq !== undefined && nextEq.hpfEnabled) {
+                        client.setMasterHpfFreq(target, nextEq.hpfFreq);
+                      }
+
+                      if (patch.lpfEnabled !== undefined) {
+                        client.setMasterLpfFreq(
+                          target,
+                          nextEq.lpfEnabled ? nextEq.lpfFreq : DEFAULT_AUX_EQ.lpfFreq
+                        );
+                      } else if (patch.lpfFreq !== undefined && nextEq.lpfEnabled) {
+                        client.setMasterLpfFreq(target, nextEq.lpfFreq);
+                      }
+
+                      if (patch.hpfType !== undefined || patch.hpfSlope !== undefined) {
+                        client.setMasterHpfTypeSlopeValue(
+                          target,
+                          filterTypeSlopeToRaw(
+                            "hpf",
+                            nextEq.hpfType as FilterType,
+                            nextEq.hpfSlope as FilterSlope
+                          )
+                        );
+                      }
+
+                      if (patch.lpfType !== undefined || patch.lpfSlope !== undefined) {
+                        client.setMasterLpfTypeSlopeValue(
+                          target,
+                          filterTypeSlopeToRaw(
+                            "lpf",
+                            nextEq.lpfType as FilterType,
+                            nextEq.lpfSlope as FilterSlope
+                          )
+                        );
+                      }
+                    });
+                  }
+
+                  return {
+                    ...current,
+                    eq: nextEq,
+                  };
+                });
               }}
               onEqBandChange={(band, patch) => {
-                setMasterProcessorState((current) => ({
-                  ...current,
-                  eq: {
-                    ...current.eq,
-                    bands: current.eq.bands.map((bandState, index) =>
-                      index === band - 1 ? { ...bandState, ...patch } : bandState
-                    ),
-                  },
-                }));
+                const client = clientRef.current;
+                const targets = masterDetailTargets;
+
+                setMasterProcessorState((current) => {
+                  const currentBand = current.eq.bands[band - 1];
+                  const nextBand = { ...currentBand, ...patch };
+                  const defaultBand = DEFAULT_AUX_EQ.bands[band - 1];
+
+                  if (client) {
+                    targets.forEach((target) => {
+                      if (patch.enabled === false) {
+                        client.setMasterEqBand(target, band, defaultBand.freq, defaultBand.gain, defaultBand.q);
+                        return;
+                      }
+
+                      if (patch.enabled === true) {
+                        client.setMasterEqBand(target, band, nextBand.freq, nextBand.gain, nextBand.q);
+                        return;
+                      }
+
+                      if (!nextBand.enabled) return;
+
+                      if (patch.freq !== undefined) {
+                        client.setMasterEqBandFreq(target, band, patch.freq);
+                      }
+                      if (patch.gain !== undefined) {
+                        client.setMasterEqBandGain(target, band, patch.gain);
+                      }
+                      if (patch.q !== undefined) {
+                        client.setMasterEqBandQ(target, band, patch.q);
+                      }
+                    });
+                  }
+
+                  return {
+                    ...current,
+                    eq: {
+                      ...current.eq,
+                      bands: current.eq.bands.map((bandState, index) =>
+                        index === band - 1 ? { ...bandState, ...patch } : bandState
+                      ),
+                    },
+                  };
+                });
               }}
               onSendValueChange={() => {}}
               onSendTapPointToggle={() => {}}
               onResetGate={() => {}}
               onResetComp={() => {
+                const client = clientRef.current;
+                const targets = masterDetailTargets;
+
                 setMasterProcessorState((current) => ({
                   ...current,
                   comp: {
@@ -7131,8 +10438,21 @@ function App() {
                     enabled: current.comp.enabled,
                   },
                 }));
+
+                if (!client) return;
+
+                targets.forEach((target) => {
+                  client.setMasterCompRatio(target, DEFAULT_COMP.ratio);
+                  client.setMasterCompAttack(target, DEFAULT_COMP.attack);
+                  client.setMasterCompRelease(target, DEFAULT_COMP.release);
+                  client.setMasterCompThreshold(target, DEFAULT_COMP.threshold);
+                  client.setMasterCompGain(target, DEFAULT_COMP.gain);
+                });
               }}
               onResetEq={() => {
+                const client = clientRef.current;
+                const targets = masterDetailTargets;
+
                 setMasterProcessorState((current) => ({
                   ...current,
                   eq: {
@@ -7144,6 +10464,25 @@ function App() {
                     })),
                   },
                 }));
+
+                if (!client) return;
+
+                targets.forEach((target) => {
+                  client.setMasterHpfFreq(target, DEFAULT_AUX_EQ.hpfFreq);
+                  client.setMasterLpfFreq(target, DEFAULT_AUX_EQ.lpfFreq);
+                  client.setMasterHpfTypeSlopeValue(
+                    target,
+                    filterTypeSlopeToRaw("hpf", DEFAULT_AUX_EQ.hpfType, DEFAULT_AUX_EQ.hpfSlope)
+                  );
+                  client.setMasterLpfTypeSlopeValue(
+                    target,
+                    filterTypeSlopeToRaw("lpf", DEFAULT_AUX_EQ.lpfType, DEFAULT_AUX_EQ.lpfSlope)
+                  );
+
+                  DEFAULT_AUX_EQ.bands.forEach((bandState, index) => {
+                    client.setMasterEqBand(target, index + 1, bandState.freq, bandState.gain, bandState.q);
+                  });
+                });
               }}
             />
           </section>
@@ -7225,7 +10564,7 @@ function App() {
                     if (isAux) {
                       setSelectedAuxSendsTarget(destination);
                     } else {
-                      setSelectedFxSendsTarget(destination as 1 | 2);
+                      setSelectedFxSendsTarget(destination);
                     }
                   }}
                   style={{
@@ -7318,7 +10657,7 @@ function App() {
               />
             ) : selectedFxStrip ? (
               <FxStrip
-                fxNumber={selectedBus as 1 | 2}
+                fxNumber={selectedBus}
                 colorId={selectedFxStrip.colorId}
                 channelName={selectedFxStrip.channelName}
                 eqState={selectedBusProcessorState.eq}
@@ -7393,7 +10732,7 @@ function App() {
 
     if (memberId.startsWith("AUX_")) {
       const aux = Number(memberId.slice(4));
-      if (Number.isFinite(aux) && aux >= 1 && aux <= 8) {
+      if (Number.isFinite(aux) && aux >= 1 && aux <= getAuxBusCount()) {
         updateAuxStripState(aux, { muted });
       }
       return;
@@ -7401,7 +10740,7 @@ function App() {
 
     if (memberId.startsWith("FX_")) {
       const fx = Number(memberId.slice(3));
-      if (Number.isFinite(fx) && (fx === 1 || fx === 2)) {
+      if (Number.isFinite(fx) && fx >= 1 && fx <= getFxBusCount()) {
         updateFxStripState(fx, { muted });
       }
       return;
@@ -7464,7 +10803,7 @@ function App() {
         mixers={discoveredMixers}
         discoveryLoading={isDiscoveringMixers}
         discoveryError={discoveryError}
-        connectBusy={connectingSource === "discovered"}
+        connectBusy={connectingSource !== null}
         connectionError={connectionError}
         version={APP_VERSION}
         onRefresh={() => {
@@ -7628,7 +10967,7 @@ function App() {
             : mainView === "muteGroups"
                 ? <div className="global-view-shell"><MuteGroupsView isConnected={isConnected} channelCount={channelCount} groups={muteGroups} onToggleActive={handleMuteGroupToggleActive} onMembersChange={handleMuteGroupMembersChange} onClear={handleMuteGroupClear} onAllMuted={handleMuteGroupAllMuted} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} /></div>
             : mainView === "scenes"
-              ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} onCallScene={handleSceneCall} onSaveScene={handleSceneSave} /></div>
+              ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} cacheScopeKey={activeMixerCacheIdentity} onCallScene={handleSceneCall} onSaveScene={handleSceneSave} /></div>
         : <section className="mixer-layout">
           <section
             ref={attachMixerChannelsScroller}
@@ -7740,7 +11079,7 @@ function App() {
 
             {/* FX 1-2 */}
             {fxStrips.map((fxState, index) => {
-              const fxNumber = (index + 1) as 1 | 2;
+              const fxNumber = index + 1;
               return (
                 <div
                   key={`fx-${fxNumber}`}
@@ -7870,14 +11209,18 @@ function App() {
               }}
             />
 
-            {DCA_IDS.map((id, index) => {
-              const group = dcaGroups[index];
+            {activeDcaIds.map((id, index) => {
+              const group = dcaGroups[index] ?? {
+                enabled: true,
+                faderPosition: dcaValueToPosition(1200),
+                members: [] as GroupMember[],
+              };
               return (
                 <div
                   key={`dca-group-${id}`}
                   style={{
                     marginLeft: 0,
-                    marginRight: index === DCA_IDS.length - 1 ? 0 : 4,
+                    marginRight: index === activeDcaIds.length - 1 ? 0 : 4,
                     flex: "0 0 auto",
                     position: "relative",
                     overflow: "visible",
@@ -7929,10 +11272,14 @@ function App() {
             <MasterBus
               leftColorId={master.leftColorId}
               rightColorId={master.rightColorId}
-              muted={master.leftMuted}
+              leftMuted={master.leftMuted}
+              rightMuted={master.rightMuted}
+              leftSoloOn={master.leftSoloOn}
+              rightSoloOn={master.rightSoloOn}
               soloOn={master.soloOn}
               linked={masterLinked}
               leftFaderDb={master.leftFaderDb}
+              rightFaderDb={master.rightFaderDb}
               leftFaderPosition={master.leftFaderPosition}
               rightFaderPosition={master.rightFaderPosition}
               meterDbL={masterMeterDbL}
@@ -7942,8 +11289,12 @@ function App() {
               clippedL={masterClipL}
               clippedR={masterClipR}
               disabled={!isConnected}
-              onToggleMute={toggleMainMasterMute}
-              onToggleSolo={toggleMainMasterSolo}
+              onToggleMainMute={toggleMainMasterMute}
+              onToggleMainSolo={toggleMainMasterSolo}
+              onToggleLeftMute={toggleMasterLeftMute}
+              onToggleLeftSolo={toggleMasterLeftSolo}
+              onToggleRightMute={toggleMasterRightMute}
+              onToggleRightSolo={toggleMasterRightSolo}
               onToggleLink={() => {
                 toggleMasterLink().catch((error) => {
                   setStatus(

@@ -322,6 +322,12 @@ body {
   border-radius: 8px;
 }
 
+.device-selection-panel--manual {
+  grid-template-rows: auto auto;
+  height: auto;
+  gap: 14px;
+}
+
 .device-selection-panel__header {
   display: flex;
   align-items: flex-start;
