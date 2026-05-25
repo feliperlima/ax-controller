@@ -84,6 +84,15 @@ export function getMixerCompatibility(mixer: DiscoveredMixer): MixerCompatibilit
     };
   }
 
+  // Mixers de 32 canais usam mapa AX32 dedicado e nao devem ser
+  // validados pelas faixas reservadas de AX16/AX24.
+  if (channelCount >= 32) {
+    return {
+      supported: true,
+      reason: "",
+    };
+  }
+
   const collisions = findChannelParamCollisions(channelCount);
   if (collisions.length > 0) {
     const firstCollision = collisions[0];

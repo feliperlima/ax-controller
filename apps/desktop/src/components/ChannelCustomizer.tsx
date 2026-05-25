@@ -45,10 +45,6 @@ export function ChannelCustomizer({
     setDraftColorId(colorId);
   }, [channelName, colorId, channel, defaultName]);
 
-  const channelColor =
-    CHANNEL_COLOR_PALETTE[draftColorId] ?? CHANNEL_COLOR_PALETTE[0] ?? "#7B7B7B";
-  const displayName = draftName.trim() || defaultName;
-
   function handleClear() {
     setDraftName("");
     setDraftColorId(0);

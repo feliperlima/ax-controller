@@ -6,10 +6,15 @@ type MasterBusProps = {
   name?: string;
   leftColorId?: number;
   rightColorId?: number;
-  muted: boolean;
-  soloOn: boolean;
+  leftMuted?: boolean;
+  rightMuted?: boolean;
+  muted?: boolean;
+  leftSoloOn?: boolean;
+  rightSoloOn?: boolean;
+  soloOn?: boolean;
   linked: boolean;
   leftFaderDb: number;
+  rightFaderDb?: number;
   leftFaderPosition: number;
   rightFaderPosition: number;
   meterDbL: number;
@@ -19,12 +24,19 @@ type MasterBusProps = {
   clippedL: boolean;
   clippedR: boolean;
   disabled?: boolean;
-  onToggleMute: () => void;
-  onToggleSolo: () => void;
+  onToggleMainMute?: () => void;
+  onToggleMainSolo?: () => void;
+  onToggleLeftMute?: () => void;
+  onToggleLeftSolo?: () => void;
+  onToggleRightMute?: () => void;
+  onToggleRightSolo?: () => void;
+  onToggleMute?: () => void;
+  onToggleSolo?: () => void;
   onToggleLink: () => void;
   onMainFaderChange: (value: number) => void;
   onLeftFaderChange: (value: number) => void;
   onRightFaderChange: (value: number) => void;
+  detailSide?: "left" | "right";
   onOpenDetail?: () => void;
 };
 
@@ -58,10 +70,15 @@ const FADER_SNAP_POINTS = FADER_SNAP_POINTS_DB.map(dbToFaderScalePosition);
 export function MasterBus({
   leftColorId = 0,
   rightColorId = 0,
-  muted,
-  soloOn,
+  leftMuted,
+  rightMuted,
+  muted = false,
+  leftSoloOn,
+  rightSoloOn,
+  soloOn = false,
   linked,
   leftFaderDb,
+  rightFaderDb,
   leftFaderPosition,
   rightFaderPosition,
   meterDbL,
@@ -71,6 +88,13 @@ export function MasterBus({
   clippedL = false,
   clippedR = false,
   disabled = false,
+  onToggleMainMute,
+  onToggleMainSolo,
+  onToggleLeftMute,
+  onToggleLeftSolo,
+  onToggleRightMute,
+  onToggleRightSolo,
+  detailSide,
   onToggleMute,
   onToggleSolo,
   onToggleLink,
@@ -89,6 +113,18 @@ export function MasterBus({
     leftColor === rightColor
       ? leftColor
       : `linear-gradient(90deg, ${leftColor} 0%, ${leftColor} 50%, ${rightColor} 50%, ${rightColor} 100%)`;
+
+  const effectiveMuted = leftMuted ?? rightMuted ?? muted;
+  const effectiveSoloOn = leftSoloOn ?? rightSoloOn ?? soloOn;
+  const effectiveToggleMute = onToggleMainMute ?? onToggleMute ?? (() => undefined);
+  void detailSide;
+  const effectiveToggleSolo = onToggleMainSolo ?? onToggleSolo ?? (() => undefined);
+  const displayDb = linked ? leftFaderDb : rightFaderDb ?? leftFaderDb;
+
+  void onToggleLeftMute;
+  void onToggleLeftSolo;
+  void onToggleRightMute;
+  void onToggleRightSolo;
 
   return (
     <div
@@ -165,14 +201,14 @@ export function MasterBus({
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, width: "100%" }}>
           <button
             disabled={disabled}
-            onClick={(e) => { e.stopPropagation(); onToggleMute(); }}
+            onClick={(e) => { e.stopPropagation(); effectiveToggleMute(); }}
             style={{
               width: "100%",
               height: 32,
               borderRadius: 8,
-              border: muted ? "2px solid var(--button-mute-border)" : "1px solid var(--button-default-border)",
-              background: muted ? "var(--button-mute-bg)" : "var(--button-default-bg)",
-              color: muted ? "var(--button-mute-text)" : "var(--button-default-text)",
+              border: effectiveMuted ? "2px solid var(--button-mute-border)" : "1px solid var(--button-default-border)",
+              background: effectiveMuted ? "var(--button-mute-bg)" : "var(--button-default-bg)",
+              color: effectiveMuted ? "var(--button-mute-text)" : "var(--button-default-text)",
               fontSize: 10,
               lineHeight: "12px",
               fontWeight: 700,
@@ -181,21 +217,21 @@ export function MasterBus({
               boxSizing: "border-box",
               cursor: disabled ? "not-allowed" : "pointer",
               opacity: disabled ? 0.5 : 1,
-              boxShadow: muted ? "var(--button-mute-glow)" : "none",
+              boxShadow: effectiveMuted ? "var(--button-mute-glow)" : "none",
             }}
           >
             MUTE
           </button>
           <button
             disabled={disabled}
-            onClick={(e) => { e.stopPropagation(); onToggleSolo(); }}
+            onClick={(e) => { e.stopPropagation(); effectiveToggleSolo(); }}
             style={{
               width: "100%",
               height: 32,
               borderRadius: 8,
-              border: soloOn ? "2px solid var(--button-solo-border)" : "1px solid var(--button-default-border)",
-              background: soloOn ? "var(--button-solo-bg)" : "var(--button-default-bg)",
-              color: soloOn ? "var(--button-solo-text)" : "var(--button-default-text)",
+              border: effectiveSoloOn ? "2px solid var(--button-solo-border)" : "1px solid var(--button-default-border)",
+              background: effectiveSoloOn ? "var(--button-solo-bg)" : "var(--button-default-bg)",
+              color: effectiveSoloOn ? "var(--button-solo-text)" : "var(--button-default-text)",
               fontSize: 10,
               lineHeight: "12px",
               fontWeight: 700,
@@ -204,7 +240,7 @@ export function MasterBus({
               boxSizing: "border-box",
               cursor: disabled ? "not-allowed" : "pointer",
               opacity: disabled ? 0.5 : 1,
-              boxShadow: soloOn ? "var(--button-solo-glow)" : "none",
+              boxShadow: effectiveSoloOn ? "var(--button-solo-glow)" : "none",
             }}
           >
             SOLO
@@ -314,11 +350,11 @@ export function MasterBus({
             fontSize: 13,
             lineHeight: 1,
             fontWeight: 400,
-            color: muted ? "var(--text-muted)" : "var(--text-primary)",
+            color: effectiveMuted ? "var(--text-muted)" : "var(--text-primary)",
             whiteSpace: "nowrap",
           }}
         >
-          {faderDbLabel(leftFaderDb)}
+          {faderDbLabel(displayDb)}
         </div>
       </div>
       </div>

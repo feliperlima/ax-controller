@@ -3,12 +3,76 @@ export type AxiosCommand = {
   value: number;
 };
 
+export type LocalParamWrite = AxiosCommand & { at: number };
+
 export type NameTarget =
   | { type: "channel"; channel: number }
   | { type: "fx"; fx: number }
   | { type: "aux"; aux: number };
 
+export type AxiosProtocolProfile = "ax16_24" | "ax32" | "ax32_experimental";
+
+let ACTIVE_PROTOCOL_PROFILE: AxiosProtocolProfile = "ax16_24";
+
+function normalizeProtocolProfile(profile: AxiosProtocolProfile): AxiosProtocolProfile {
+  return profile === "ax32" ? "ax32_experimental" : profile;
+}
+
 const CHANNEL_STRIDE = 62;
+
+const AX32_CHANNEL_STRIDE = 72;
+
+const AX32_CHANNEL_BASE_MAP: Record<number, number> = {
+  64: 63,
+  65: 64,
+  66: 65,
+  67: 66,
+  69: 68,
+  70: 69,
+  71: 70,
+  72: 71,
+  73: 72,
+  74: 73,
+  75: 74,
+  76: 75,
+  77: 76,
+  78: 77,
+  79: 78,
+  80: 79,
+  81: 80,
+  82: 81,
+  83: 82,
+  84: 83,
+  85: 92,
+  86: 93,
+  87: 94,
+  88: 95,
+  89: 96,
+  90: 97,
+  93: 102,
+  94: 103,
+  95: 104,
+  96: 105,
+  97: 106,
+  99: 108,
+  100: 109,
+  102: 111,
+  103: 112,
+  104: 113,
+  105: 114,
+  107: 116,
+  108: 117,
+  109: 118,
+  111: 120,
+  112: 121,
+  113: 122,
+  115: 124,
+  116: 125,
+  117: 126,
+  119: 128,
+  120: 129,
+  121: 130,
+};
 
 const BASE = {
   hiZ: 64,
@@ -49,14 +113,21 @@ const BASE = {
 };
 
 const CHANNEL_COLOR_BASE = 3110;
+const AX32_CHANNEL_COLOR_BASE = 5131;
 // Color params confirmed on DUONN Axios 16: channels use 3110–3125, FX1=3136, FX2=3137, MasterL=3146, MasterR=3147. Value 0 means clear/default; values 1–12 map to the mixer color palette.
-const FX_COLOR_PARAMS: Record<number, number> = {
+const FX_COLOR_PARAMS_AX16_24: Record<number, number> = {
   1: 3136,
   2: 3137,
 };
+const AX32_FX_COLOR_BASE = 5165;
 const MASTER_COLOR_PARAMS = {
   left: 3146,
   right: 3147,
+};
+
+const MASTER_COLOR_PARAMS_AX32 = {
+  left: 5185,
+  right: 5186,
 };
 
 export const MASTER = {
@@ -96,6 +167,44 @@ export const MASTER = {
     lpfTypeSlope: 2676,
     lpfFreq: 2677,
     eqBandBase: 2679,
+  },
+};
+
+// AX32 Master parameters (stride 109, confirmed in field)
+const MASTER_AX32 = {
+  left: {
+    fader: 4634,
+    mute: 4636,
+    compEnabled: 4638,
+    compRatio: 4639,
+    compAttack: 4640,
+    compRelease: 4641,
+    compThreshold: 4642,
+    compGain: 4643,
+    eqEnabled: 4649,
+    hpfTypeSlope: 4651,
+    hpfFreq: 4652,
+    lpfTypeSlope: 4653,
+    lpfFreq: 4654,
+    eqBandBase: 4656,
+    solo: { left: 4646, right: 4647 },
+  },
+  right: {
+    fader: 4743,
+    mute: 4745,
+    compEnabled: 4747,
+    compRatio: 4748,
+    compAttack: 4749,
+    compRelease: 4750,
+    compThreshold: 4751,
+    compGain: 4752,
+    eqEnabled: 4758,
+    hpfTypeSlope: 4760,
+    hpfFreq: 4761,
+    lpfTypeSlope: 4762,
+    lpfFreq: 4763,
+    eqBandBase: 4765,
+    solo: { left: 4755, right: 4756 },
   },
 };
 
@@ -196,6 +305,47 @@ const AUX_PARAMS: Record<
   },
 };
 
+function getAuxProcessorParams(auxNumber: number) {
+  const rounded = Math.round(auxNumber);
+
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    if (rounded < 1 || rounded > 14) {
+      throw new Error("AUX inválido. Use valores de 1 a 14.");
+    }
+
+    const base = 2890 + (rounded - 1) * 109;
+
+    return {
+      fader: base,
+      phase: base + 1,
+      delay: base + 5,
+      eqEnabled: base + 15,
+      comp: {
+        enabled: base + 6,
+        ratio: base + 7,
+        attack: base + 8,
+        release: base + 9,
+        threshold: base + 10,
+        gain: base + 11,
+      },
+      filters: {
+        hpfTypeSlope: base + 17,
+        hpfFreq: base + 18,
+        lpfTypeSlope: base + 19,
+        lpfFreq: base + 20,
+      },
+      eqBandBase: base + 22,
+    };
+  }
+
+  const params = AUX_PARAMS[rounded];
+  if (!params) {
+    throw new Error("AUX inválido. Use valores de 1 a 8.");
+  }
+
+  return params;
+}
+
 
 const FX_MASTER_FADER_PARAMS: Record<number, number> = {
   1: 2899,
@@ -206,8 +356,6 @@ type MasterSide = "L" | "R" | "left" | "right";
 export type MonitorTapPoint = "pre" | "post";
 
 export const PRE_FADER_FLAG = 32768;
-const CHANNEL_SOLO_BASE = 87;
-const CHANNEL_SOLO_STRIDE = CHANNEL_STRIDE;
 const AUX_SOLO_BASE = 1688;
 const AUX_SOLO_STRIDE = 109;
 const FX_SOLO_PARAMS: Record<number, { left: number; right: number }> = {
@@ -217,6 +365,11 @@ const FX_SOLO_PARAMS: Record<number, { left: number; right: number }> = {
 const DIGI_SOLO = {
   left: { left: 1575, right: 1576 },
   right: { left: 1637, right: 1638 },
+};
+
+const MASTER_SOLO_AX32 = {
+  left: { left: 4646, right: 4647 },
+  right: { left: 4755, right: 4756 },
 };
 
 function delayMsToValue(ms: number) {
@@ -241,21 +394,42 @@ type FilterType = "butterworth" | "bessel" | "linkwitz";
 type FilterSlope = 12 | 24;
 
 function chParam(channel: number, base: number) {
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    const translatedBase = AX32_CHANNEL_BASE_MAP[base] ?? base;
+    return translatedBase + (channel - 1) * AX32_CHANNEL_STRIDE;
+  }
+
   return base + (channel - 1) * CHANNEL_STRIDE;
 }
 
 function channelColorParam(channel: number) {
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    return AX32_CHANNEL_COLOR_BASE + channel - 1;
+  }
+
   return CHANNEL_COLOR_BASE + channel - 1;
+}
+
+function fxColorParam(fxNumber: number) {
+  const rounded = Math.round(fxNumber);
+
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    return AX32_FX_COLOR_BASE + rounded - 1;
+  }
+
+  return FX_COLOR_PARAMS_AX16_24[rounded];
 }
 
 function channelSoloParams(channel: number) {
   const rounded = Math.round(channel);
 
-  if (rounded < 1 || rounded > 16) {
-    throw new Error("Canal inválido para solo. Use de 1 a 16.");
+  const maxChannel = ACTIVE_PROTOCOL_PROFILE === "ax32_experimental" ? 32 : 16;
+
+  if (rounded < 1 || rounded > maxChannel) {
+    throw new Error(`Canal inválido para solo. Use de 1 a ${maxChannel}.`);
   }
 
-  const left = CHANNEL_SOLO_BASE + (rounded - 1) * CHANNEL_SOLO_STRIDE;
+  const left = chParam(rounded, 87);
 
   return { left, right: left + 1 };
 }
@@ -263,13 +437,77 @@ function channelSoloParams(channel: number) {
 function auxSoloParams(auxNumber: number) {
   const rounded = Math.round(auxNumber);
 
-  if (rounded < 1 || rounded > 8) {
-    throw new Error("Auxiliar inválido para solo. Use de 1 a 8.");
+  const maxAux = ACTIVE_PROTOCOL_PROFILE === "ax32_experimental" ? 14 : 8;
+
+  if (rounded < 1 || rounded > maxAux) {
+    throw new Error(`Auxiliar inválido para solo. Use de 1 a ${maxAux}.`);
   }
 
-  const left = AUX_SOLO_BASE + (rounded - 1) * AUX_SOLO_STRIDE;
+  const left =
+    ACTIVE_PROTOCOL_PROFILE === "ax32_experimental"
+      ? 2902 + (rounded - 1) * 109
+      : AUX_SOLO_BASE + (rounded - 1) * AUX_SOLO_STRIDE;
 
   return { left, right: left + 1 };
+}
+
+function inputSourceParam(channel: number) {
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    return 2660 + channel;
+  }
+
+  return 2846 + channel;
+}
+
+function auxFaderParam(auxNumber: number) {
+  const rounded = Math.round(auxNumber);
+
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    return 2890 + (rounded - 1) * 109;
+  }
+
+  return AUX_MASTER_FADER_PARAMS[rounded];
+}
+
+function auxMuteParam(auxNumber: number) {
+  const rounded = Math.round(auxNumber);
+
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    return 2892 + (rounded - 1) * 109;
+  }
+
+  return 1678 + (rounded - 1) * 109;
+}
+
+function fxFaderParam(fxNumber: number) {
+  const rounded = Math.round(fxNumber);
+
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    return 4873 + (rounded - 1) * 22;
+  }
+
+  return FX_MASTER_FADER_PARAMS[rounded];
+}
+
+function fxMuteParam(fxNumber: number) {
+  const rounded = Math.round(fxNumber);
+
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    return 4874 + (rounded - 1) * 22;
+  }
+
+  return rounded === 1 ? 2900 : 2945;
+}
+
+function fxSoloParams(fxNumber: number) {
+  const rounded = Math.round(fxNumber);
+
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    const left = 4893 + (rounded - 1) * 22;
+    return { left, right: left + 1 };
+  }
+
+  return FX_SOLO_PARAMS[rounded];
 }
 
 function getEqBandParams(band: number) {
@@ -305,10 +543,29 @@ export function masterEqBandParams(side: MasterSide, band: number) {
 }
 
 function getMasterSideParams(side: MasterSide) {
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    if (side === "L" || side === "left") return MASTER_AX32.left;
+    if (side === "R" || side === "right") return MASTER_AX32.right;
+  }
+
   if (side === "L" || side === "left") return MASTER.left;
   if (side === "R" || side === "right") return MASTER.right;
 
   throw new Error("Lado inválido. Use L/R ou left/right.");
+}
+
+function getMasterFaderParam(side: MasterSide): number {
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    return side === "L" || side === "left" ? MASTER_AX32.left.fader : MASTER_AX32.right.fader;
+  }
+  return side === "L" || side === "left" ? MASTER.left.fader : MASTER.right.fader;
+}
+
+function getMasterMuteParam(side: MasterSide): number {
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    return side === "L" || side === "left" ? MASTER_AX32.left.mute : MASTER_AX32.right.mute;
+  }
+  return side === "L" || side === "left" ? MASTER.left.mute : MASTER.right.mute;
 }
 
 export function duonnCrc16Modbus(bytes: readonly number[]) {
@@ -587,7 +844,7 @@ export function valueToFrequency(value: number) {
 }
 
 export function valueToEqGain(value: number) {
-  return Math.round((value - 500) / 10);
+  return Math.max(-12, Math.min(12, Math.round((value - 500) / 10)));
 }
 
 export function valueToEqQ(value: number) {
@@ -656,42 +913,290 @@ function valueToFilterTypeSlope(filter: "hpf" | "lpf", value: number) {
   return { type, slope };
 }
 
+type MixerMessageEvent = { data: ArrayBuffer };
+type MixerCloseEvent = { code: number; reason: string; wasClean: boolean };
+type MixerErrorEvent = { message?: string };
+type MixerSocketEventMap = {
+  message: MixerMessageEvent;
+  close: MixerCloseEvent;
+  error: MixerErrorEvent;
+};
+
+type MixerSocketEventType = keyof MixerSocketEventMap;
+type MixerSocketListener<K extends MixerSocketEventType> = (event: MixerSocketEventMap[K]) => void;
+
+interface MixerSocketLike {
+  readonly readyState: number;
+  send(data: Uint8Array): void;
+  close(): void;
+  addEventListener<K extends MixerSocketEventType>(
+    type: K,
+    listener: MixerSocketListener<K>
+  ): void;
+  removeEventListener<K extends MixerSocketEventType>(
+    type: K,
+    listener: MixerSocketListener<K>
+  ): void;
+}
+
+const SOCKET_OPEN = 1;
+const SOCKET_CLOSED = 3;
+
+class BrowserMixerSocket implements MixerSocketLike {
+  constructor(private socket: WebSocket) {}
+
+  get readyState() {
+    return this.socket.readyState;
+  }
+
+  send(data: Uint8Array) {
+    this.socket.send(data);
+  }
+
+  close() {
+    this.socket.close();
+  }
+
+  addEventListener<K extends MixerSocketEventType>(
+    type: K,
+    listener: MixerSocketListener<K>
+  ) {
+    this.socket.addEventListener(type, listener as unknown as EventListener);
+  }
+
+  removeEventListener<K extends MixerSocketEventType>(
+    type: K,
+    listener: MixerSocketListener<K>
+  ) {
+    this.socket.removeEventListener(type, listener as unknown as EventListener);
+  }
+}
+
+class TauriMixerSocket implements MixerSocketLike {
+  private state = SOCKET_OPEN;
+  private readonly listeners: {
+    message: Set<MixerSocketListener<"message">>;
+    close: Set<MixerSocketListener<"close">>;
+    error: Set<MixerSocketListener<"error">>;
+  } = {
+    message: new Set(),
+    close: new Set(),
+    error: new Set(),
+  };
+
+  private readonly unlisten: () => void;
+
+  constructor(
+    private socket: {
+      addListener: (cb: (arg: { type: string; data: unknown }) => void) => () => void;
+      send: (message: string | number[] | { type: string; data: unknown }) => Promise<void>;
+      disconnect: () => Promise<void>;
+    }
+  ) {
+    this.unlisten = this.socket.addListener((message) => {
+      if (message.type === "Binary" && Array.isArray(message.data)) {
+        const bytes = Uint8Array.from(message.data as number[]);
+        const payload = bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        ) as ArrayBuffer;
+        this.listeners.message.forEach((listener) => listener({ data: payload }));
+        return;
+      }
+
+      if (message.type === "Close") {
+        this.state = SOCKET_CLOSED;
+        const closeData = (message.data as { code?: number; reason?: string } | null) ?? null;
+        this.listeners.close.forEach((listener) =>
+          listener({
+            code: closeData?.code ?? 1000,
+            reason: closeData?.reason ?? "",
+            wasClean: true,
+          })
+        );
+      }
+    });
+  }
+
+  get readyState() {
+    return this.state;
+  }
+
+  send(data: Uint8Array) {
+    void this.socket.send(Array.from(data)).catch((error) => {
+      this.listeners.error.forEach((listener) =>
+        listener({ message: error instanceof Error ? error.message : String(error) })
+      );
+    });
+  }
+
+  close() {
+    this.state = SOCKET_CLOSED;
+    this.unlisten();
+    void this.socket.disconnect().catch(() => {
+      // Ignore disconnect errors when tearing down.
+    });
+  }
+
+  addEventListener<K extends MixerSocketEventType>(
+    type: K,
+    listener: MixerSocketListener<K>
+  ) {
+    this.listeners[type].add(listener as never);
+  }
+
+  removeEventListener<K extends MixerSocketEventType>(
+    type: K,
+    listener: MixerSocketListener<K>
+  ) {
+    this.listeners[type].delete(listener as never);
+  }
+}
+
+function isTauriRuntime() {
+  if (typeof window === "undefined") return false;
+  return Object.prototype.hasOwnProperty.call(window, "__TAURI_INTERNALS__");
+}
+
 export class Axios16Client {
-  private ws: WebSocket | null = null;
+  private ws: MixerSocketLike | null = null;
   private readQueue: Promise<void> = Promise.resolve();
   private onDisconnectCallback: (() => void) | null = null;
+  private localParamWriteListeners = new Set<(write: LocalParamWrite) => void>();
 
-  constructor(private ip: string, private port = 8088) {}
+  constructor(
+    private ip: string,
+    private port = 8088,
+    private profile: AxiosProtocolProfile = "ax16_24"
+  ) {
+    this.profile = normalizeProtocolProfile(this.profile);
+    ACTIVE_PROTOCOL_PROFILE = this.profile;
+  }
 
   setOnDisconnect(callback: () => void) {
     this.onDisconnectCallback = callback;
+  }
+
+  onLocalParamWrite(listener: (write: LocalParamWrite) => void) {
+    this.localParamWriteListeners.add(listener);
+
+    return () => {
+      this.localParamWriteListeners.delete(listener);
+    };
   }
 
   get url() {
     return `ws://${this.ip}:${this.port}/`;
   }
 
-  connect() {
-    return new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(this.url);
+  async connect() {
+    let pluginConnectError: string | null = null;
 
-      this.ws = ws;
-      ws.binaryType = "arraybuffer";
+    try {
+      const [{ default: TauriWebSocket }] = await Promise.all([
+        import("@tauri-apps/plugin-websocket"),
+      ]);
 
-      ws.onopen = () => {
-        resolve();
+      const ws = (await Promise.race([
+        TauriWebSocket.connect(this.url),
+        new Promise<never>((_, reject) => {
+          window.setTimeout(() => {
+            reject(new Error(`Timeout ao conectar em ${this.url}`));
+          }, 3000);
+        }),
+      ])) as {
+        addListener: (cb: (arg: { type: string; data: unknown }) => void) => () => void;
+        send: (message: string | number[] | { type: string; data: unknown }) => Promise<void>;
+        disconnect: () => Promise<void>;
       };
 
-      ws.onerror = () => {
-        reject(new Error(`Não foi possível conectar em ${this.url}`));
-      };
+      const socket = new TauriMixerSocket(ws);
+      this.ws = socket;
 
-      ws.onclose = (event) => {
+      socket.addEventListener("close", (event) => {
         console.log("WebSocket fechado:", {
           code: event.code,
           reason: event.reason,
           wasClean: event.wasClean,
         });
+
+        if (this.ws === socket) {
+          this.ws = null;
+          if (this.onDisconnectCallback) {
+            this.onDisconnectCallback();
+          }
+        }
+      });
+
+      return;
+    } catch (error) {
+      pluginConnectError = error instanceof Error ? error.message : String(error);
+
+      if (isTauriRuntime()) {
+        console.warn("Fallback para WebSocket do navegador:", pluginConnectError);
+      }
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const rawSocket = new WebSocket(this.url);
+      const ws = new BrowserMixerSocket(rawSocket);
+      let settled = false;
+
+      const fail = (message: string) => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(message));
+      };
+
+      const connectTimeout = window.setTimeout(() => {
+        fail(`Timeout ao conectar em ${this.url}`);
+        try {
+          ws.close();
+        } catch {
+          // ignore best-effort close on timeout
+        }
+      }, 3000);
+
+      this.ws = ws;
+      rawSocket.binaryType = "arraybuffer";
+
+      rawSocket.onopen = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(connectTimeout);
+        resolve();
+      };
+
+      rawSocket.onerror = () => {
+        const originProtocol = window.location.protocol || "unknown";
+        const mixedContentHint =
+          originProtocol === "https:" && this.url.startsWith("ws://")
+            ? " (possivel bloqueio de mixed-content: origem HTTPS com WebSocket nao seguro ws://)"
+            : "";
+        const pluginHint = pluginConnectError
+          ? ` (plugin websocket falhou: ${pluginConnectError})`
+          : "";
+
+        window.clearTimeout(connectTimeout);
+        fail(`Nao foi possivel conectar em ${this.url}${mixedContentHint}${pluginHint}`);
+      };
+
+      rawSocket.onclose = (event) => {
+        window.clearTimeout(connectTimeout);
+
+        console.log("WebSocket fechado:", {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+        });
+
+        if (!settled) {
+          fail(
+            `Conexao encerrada durante abertura (${event.code}${
+              event.reason ? `: ${event.reason}` : ""
+            }) em ${this.url}`
+          );
+        }
 
         if (this.ws === ws) {
           this.ws = null;
@@ -711,16 +1216,24 @@ export class Axios16Client {
   }
 
   sendParam(param: number, value: number) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== SOCKET_OPEN) {
       throw new Error("Cliente não conectado.");
     }
 
     const packet = makeCommand(param, value);
     this.ws.send(packet);
+
+    const write: LocalParamWrite = {
+      param,
+      value,
+      at: Date.now(),
+    };
+
+    this.localParamWriteListeners.forEach((listener) => listener(write));
   }
 
   sendRaw(packet: Uint8Array) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== SOCKET_OPEN) {
       throw new Error("Cliente não conectado.");
     }
 
@@ -774,7 +1287,7 @@ export class Axios16Client {
   private executeReadNameByIndex(targetIndex: number, timeoutMs: number) {
     const ws = this.ws;
 
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
+    if (!ws || ws.readyState !== SOCKET_OPEN) {
       throw new Error("Cliente não conectado.");
     }
 
@@ -806,7 +1319,7 @@ export class Axios16Client {
         fail(new Error("Timeout ao ler nome da mesa."));
       }, timeoutMs);
 
-      const onMessage = (event: MessageEvent) => {
+      const onMessage = (event: MixerMessageEvent) => {
         if (!(event.data instanceof ArrayBuffer)) return;
         const decoded = decodeNameResponse(event.data);
         if (!decoded) return;
@@ -834,7 +1347,7 @@ export class Axios16Client {
   }
 
   setName(target: NameTarget, displayName: string) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== SOCKET_OPEN) {
       throw new Error("Cliente não conectado.");
     }
 
@@ -844,7 +1357,7 @@ export class Axios16Client {
   }
 
   setNameByIndex(targetIndex: number, displayName: string) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== SOCKET_OPEN) {
       throw new Error("Cliente não conectado.");
     }
 
@@ -902,10 +1415,16 @@ export class Axios16Client {
     return result;
   }
 
-  async readFxNames(timeoutMs = 1200) {
+  async readFxNames(timeoutMs = 1200, fxCount?: number) {
     const result: Record<number, string> = {};
 
-    for (let fx = 1; fx <= 2; fx++) {
+    const maxFx = this.profile === "ax32_experimental" ? 4 : 2;
+    const safeFxCount = Math.max(
+      1,
+      Math.min(maxFx, Math.round(fxCount ?? maxFx))
+    );
+
+    for (let fx = 1; fx <= safeFxCount; fx++) {
       result[fx] = await this.readFxName(fx, timeoutMs);
     }
 
@@ -915,7 +1434,7 @@ export class Axios16Client {
   private executeReadParams(params: number[], timeoutMs: number) {
     const ws = this.ws;
 
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
+    if (!ws || ws.readyState !== SOCKET_OPEN) {
       throw new Error("Cliente não conectado.");
     }
 
@@ -944,7 +1463,7 @@ export class Axios16Client {
         fail(new Error("Timeout ao ler parâmetros da mesa."));
       }, timeoutMs);
 
-      const onMessage = (event: MessageEvent) => {
+      const onMessage = (event: MixerMessageEvent) => {
         if (!(event.data instanceof ArrayBuffer)) return;
 
         const decoded = decodeParamResponse(event.data);
@@ -1011,10 +1530,11 @@ export class Axios16Client {
   }
 
   setInputSource(channel: number, source: "input" | "usb") {
-    if (channel < 1 || channel > 16) {
-      throw new Error("Canal inválido. Use de 1 a 16.");
+    const maxChannel = this.profile === "ax32_experimental" ? 32 : 16;
+    if (channel < 1 || channel > maxChannel) {
+      throw new Error(`Canal inválido. Use de 1 a ${maxChannel}.`);
     }
-    this.sendParam(2846 + channel, source === "usb" ? 0 : 1);
+    this.sendParam(inputSourceParam(channel), source === "usb" ? 0 : 1);
   }
 
   setHiZ(channel: number, enabled: boolean) {
@@ -1033,12 +1553,23 @@ export class Axios16Client {
     this.sendParam(channelColorParam(channel), channelColorToValue(colorId));
   }
 
-  setFxColor(fx: 1 | 2, colorId: number) {
-    this.sendParam(FX_COLOR_PARAMS[fx], channelColorToValue(colorId));
+  setFxColor(fx: number, colorId: number) {
+    const param = fxColorParam(fx);
+
+    if (!param) {
+      const maxFx = this.profile === "ax32_experimental" ? 4 : 2;
+      throw new Error(`FX invalido para cor. Use valores 1..${maxFx}.`);
+    }
+
+    this.sendParam(param, channelColorToValue(colorId));
   }
 
   setMasterColor(side: MasterSide, colorId: number) {
-    const param = side === "L" || side === "left" ? MASTER_COLOR_PARAMS.left : MASTER_COLOR_PARAMS.right;
+    const colors =
+      this.profile === "ax32_experimental"
+        ? MASTER_COLOR_PARAMS_AX32
+        : MASTER_COLOR_PARAMS;
+    const param = side === "L" || side === "left" ? colors.left : colors.right;
     this.sendParam(param, channelColorToValue(colorId));
   }
 
@@ -1137,7 +1668,7 @@ export class Axios16Client {
   }
 
   setMasterMute(side: MasterSide, shouldMute: boolean) {
-    const param = getMasterSideParams(side).mute;
+    const param = getMasterMuteParam(side);
 
     this.sendParam(param, shouldMute ? 0 : 1);
   }
@@ -1148,25 +1679,25 @@ export class Axios16Client {
   }
 
   setAuxMute(auxNumber: number, shouldMute: boolean) {
-    // AUX mute params: 1678 (AUX1), 1787 (AUX2), stride=109
     const auxIndex = Math.round(auxNumber);
-    if (auxIndex < 1 || auxIndex > 8) return;
+    const maxAux = this.profile === "ax32_experimental" ? 14 : 8;
+    if (auxIndex < 1 || auxIndex > maxAux) return;
     
-    const muteParam = 1678 + (auxIndex - 1) * 109;
+    const muteParam = auxMuteParam(auxIndex);
     this.sendParam(muteParam, shouldMute ? 0 : 1);
   }
 
   setFxMute(fxNumber: number, shouldMute: boolean) {
-    // FX mute params: 2900 (FX1), 2945 (FX2), stride=45
     const fxIndex = Math.round(fxNumber);
-    if (fxIndex < 1 || fxIndex > 2) return;
+    const maxFx = this.profile === "ax32_experimental" ? 4 : 2;
+    if (fxIndex < 1 || fxIndex > maxFx) return;
     
-    const muteParam = fxIndex === 1 ? 2900 : 2945;
+    const muteParam = fxMuteParam(fxIndex);
     this.sendParam(muteParam, shouldMute ? 0 : 1);
   }
 
   setMasterFader(side: MasterSide, db: number | "-inf") {
-    const param = getMasterSideParams(side).fader;
+    const param = getMasterFaderParam(side);
 
     this.sendParam(param, faderDbToValue(db));
   }
@@ -1236,10 +1767,11 @@ export class Axios16Client {
   }
 
   setAuxMasterFader(auxNumber: number, db: number | "-inf") {
-    const param = AUX_MASTER_FADER_PARAMS[Math.round(auxNumber)];
+    const param = auxFaderParam(auxNumber);
 
     if (!param) {
-      throw new Error("Auxiliar invalido. Use valores de 1 a 8.");
+      const maxAux = this.profile === "ax32_experimental" ? 14 : 8;
+      throw new Error(`Auxiliar invalido. Use valores de 1 a ${maxAux}.`);
     }
 
     this.sendParam(param, faderDbToValue(db));
@@ -1280,8 +1812,9 @@ export class Axios16Client {
     const odd = Math.round(oddAux);
     const even = odd + 1;
 
-    if (odd % 2 === 0 || odd < 1 || even > 8) {
-      throw new Error("Par de AUX inválido para solo. Use o AUX ímpar inicial do par.");
+    const maxAux = this.profile === "ax32_experimental" ? 14 : 8;
+    if (odd % 2 === 0 || odd < 1 || even > maxAux) {
+      throw new Error(`Par de AUX inválido para solo. Use o AUX ímpar inicial do par (1..${maxAux}).`);
     }
 
     const tapPoint = options?.tapPoint ?? "post";
@@ -1308,41 +1841,30 @@ export class Axios16Client {
     const tapPoint = options?.tapPoint ?? "post";
     const onValue = monitorSendValue(options?.db ?? 0, tapPoint);
     const offValue = monitorSendValue("-inf", tapPoint);
+    const soloParams =
+      this.profile === "ax32_experimental" ? MASTER_SOLO_AX32 : DIGI_SOLO;
 
     if (side === "L" || side === "left") {
-      this.sendParam(2560, enabled ? onValue : offValue);
-      this.sendParam(2561, enabled ? onValue : offValue);
+      this.sendParam(soloParams.left.left, enabled ? onValue : offValue);
+      this.sendParam(soloParams.left.right, enabled ? onValue : offValue);
       return;
     }
 
-    this.sendParam(2669, enabled ? onValue : offValue);
-    this.sendParam(2670, enabled ? onValue : offValue);
+    this.sendParam(soloParams.right.left, enabled ? onValue : offValue);
+    this.sendParam(soloParams.right.right, enabled ? onValue : offValue);
   }
 
   setMainMasterSolo(enabled: boolean, options?: { db?: number | "-inf"; tapPoint?: MonitorTapPoint }) {
-    const tapPoint = options?.tapPoint ?? "post";
-    const onValue = monitorSendValue(options?.db ?? 0, tapPoint);
-    const offValue = monitorSendValue("-inf", tapPoint);
-
-    if (!enabled) {
-      this.sendParam(2560, offValue);
-      this.sendParam(2561, offValue);
-      this.sendParam(2669, offValue);
-      this.sendParam(2670, offValue);
-      return;
-    }
-
-    this.sendParam(2560, onValue);
-    this.sendParam(2561, offValue);
-    this.sendParam(2669, offValue);
-    this.sendParam(2670, onValue);
+    // Use the same mapped DIGI solo block across all master-solo entry points.
+    this.setDigiSolo(enabled, options);
   }
 
   setFxSolo(fxNumber: number, enabled: boolean, options?: { db?: number | "-inf"; tapPoint?: MonitorTapPoint }) {
-    const params = FX_SOLO_PARAMS[Math.round(fxNumber)];
+    const params = fxSoloParams(fxNumber);
 
     if (!params) {
-      throw new Error("FX inválido para solo. Use valores 1 ou 2.");
+      const maxFx = this.profile === "ax32_experimental" ? 4 : 2;
+      throw new Error(`FX inválido para solo. Use valores 1..${maxFx}.`);
     }
 
     const tapPoint = options?.tapPoint ?? "post";
@@ -1358,125 +1880,114 @@ export class Axios16Client {
     const tapPoint = options?.tapPoint ?? "post";
     const onValue = monitorSendValue(options?.db ?? 0, tapPoint);
     const offValue = monitorSendValue("-inf", tapPoint);
+    const soloParams =
+      this.profile === "ax32_experimental" ? MASTER_SOLO_AX32 : DIGI_SOLO;
 
     if (!enabled) {
-      this.sendParam(DIGI_SOLO.left.left, offValue);
-      this.sendParam(DIGI_SOLO.left.right, offValue);
-      this.sendParam(DIGI_SOLO.right.left, offValue);
-      this.sendParam(DIGI_SOLO.right.right, offValue);
+      this.sendParam(soloParams.left.left, offValue);
+      this.sendParam(soloParams.left.right, offValue);
+      this.sendParam(soloParams.right.left, offValue);
+      this.sendParam(soloParams.right.right, offValue);
       return;
     }
 
-    this.sendParam(DIGI_SOLO.left.left, onValue);
-    this.sendParam(DIGI_SOLO.left.right, offValue);
-    this.sendParam(DIGI_SOLO.right.left, offValue);
-    this.sendParam(DIGI_SOLO.right.right, onValue);
+    this.sendParam(soloParams.left.left, onValue);
+    this.sendParam(soloParams.left.right, offValue);
+    this.sendParam(soloParams.right.left, offValue);
+    this.sendParam(soloParams.right.right, onValue);
   }
 
   setFxMasterFader(fxNumber: number, db: number | "-inf") {
-    const param = FX_MASTER_FADER_PARAMS[Math.round(fxNumber)];
+    const param = fxFaderParam(fxNumber);
 
     if (!param) {
-      throw new Error("FX invalido. Use valores 1 ou 2.");
+      const maxFx = this.profile === "ax32_experimental" ? 4 : 2;
+      throw new Error(`FX invalido. Use valores 1..${maxFx}.`);
     }
 
     this.sendParam(param, faderDbToValue(db));
   }
 
   setAuxPhase(auxNumber: number, positive: boolean) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.phase, positive ? 1 : 0);
   }
 
   setAuxDelay(auxNumber: number, ms: number) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.delay, delayMsToValue(ms));
   }
 
   setAuxCompEnabled(auxNumber: number, enabled: boolean) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.comp.enabled, boolToValue(enabled));
   }
 
   setAuxCompRatio(auxNumber: number, ratio: number | "inf") {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.comp.ratio, compRatioToValue(ratio));
   }
 
   setAuxCompAttack(auxNumber: number, ms: number) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.comp.attack, compTimeToValue(ms));
   }
 
   setAuxCompRelease(auxNumber: number, ms: number) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.comp.release, compTimeToValue(ms));
   }
 
   setAuxCompThreshold(auxNumber: number, db: number) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.comp.threshold, compThresholdToValue(db));
   }
 
   setAuxCompGain(auxNumber: number, db: number) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.comp.gain, compGainToValue(db));
   }
 
   setAuxEqEnabled(auxNumber: number, enabled: boolean) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.eqEnabled, boolToValue(enabled));
   }
 
   setAuxHpfFreq(auxNumber: number, freqHz: number) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.filters.hpfFreq, frequencyToValue(freqHz));
   }
 
   setAuxLpfFreq(auxNumber: number, freqHz: number) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.filters.lpfFreq, frequencyToValue(freqHz));
   }
 
   setAuxHpfTypeSlope(auxNumber: number, value: number) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.filters.hpfTypeSlope, value);
   }
 
   setAuxLpfTypeSlope(auxNumber: number, value: number) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.filters.lpfTypeSlope, value);
   }
 
   setAuxEqBandFreq(auxNumber: number, band: number, freqHz: number) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
     if (band < 1 || band > 7) throw new Error("Banda inválida. Use de 1 a 7.");
 
     const freq = auxParams.eqBandBase + (band - 1) * 4;
@@ -1484,8 +1995,7 @@ export class Axios16Client {
   }
 
   setAuxEqBandGain(auxNumber: number, band: number, gainDb: number) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
     if (band < 1 || band > 7) throw new Error("Banda inválida. Use de 1 a 7.");
 
     const gain = auxParams.eqBandBase + (band - 1) * 4 + 1;
@@ -1493,8 +2003,7 @@ export class Axios16Client {
   }
 
   setAuxEqBandQ(auxNumber: number, band: number, q: number) {
-    const auxParams = AUX_PARAMS[Math.round(auxNumber)];
-    if (!auxParams) throw new Error("AUX inválido. Use valores de 1 a 8.");
+    const auxParams = getAuxProcessorParams(auxNumber);
     if (band < 1 || band > 7) throw new Error("Banda inválida. Use de 1 a 7.");
 
     const qParam = auxParams.eqBandBase + (band - 1) * 4 + 2;
@@ -1508,9 +2017,11 @@ export class Axios16Client {
   }
 
   async readMainMasterFader() {
-    const response = await this.readParams([MASTER.left.fader, MASTER.right.fader]);
+    const leftParam = getMasterFaderParam("left");
+    const rightParam = getMasterFaderParam("right");
+    const response = await this.readParams([leftParam, rightParam]);
     const values = new Map(response.map((item) => [item.param, item.value]));
-    const leftValue = values.get(MASTER.left.fader) ?? 1200;
+    const leftValue = values.get(leftParam) ?? 1200;
 
     return valueToFaderDb(leftValue);
   }

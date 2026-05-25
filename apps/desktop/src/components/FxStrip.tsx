@@ -5,7 +5,7 @@ import { eqMagnitudeDb, type EqState } from "./ChannelProcessors";
 import { stripColorForScope } from "./stripColor";
 
 type FxStripProps = {
-  fxNumber: 1 | 2;
+  fxNumber: number;
   variant?: "default" | "detail";
   colorId?: number;
   channelName?: string;
@@ -21,8 +21,8 @@ type FxStripProps = {
   onToggleMute: () => void;
   onToggleSolo: () => void;
   onFaderChange: (value: number) => void;
-  onOpenDetail?: (fxNumber: 1 | 2) => void;
-  onOpenEditMenu?: (fxNumber: 1 | 2) => void;
+  onOpenDetail?: (fxNumber: number) => void;
+  onOpenEditMenu?: (fxNumber: number) => void;
 };
 
 const FOOTER_LONG_PRESS_MS = 450;

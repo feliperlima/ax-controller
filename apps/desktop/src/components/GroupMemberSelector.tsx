@@ -1,5 +1,5 @@
 import type { GroupMember } from "../protocol/duonn/bitmask";
-import { GROUP_MEMBER_BITS } from "../protocol/duonn/bitmask";
+import { isMappedGroupMember } from "../protocol/duonn/bitmask";
 
 export type MemberDef = {
   id: GroupMember;
@@ -35,7 +35,7 @@ export const AVAILABLE_GROUP_MEMBERS: MemberDef[] = [
 
 /** Returns only mapped (non-null) members from AVAILABLE_GROUP_MEMBERS. */
 export function getAvailableMembers(): MemberDef[] {
-  return AVAILABLE_GROUP_MEMBERS.filter((m) => GROUP_MEMBER_BITS[m.id] !== null);
+  return AVAILABLE_GROUP_MEMBERS.filter((m) => isMappedGroupMember(m.id));
 }
 
 type GroupMemberSelectorProps = {

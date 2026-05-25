@@ -7,6 +7,7 @@ export type DiscoveredMixer = {
   id: string;
   name: string;
   ip: string;
+  macAddress?: string;
   model?: string;
   channels?: number;
   status: MixerStatus;
@@ -64,11 +65,25 @@ function normalizeMixer(input: Partial<DiscoveredMixer> & { ip: string; name?: s
     id: input.id?.trim() || `${input.source ?? "finder"}:${cleanIp}`,
     name: cleanName,
     ip: cleanIp,
+    macAddress: input.macAddress,
     model: input.model ?? inferred.model,
     channels: input.channels ?? inferred.channels,
     status: input.status ?? "unknown",
     source: input.source ?? "finder",
   };
+}
+
+const LAST_CONNECTED_MIXER_IP_KEY = "last_connected_mixer_ip";
+
+export function rememberConnectedMixerIp(ip: string) {
+  const normalizedIp = ip.trim();
+  if (!normalizedIp) return;
+
+  try {
+    localStorage.setItem(LAST_CONNECTED_MIXER_IP_KEY, normalizedIp);
+  } catch {
+    // Ignore storage failures in restricted environments.
+  }
 }
 
 export async function discoverMixers(): Promise<DiscoveredMixer[]> {

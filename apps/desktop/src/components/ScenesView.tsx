@@ -10,6 +10,7 @@ import {
 type ScenesViewProps = {
   client: Axios16Client | null;
   isConnected: boolean;
+  cacheScopeKey?: string | null;
   onCallScene: (slot: SceneSlot) => Promise<void> | void;
   onSaveScene: (slot: SceneSlot) => Promise<void> | void;
 };
@@ -45,10 +46,11 @@ function loadStoredScenes(): SceneItem[] {
       const slot = (item as { slot?: unknown }).slot;
       const name = (item as { name?: unknown }).name;
       if (!Number.isInteger(slot) || typeof name !== "string") continue;
-      if (slot < 1 || slot > 12) continue;
+      const slotNumber = slot as number;
+      if (slotNumber < 1 || slotNumber > 12) continue;
       const trimmed = name.trim();
       if (!trimmed) continue;
-      storedNames.set(slot, trimmed);
+      storedNames.set(slotNumber, trimmed);
     }
 
     return defaults.map((scene) => {
@@ -71,7 +73,8 @@ function persistStoredScenes(scenes: SceneItem[]) {
   localStorage.setItem(SCENE_NAMES_STORAGE_KEY, JSON.stringify(serialized));
 }
 
-export function ScenesView({ client, isConnected, onCallScene, onSaveScene }: ScenesViewProps) {
+export function ScenesView({ client, isConnected, cacheScopeKey, onCallScene, onSaveScene }: ScenesViewProps) {
+  void cacheScopeKey;
   const [scenes, setScenes] = useState<SceneItem[]>(loadStoredScenes);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [renamingSlot, setRenamingSlot] = useState<SceneSlot | null>(null);

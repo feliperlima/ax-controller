@@ -1,16 +1,17 @@
 import { useState, type CSSProperties } from "react";
 import type { GroupMember } from "../protocol/duonn/bitmask";
 import type { MuteGroupId } from "../protocol/duonn/groups";
-import { MUTE_GROUPS_CONFIG } from "../protocol/duonn/groups";
+import { getMuteGroupConfig } from "../protocol/duonn/groups";
 import {
   AUX_IDS,
   buildAssignableMemberIds,
   CHANNEL_IDS_MAX,
   FX_IDS,
+  getAuxCountForChannelCount,
+  getFxCountForChannelCount,
   isMemberSelectable,
   type AssignableMemberId,
   type MuteGroupState,
-  MUTE_IDS,
 } from "../lib/groupControls";
 import { stripColorForScope } from "./stripColor";
 
@@ -64,11 +65,17 @@ export function MuteGroupsView({
 }: MuteGroupsViewProps) {
   const [selectedGroup, setSelectedGroup] = useState<MuteGroupId>(1);
   const [confirmAllMuted, setConfirmAllMuted] = useState<MuteGroupId | null>(null);
-  const channelIds = CHANNEL_IDS_MAX.slice(0, Math.max(1, Math.min(24, channelCount))) as GroupMember[];
+  const availableGroupIds = groups.map((_, index) => (index + 1) as MuteGroupId);
+  const channelIds = CHANNEL_IDS_MAX.slice(0, Math.max(1, Math.min(CHANNEL_IDS_MAX.length, channelCount))) as GroupMember[];
+  const auxIds = AUX_IDS.slice(0, getAuxCountForChannelCount(channelCount));
+  const fxIds = FX_IDS.slice(0, getFxCountForChannelCount(channelCount));
   const assignableMemberIds = buildAssignableMemberIds(channelCount);
 
-  const selectedGroupState = groups[selectedGroup - 1];
-  const isDerived = MUTE_GROUPS_CONFIG[selectedGroup].isDerived ?? false;
+  const selectedGroupState = groups[selectedGroup - 1] ?? {
+    active: false,
+    members: [],
+  };
+  const isDerived = getMuteGroupConfig(selectedGroup).isDerived ?? false;
   const selectedAssignableMembers = assignableMemberIds.filter((member) => selectedGroupState.members.includes(member));
   const selectedSet = new Set(selectedAssignableMembers);
 
@@ -80,14 +87,14 @@ export function MuteGroupsView({
       colorId: channelColorIds?.[index],
       disabled: !isMemberSelectable(id),
     })),
-    ...AUX_IDS.map((id, index) => ({
+    ...auxIds.map((id, index) => ({
       id,
       tag: `AUX ${index + 1}`,
       name: auxNames?.[index]?.trim() || `AUX ${index + 1}`,
       colorId: auxColorIds?.[index],
       disabled: !isMemberSelectable(id),
     })),
-    ...FX_IDS.map((id, index) => ({
+    ...fxIds.map((id, index) => ({
       id,
       tag: `FX ${index + 1}`,
       name: fxNames?.[index]?.trim() || `FX ${index + 1}`,
@@ -175,7 +182,7 @@ export function MuteGroupsView({
             <p className="groups-view__confirm-title">Mute All in Group {confirmAllMuted}?</p>
             <p className="groups-view__confirm-body">
               Isso ira adicionar todos os canais mapeados ao grupo de mute {confirmAllMuted}.
-              {MUTE_GROUPS_CONFIG[confirmAllMuted].isDerived && (
+              {getMuteGroupConfig(confirmAllMuted).isDerived && (
                 <> <strong style={{ color: "var(--text-warning)" }}>Mapeamento derivado - validar no hardware.</strong></>
               )}
             </p>
@@ -203,7 +210,7 @@ export function MuteGroupsView({
       )}
 
       <div className="groups-structured-tabs" role="tablist" aria-label="Mute groups">
-        {MUTE_IDS.map((id) => (
+        {availableGroupIds.map((id) => (
           <button
             key={id}
             id={`mute-group-tab-${id}`}

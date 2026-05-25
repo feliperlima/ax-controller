@@ -7,9 +7,10 @@ import {
   buildVisibleDcaMemberIds,
   CHANNEL_IDS_MAX,
   DCA_DEFAULT_COLOR_IDS,
-  DCA_IDS,
   FX_IDS,
   dcaAccentColorFromId,
+  getAuxCountForChannelCount,
+  getFxCountForChannelCount,
   isMemberSelectable,
   
   type AssignableMemberId,
@@ -68,7 +69,10 @@ export function DcaGroupsView({
   dcaColorIds,
 }: DcaGroupsViewProps) {
   const [selectedGroup, setSelectedGroup] = useState<DcaGroupId>(1);
-  const channelIds = CHANNEL_IDS_MAX.slice(0, Math.max(1, Math.min(24, channelCount))) as GroupMember[];
+  const availableGroupIds = groups.map((_, index) => (index + 1) as DcaGroupId);
+  const channelIds = CHANNEL_IDS_MAX.slice(0, Math.max(1, Math.min(CHANNEL_IDS_MAX.length, channelCount))) as GroupMember[];
+  const auxIds = AUX_IDS.slice(0, getAuxCountForChannelCount(channelCount));
+  const fxIds = FX_IDS.slice(0, getFxCountForChannelCount(channelCount));
   const assignableMemberIds = buildAssignableMemberIds(channelCount);
   const visibleMemberIds = buildVisibleDcaMemberIds(channelCount, false);
 
@@ -89,7 +93,11 @@ export function DcaGroupsView({
     return DCA_DEFAULT_COLOR_IDS[id];
   }
 
-  const selectedGroupState = groups[selectedGroup - 1];
+  const selectedGroupState = groups[selectedGroup - 1] ?? {
+    enabled: true,
+    faderPosition: 90,
+    members: [],
+  };
   const selectedAssignableMembers = visibleMemberIds.filter((member) => selectedGroupState.members.includes(member));
   const selectedSet = new Set(selectedAssignableMembers);
   const selectedNonAssignableMembers = selectedGroupState.members.filter(
@@ -104,14 +112,14 @@ export function DcaGroupsView({
       colorId: channelColorIds?.[index],
       disabled: !isMemberSelectable(id),
     })),
-    ...AUX_IDS.map((id, index) => ({
+    ...auxIds.map((id, index) => ({
       id,
       tag: `AUX ${index + 1}`,
       name: auxNames?.[index]?.trim() || `AUX ${index + 1}`,
       colorId: auxColorIds?.[index],
       disabled: !isMemberSelectable(id),
     })),
-    ...FX_IDS.map((id, index) => ({
+    ...fxIds.map((id, index) => ({
       id,
       tag: `FX ${index + 1}`,
       name: fxNames?.[index]?.trim() || `FX ${index + 1}`,
@@ -201,7 +209,7 @@ export function DcaGroupsView({
       style={{ "--tab-underline-color": "var(--branch-duonn-cyan)" } as CSSProperties}
     >
       <div className="groups-structured-tabs" role="tablist" aria-label="DCA groups">
-        {DCA_IDS.map((id) => (
+        {availableGroupIds.map((id) => (
           <button
             key={id}
             id={`dca-group-tab-${id}`}

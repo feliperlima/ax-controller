@@ -42,6 +42,7 @@ import { AxHeaderStatusTag } from "./components/TopNavigation";
 import { DcaGroupsView } from "./components/DcaGroupsView";
 import { MuteGroupsView } from "./components/MuteGroupsView";
 import { ScenesView } from "./components/ScenesView";
+import { PatchingView } from "./components/PatchingView";
 import { FxPresetGrid, FxPresetControlPanel } from "./components/FxPresetPanel";
 import { SplashScreen } from "./components/SplashScreen";
 import { DeviceSelectionScreen } from "./components/DeviceSelectionScreen";
@@ -85,6 +86,7 @@ import {
   dcaValueToPosition,
   dcaAccentColorFromId,
   getDcaIdsForChannelCount,
+  getMuteIdsForChannelCount,
   type AssignableMemberId,
   type DcaGroupState,
   type MuteGroupState,
@@ -333,14 +335,6 @@ function getAuxBusCount() {
 
 function getFxBusCount() {
   return isAx32ProfileActive() ? AX32_FX_COUNT : AX16_24_FX_COUNT;
-}
-
-function getDcaIdsForActiveProfile(): DcaGroupId[] {
-  return isAx32ProtocolProfile(ACTIVE_CHANNEL_PROFILE) ? [1, 2, 3, 4, 5, 6, 7, 8] : [1, 2, 3, 4];
-}
-
-function getMuteIdsForActiveProfile(): MuteGroupId[] {
-  return isAx32ProtocolProfile(ACTIVE_CHANNEL_PROFILE) ? [1, 2, 3, 4, 5, 6] : [1, 2, 3, 4];
 }
 
 function faderPositionToDb(position: number) {
@@ -713,7 +707,7 @@ type DetailView =
   | { type: "master"; side: "left" | "right" }
   | null;
 type AppStage = "splash" | "device-selection" | "mixer";
-type MainView = "mixer" | "auxSends" | "fxSends" | "dcaGroups" | "muteGroups" | "scenes";
+type MainView = "mixer" | "auxSends" | "fxSends" | "dcaGroups" | "muteGroups" | "scenes" | "patching";
 type StripSection = "inputs" | "aux" | "fx";
 type CustomizationSection = StripSection | "dca";
 type CustomizationView = { section: CustomizationSection; index: number } | null;
@@ -1274,19 +1268,32 @@ const GLOBAL_CONTROL_FAST_POLL_INTERVAL_MIXER_MS = 280;
 const GLOBAL_CONTROL_FAST_POLL_INTERVAL_DETAIL_MS = 420;
 const GLOBAL_CONTROL_FAST_POLL_INTERVAL_OTHER_MS = 650;
 const GLOBAL_CONTROL_POLL_INTERVAL_MS = 2400;
-const USB_RETURN_PATCH_POLL_INTERVAL_MS = 4200;
+const USB_RETURN_PATCH_POLL_INTERVAL_MS = 6200;
 const LOCAL_WRITE_ECHO_SUPPRESSION_MS = 900;
 const AX16_24_READ_TIMEOUT_MS = 1400;
 const AX16_24_BATCH_CHANNEL_CHUNK = 30;
 const AX16_24_BATCH_AUX_CHUNK = 28;
 const AX16_24_FAST_CHANNEL_CHUNK = 34;
 const SEND_PRE_FADER_FLAG = 32768;
+const AX32_PHYSICAL_INPUT_PATCH_BASE = 2693;
+const AX32_PHYSICAL_INPUT_PATCH_SIZE = 34;
+const AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE = 32;
+const AX32_USB_INPUT_TO_USB_PATCH_BASE = 2533;
+const AX32_USB_INPUT_TO_USB_PATCH_SIZE = 32;
 const AX32_USB_RETURN_PATCH_BASE = 2565;
 const AX32_USB_RETURN_PATCH_SIZE = 32;
+const AX32_USB_PATCH_VISIBLE_SIZE = 32;
+const AX32_OUTPUT_PATCH_BASE = 4855;
+const AX32_OUTPUT_PATCH_SIZE = 18;
+const AX32_OUTPUT_PATCH_VISIBLE_SIZE = 14;
 const FX_RETURN_MAPPING: Readonly<{ available: false; reason: string }> = {
   available: false,
   reason: "TODO(types): mapear parametros reais de retorno de FX (level/mute/pan) antes de habilitar controle.",
 };
+
+function createIdentityRoutes(visibleCount: number) {
+  return Array.from({ length: visibleCount }, (_, index) => index + 1);
+}
 
 function createDefaultSendValues(): SendValueState {
   const next: SendValueState = {};
@@ -2102,6 +2109,18 @@ function App() {
   );
   const [mainView, setMainView] = useState<MainView>("mixer");
   const [settingsDropdownOpen, setSettingsDropdownOpen] = useState(false);
+  const [inputPatchRoutes, setInputPatchRoutes] = useState<number[]>(() =>
+    createIdentityRoutes(AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE)
+  );
+  const [outputPatchRoutes, setOutputPatchRoutes] = useState<number[]>(() =>
+    createIdentityRoutes(AX32_OUTPUT_PATCH_VISIBLE_SIZE)
+  );
+  const [usbInputToUsbRoutes, setUsbInputToUsbRoutes] = useState<number[]>(() =>
+    createIdentityRoutes(AX32_USB_PATCH_VISIBLE_SIZE)
+  );
+  const [usbReturnRoutes, setUsbReturnRoutes] = useState<number[]>(() =>
+    createIdentityRoutes(AX32_USB_PATCH_VISIBLE_SIZE)
+  );
   const [detailView, setDetailView] = useState<DetailView>(null);
   const [customizationView, setCustomizationView] = useState<CustomizationView>(null);
   const [channels, setChannels] = useState<ChannelState[]>(
@@ -2200,7 +2219,10 @@ function App() {
   const recentLocalParamWritesRef = useRef<Map<number, LocalParamWrite>>(new Map());
   const localParamWriteUnsubscribeRef = useRef<(() => void) | null>(null);
   const fastControlSyncInFlightRef = useRef(false);
+  const ax32PhysicalInputPatchMapRef = useRef<Map<number, number>>(new Map());
+  const usbInputToUsbPatchMapRef = useRef<Map<number, number>>(new Map());
   const usbReturnPatchMapRef = useRef<Map<number, number>>(new Map());
+  const ax32OutputPatchMapRef = useRef<Map<number, number>>(new Map());
   const usbReturnPatchSyncInFlightRef = useRef(false);
   const backgroundLicenseRevalidationBusyRef = useRef(false);
   const lastBackgroundRevalidationAtRef = useRef(0);
@@ -2834,15 +2856,17 @@ function App() {
     return assignableMemberIds.filter((member) => expanded.has(member));
   }
 
-  async function syncAllGroupStates(options?: { ignoreConnectionState?: boolean; suppressManagedMuteWrites?: boolean }) {
+  async function syncAllGroupStates(options?: { ignoreConnectionState?: boolean; suppressManagedMuteWrites?: boolean; channelTotal?: number }) {
     const client = clientRef.current;
     if (!client || (!isConnected && !options?.ignoreConnectionState)) {
       lastAppliedMuteGroupsSignatureRef.current = "";
       return;
     }
 
-    const dcaIdsSnapshot = getDcaIdsForActiveProfile();
-    const muteIdsSnapshot = getMuteIdsForActiveProfile();
+    const syncChannelTotal = options?.channelTotal ?? channelCount;
+    const assignableMemberIdsSnapshot = buildAssignableMemberIds(syncChannelTotal);
+    const dcaIdsSnapshot = getDcaIdsForChannelCount(syncChannelTotal);
+    const muteIdsSnapshot = getMuteIdsForChannelCount(syncChannelTotal);
 
     const params = [
       ...dcaIdsSnapshot.flatMap((id) => [
@@ -2895,7 +2919,7 @@ function App() {
         const words = getDcaMemberParams(id).map((param) => values.get(param));
         const nextMembers = words.every((word) => word !== undefined)
           ? decodeGroupMembers(words as [number, number, number, number]).filter(
-              (member): member is AssignableMemberId => assignableMemberIds.includes(member as AssignableMemberId)
+              (member): member is AssignableMemberId => assignableMemberIdsSnapshot.includes(member as AssignableMemberId)
             )
           : group.members;
 
@@ -2915,7 +2939,7 @@ function App() {
         const words = getMuteGroupMemberParams(id).map((param) => values.get(param));
         const nextMembers = words.every((word) => word !== undefined)
           ? decodeGroupMembers(words as [number, number, number, number]).filter(
-              (member): member is AssignableMemberId => assignableMemberIds.includes(member as AssignableMemberId)
+              (member): member is AssignableMemberId => assignableMemberIdsSnapshot.includes(member as AssignableMemberId)
             )
           : group.members;
 
@@ -2926,9 +2950,6 @@ function App() {
         };
       });
 
-      if (!options?.suppressManagedMuteWrites) {
-        applyManagedMutes(next, options);
-      }
       return next;
     });
   }
@@ -2985,7 +3006,7 @@ function App() {
 
     const syncGroupStates = async () => {
       try {
-        await syncAllGroupStates();
+        await syncAllGroupStates({ suppressManagedMuteWrites: true, channelTotal: channelCount });
       } catch {
         // Ignore transient read failures.
       }
@@ -3277,6 +3298,14 @@ function App() {
     setAuxInputSendTapPoints({});
     setFxInputSendValues({});
     setFxInputSendTapPoints({});
+    setInputPatchRoutes(createIdentityRoutes(AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE));
+    setOutputPatchRoutes(createIdentityRoutes(AX32_OUTPUT_PATCH_VISIBLE_SIZE));
+    setUsbInputToUsbRoutes(createIdentityRoutes(AX32_USB_PATCH_VISIBLE_SIZE));
+    setUsbReturnRoutes(createIdentityRoutes(AX32_USB_PATCH_VISIBLE_SIZE));
+    ax32PhysicalInputPatchMapRef.current = new Map();
+    ax32OutputPatchMapRef.current = new Map();
+    usbInputToUsbPatchMapRef.current = new Map();
+    usbReturnPatchMapRef.current = new Map();
   }
 
   function hydrateDcaCacheForMixer(mixerCacheIdentity: string | null, channelTotal: number) {
@@ -3532,7 +3561,14 @@ function App() {
 
     const params = getChannelStateParams(channelNumber);
 
-    const response = await client.readParams(Object.values(params), 2000);
+    const readParams = Object.values(params).filter(
+      (param): param is number => typeof param === "number"
+    );
+    if (readParams.length === 0) {
+      return;
+    }
+
+    const response = await client.readParams(readParams, 2000);
     const values = new Map(response.map((item) => [item.param, item.value]));
 
     applyChannelStateFromValues(channelNumber, values, params);
@@ -3548,6 +3584,24 @@ function App() {
     applyChannelProcessorStateFromValues(channelNumber, values, params);
   }
 
+  function getAx32PhysicalInputPatchParamsForActiveProfile() {
+    if (!isAx32ProfileActive()) return [];
+
+    return Array.from(
+      { length: AX32_PHYSICAL_INPUT_PATCH_SIZE },
+      (_, index) => AX32_PHYSICAL_INPUT_PATCH_BASE + index
+    );
+  }
+
+  function getUsbInputToUsbPatchParamsForActiveProfile() {
+    if (!isAx32ProfileActive()) return [];
+
+    return Array.from(
+      { length: AX32_USB_INPUT_TO_USB_PATCH_SIZE },
+      (_, index) => AX32_USB_INPUT_TO_USB_PATCH_BASE + index
+    );
+  }
+
   function getUsbReturnPatchParamsForActiveProfile() {
     if (!isAx32ProfileActive()) return [];
 
@@ -3555,6 +3609,59 @@ function App() {
       { length: AX32_USB_RETURN_PATCH_SIZE },
       (_, index) => AX32_USB_RETURN_PATCH_BASE + index
     );
+  }
+
+  function getAx32OutputPatchParamsForActiveProfile() {
+    if (!isAx32ProfileActive()) return [];
+
+    return Array.from(
+      { length: AX32_OUTPUT_PATCH_SIZE },
+      (_, index) => AX32_OUTPUT_PATCH_BASE + index
+    );
+  }
+
+  function syncVisibleInputPatchRoutes(nextPatchMap: Map<number, number>) {
+    const nextVisible = Array.from(
+      { length: AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE },
+      (_, index) => {
+        const destination = index + 1;
+        return nextPatchMap.get(destination) ?? 0;
+      }
+    );
+    setInputPatchRoutes(nextVisible);
+  }
+
+  function syncVisibleOutputPatchRoutes(nextPatchMap: Map<number, number>) {
+    const nextVisible = Array.from(
+      { length: AX32_OUTPUT_PATCH_VISIBLE_SIZE },
+      (_, index) => {
+        const destination = index + 1;
+        return nextPatchMap.get(destination) ?? destination;
+      }
+    );
+    setOutputPatchRoutes(nextVisible);
+  }
+
+  function syncVisibleUsbInputToUsbRoutes(nextPatchMap: Map<number, number>) {
+    const nextVisible = Array.from(
+      { length: AX32_USB_PATCH_VISIBLE_SIZE },
+      (_, index) => {
+        const destination = index + 1;
+        return nextPatchMap.get(destination) ?? 0;
+      }
+    );
+    setUsbInputToUsbRoutes(nextVisible);
+  }
+
+  function syncVisibleUsbReturnRoutes(nextPatchMap: Map<number, number>) {
+    const nextVisible = Array.from(
+      { length: AX32_USB_PATCH_VISIBLE_SIZE },
+      (_, index) => {
+        const destination = index + 1;
+        return nextPatchMap.get(destination) ?? 0;
+      }
+    );
+    setUsbReturnRoutes(nextVisible);
   }
 
   function resolveInputSourceControlChannel(channelNumber: number) {
@@ -3567,35 +3674,162 @@ function App() {
       return channelNumber;
     }
 
-    if (mappedChannel < 1 || mappedChannel > channelCount) {
-      return channelNumber;
+    if (mappedChannel === 0) {
+      return null;
     }
 
-    return mappedChannel;
+    if (mappedChannel < 1 || mappedChannel > AX32_USB_RETURN_PATCH_SIZE) {
+      return null;
+    }
+
+    // Regra híbrida:
+    // - patch padrão (destino = source): 1:1 no próprio canal
+    // - patch não-identidade: segue o canal mapeado pela mesa
+    return mappedChannel === channelNumber ? channelNumber : mappedChannel;
   }
 
   async function refreshResolvedInputSourceStates() {
     const client = clientRef.current;
     if (!client || !isConnected) return;
 
+    const pendingUpdates: Array<{ channelNumber: number; controlChannel: number }> = [];
+
     const readParams = Array.from({ length: channelCount }, (_, index) => {
       const channelNumber = index + 1;
       const controlChannel = resolveInputSourceControlChannel(channelNumber);
+      if (controlChannel === null) {
+        updateChannelState(channelNumber, { usbInputOn: false });
+        return null;
+      }
+      pendingUpdates.push({ channelNumber, controlChannel });
       return inputSourceParam(controlChannel);
-    });
+    }).filter((param): param is number => param !== null);
     const uniqueReadParams = Array.from(new Set(readParams));
+
+    if (uniqueReadParams.length === 0) {
+      return;
+    }
 
     const timeoutMs = isAx32ProfileActive() ? 700 : 900;
     const values = await readValuesMapChunked(client, uniqueReadParams, 24, timeoutMs);
 
-    for (let channelNumber = 1; channelNumber <= channelCount; channelNumber += 1) {
-      const controlChannel = resolveInputSourceControlChannel(channelNumber);
+    for (const { channelNumber, controlChannel } of pendingUpdates) {
       const sourceParam = inputSourceParam(controlChannel);
       const rawValue = values.get(sourceParam);
       if (rawValue === undefined) continue;
 
       updateChannelState(channelNumber, { usbInputOn: rawValue === 0 });
     }
+  }
+
+  async function syncAx32PhysicalInputPatchMap() {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    const patchParams = getAx32PhysicalInputPatchParamsForActiveProfile();
+
+    if (patchParams.length === 0) {
+      if (ax32PhysicalInputPatchMapRef.current.size > 0) {
+        ax32PhysicalInputPatchMapRef.current = new Map();
+      }
+      return;
+    }
+
+    const response = await client.readParams(patchParams, 1200);
+    const nextPatchMap = new Map<number, number>(
+      Array.from(
+        { length: AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE },
+        (_, index) => [index + 1, 0]
+      )
+    );
+
+    response.forEach(({ param, value }) => {
+      const sourceChannel = param - AX32_PHYSICAL_INPUT_PATCH_BASE + 1;
+      if (sourceChannel < 1 || sourceChannel > AX32_PHYSICAL_INPUT_PATCH_SIZE) {
+        return;
+      }
+
+      const destinationChannel = Math.round(value);
+      if (destinationChannel < 0 || destinationChannel > AX32_PHYSICAL_INPUT_PATCH_SIZE) {
+        return;
+      }
+
+      if (
+        destinationChannel >= 1 &&
+        destinationChannel <= AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE
+      ) {
+        nextPatchMap.set(destinationChannel, sourceChannel);
+      }
+    });
+
+    let changed = nextPatchMap.size !== ax32PhysicalInputPatchMapRef.current.size;
+    if (!changed) {
+      for (let destination = 1; destination <= AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE; destination += 1) {
+        if (ax32PhysicalInputPatchMapRef.current.get(destination) !== nextPatchMap.get(destination)) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    ax32PhysicalInputPatchMapRef.current = nextPatchMap;
+    syncVisibleInputPatchRoutes(nextPatchMap);
+  }
+
+  async function syncUsbInputToUsbPatchMap() {
+    const client = clientRef.current;
+    if (!client || !isConnected) return;
+
+    const patchParams = getUsbInputToUsbPatchParamsForActiveProfile();
+    if (patchParams.length === 0) {
+      if (usbInputToUsbPatchMapRef.current.size > 0) {
+        usbInputToUsbPatchMapRef.current = new Map();
+      }
+      return;
+    }
+
+    const response = await client.readParams(patchParams, 1200);
+    const nextPatchMap = new Map<number, number>(
+      Array.from(
+        { length: AX32_USB_PATCH_VISIBLE_SIZE },
+        (_, index) => [index + 1, 0]
+      )
+    );
+
+    response.forEach(({ param, value }) => {
+      const inputChannel = param - AX32_USB_INPUT_TO_USB_PATCH_BASE + 1;
+      if (inputChannel < 1 || inputChannel > AX32_USB_INPUT_TO_USB_PATCH_SIZE) {
+        return;
+      }
+
+      const usbBus = Math.round(value);
+      if (usbBus < 0 || usbBus > AX32_USB_INPUT_TO_USB_PATCH_SIZE) {
+        return;
+      }
+
+      nextPatchMap.set(inputChannel, usbBus);
+    });
+
+    let changed = nextPatchMap.size !== usbInputToUsbPatchMapRef.current.size;
+    if (!changed) {
+      for (let destination = 1; destination <= AX32_USB_PATCH_VISIBLE_SIZE; destination += 1) {
+        if (usbInputToUsbPatchMapRef.current.get(destination) !== nextPatchMap.get(destination)) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    usbInputToUsbPatchMapRef.current = nextPatchMap;
+    syncVisibleUsbInputToUsbRoutes(nextPatchMap);
   }
 
   async function syncUsbReturnPatchMap(options?: { refreshInputStates?: boolean }) {
@@ -3612,30 +3846,33 @@ function App() {
     }
 
     const response = await client.readParams(patchParams, 1200);
-    const nextPatchMap = new Map<number, number>();
+    const nextPatchMap = new Map<number, number>(
+      Array.from(
+        { length: AX32_USB_PATCH_VISIBLE_SIZE },
+        (_, index) => [index + 1, 0]
+      )
+    );
 
     response.forEach(({ param, value }) => {
-      const destinationChannel = param - AX32_USB_RETURN_PATCH_BASE + 1;
-      if (destinationChannel < 1 || destinationChannel > AX32_USB_RETURN_PATCH_SIZE) {
+      const usbReturnSource = param - AX32_USB_RETURN_PATCH_BASE + 1;
+      if (usbReturnSource < 1 || usbReturnSource > AX32_USB_RETURN_PATCH_SIZE) {
         return;
       }
 
-      const sourceChannel = Math.round(value);
-      if (sourceChannel < 1 || sourceChannel > AX32_USB_RETURN_PATCH_SIZE) {
+      const destinationChannel = Math.round(value);
+      if (destinationChannel < 0 || destinationChannel > AX32_USB_RETURN_PATCH_SIZE) {
         return;
       }
 
-      nextPatchMap.set(destinationChannel, sourceChannel);
+      if (destinationChannel >= 1 && destinationChannel <= AX32_USB_PATCH_VISIBLE_SIZE) {
+        nextPatchMap.set(destinationChannel, usbReturnSource);
+      }
     });
-
-    if (nextPatchMap.size === 0) {
-      return;
-    }
 
     let changed = nextPatchMap.size !== usbReturnPatchMapRef.current.size;
     if (!changed) {
-      for (const [destination, source] of nextPatchMap.entries()) {
-        if (usbReturnPatchMapRef.current.get(destination) !== source) {
+      for (let destination = 1; destination <= AX32_USB_PATCH_VISIBLE_SIZE; destination += 1) {
+        if (usbReturnPatchMapRef.current.get(destination) !== nextPatchMap.get(destination)) {
           changed = true;
           break;
         }
@@ -3643,14 +3880,60 @@ function App() {
     }
 
     if (!changed) {
+      if (options?.refreshInputStates === true) {
+        await refreshResolvedInputSourceStates();
+      }
       return;
     }
 
     usbReturnPatchMapRef.current = nextPatchMap;
+    syncVisibleUsbReturnRoutes(nextPatchMap);
 
     if (options?.refreshInputStates !== false) {
       await refreshResolvedInputSourceStates();
     }
+  }
+
+  async function syncAx32OutputPatchMap() {
+    const client = clientRef.current;
+    if (!client || !isConnected || !isAx32ProfileActive()) return;
+
+    const patchParams = getAx32OutputPatchParamsForActiveProfile();
+    if (patchParams.length === 0) return;
+
+    const response = await client.readParams(patchParams, 1200);
+    const nextPatchMap = new Map<number, number>();
+
+    response.forEach(({ param, value }) => {
+      const destinationOutput = param - AX32_OUTPUT_PATCH_BASE + 1;
+      if (destinationOutput < 1 || destinationOutput > AX32_OUTPUT_PATCH_SIZE) {
+        return;
+      }
+
+      const source = Math.round(value);
+      if (source < 0 || source > AX32_OUTPUT_PATCH_SIZE) {
+        return;
+      }
+
+      nextPatchMap.set(destinationOutput, source);
+    });
+
+    if (nextPatchMap.size === 0) return;
+
+    let changed = nextPatchMap.size !== ax32OutputPatchMapRef.current.size;
+    if (!changed) {
+      for (const [destination, source] of nextPatchMap.entries()) {
+        if (ax32OutputPatchMapRef.current.get(destination) !== source) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (!changed) return;
+
+    ax32OutputPatchMapRef.current = nextPatchMap;
+    syncVisibleOutputPatchRoutes(nextPatchMap);
   }
 
   function getChannelStateParams(channelNumber: number) {
@@ -3658,7 +3941,10 @@ function App() {
 
     return {
       hiZ: channelParam(channelNumber, 64),
-      inputSource: inputSourceParam(controlChannel),
+      inputSource:
+        controlChannel === null
+          ? undefined
+          : inputSourceParam(controlChannel),
       phantom: channelParam(channelNumber, 65),
       gain: channelParam(channelNumber, 72),
       phase: channelParam(channelNumber, 73),
@@ -3680,7 +3966,8 @@ function App() {
     const shouldApplyParam = options?.shouldApplyParam;
     const patch: Partial<ChannelState> = {};
 
-    const readAccepted = (param: number) => {
+    const readAccepted = (param: number | undefined) => {
+      if (param === undefined) return undefined;
       const value = values.get(param);
       if (value === undefined) return undefined;
       if (shouldApplyParam && !shouldApplyParam(param, value)) return undefined;
@@ -3690,6 +3977,10 @@ function App() {
     const hiZ = readAccepted(params.hiZ);
     if (hiZ !== undefined) {
       patch.hiZOn = valueToBoolean(hiZ);
+    }
+
+    if (params.inputSource === undefined) {
+      patch.usbInputOn = false;
     }
 
     const inputSource = readAccepted(params.inputSource);
@@ -3864,7 +4155,7 @@ function App() {
     return [
       ...Object.values(getChannelStateParams(channelNumber)),
       ...Object.values(processorParams(channelNumber)),
-    ];
+    ].filter((param): param is number => typeof param === "number");
   }
 
   function hasCoreChannelValues(values: Map<number, number>, channelNumber: number) {
@@ -4414,7 +4705,7 @@ function App() {
       params.phase,
       params.soloLeft,
       params.soloRight,
-    ];
+    ].filter((param): param is number => typeof param === "number");
   }
 
   function getAuxRealtimeControlParams(auxNumber: number) {
@@ -4440,7 +4731,9 @@ function App() {
     if (!skipNonMasterFastPass) {
       const channelParams = Array.from({ length: channelCount }, (_, index) =>
         getChannelRealtimeControlParams(index + 1)
-      ).flat();
+      )
+        .flat()
+        .filter((param): param is number => typeof param === "number");
       const channelValues = await readValuesMapChunked(
         client,
         channelParams,
@@ -4540,7 +4833,9 @@ function App() {
 
     const channelParams = Array.from({ length: channelCount }, (_, index) =>
       Object.values(getChannelStateParams(index + 1))
-    ).flat();
+    )
+      .flat()
+      .filter((param): param is number => typeof param === "number");
 
     const channelChunkSize = isAx32ProfileActive() ? 24 : AX16_24_BATCH_CHANNEL_CHUNK;
     const channelTimeout = isAx32ProfileActive() ? 700 : 1000;
@@ -5279,7 +5574,9 @@ function App() {
       return false;
     }
 
-    return true;
+    // Divergencia entre escrita local e leitura remota deve prevalecer com valor da mesa.
+    recentLocalParamWritesRef.current.delete(param);
+    return false;
   }
 
   function cleanupStaleLocalWriteTracking(now = Date.now()) {
@@ -5878,7 +6175,7 @@ function App() {
       await syncChannelEqPreviewStates();
       await syncAllStripNames({ forceFromMixer: forceNamesFromMixer });
       await syncAllSoloStates();
-      await syncAllGroupStates();
+      await syncAllGroupStates({ suppressManagedMuteWrites: true, channelTotal: channelCount });
       await syncVisibleSendsState();
     };
 
@@ -5907,7 +6204,7 @@ function App() {
         ["previews de EQ", syncChannelEqPreviewStates],
         ["nomes", () => syncAllStripNames({ forceFromMixer: false })],
         ["solos", syncAllSoloStates],
-        ["grupos", syncAllGroupStates],
+        ["grupos", () => syncAllGroupStates({ suppressManagedMuteWrites: true, channelTotal: channelCount })],
         ["sends visiveis", syncVisibleSendsState],
       ];
 
@@ -6273,8 +6570,13 @@ function App() {
       if (usbReturnPatchSyncInFlightRef.current) return;
 
       usbReturnPatchSyncInFlightRef.current = true;
-      void syncUsbReturnPatchMap({ refreshInputStates: true }).catch(() => {
-        // Ignore transient read failures for USB return patch map polling.
+      void Promise.all([
+        syncAx32PhysicalInputPatchMap(),
+        syncUsbInputToUsbPatchMap(),
+        syncUsbReturnPatchMap({ refreshInputStates: true }),
+        syncAx32OutputPatchMap(),
+      ]).catch(() => {
+        // Ignore transient read failures for patch map polling.
       }).finally(() => {
         usbReturnPatchSyncInFlightRef.current = false;
       });
@@ -6971,6 +7273,7 @@ function App() {
         await syncAllGroupStates({
           ignoreConnectionState: true,
           suppressManagedMuteWrites: true,
+          channelTotal: targetChannelCount,
         });
       });
 
@@ -7552,9 +7855,23 @@ function App() {
     const nextValue = !current.usbInputOn;
     const expectedRawValue = nextValue ? 0 : 1;
     const controlChannel = resolveInputSourceControlChannel(channelNumber);
+    if (controlChannel === null) {
+      setStatus("Canal sem rota valida de entrada no Patching (use CH 1..32).");
+      return;
+    }
     const sourceParam = inputSourceParam(controlChannel);
 
-    client.setInputSource(controlChannel, nextValue ? "usb" : "input");
+    try {
+      client.setInputSource(controlChannel, nextValue ? "usb" : "input");
+    } catch (error) {
+      setStatus(
+        error instanceof Error
+          ? error.message
+          : "Falha ao alternar INPUT/USB deste canal."
+      );
+      return;
+    }
+
     updateChannelState(channelNumber, { usbInputOn: nextValue });
 
     try {
@@ -7574,6 +7891,262 @@ function App() {
     } catch {
       setStatus("Falha ao confirmar INPUT/USB na mesa.");
     }
+  }
+
+  async function applyExclusivePatchRoute(
+    mapRef: { current: Map<number, number> },
+    baseParam: number,
+    fullSize: number,
+    visibleSize: number,
+    destination: number,
+    source: number,
+    setVisibleRoutes: (routes: number[]) => void
+  ) {
+    const client = clientRef.current;
+    if (!client || !isConnected || !isAx32ProfileActive()) return;
+
+    const normalizedDestination = Math.round(destination);
+    const normalizedSource = Math.max(0, Math.min(fullSize, Math.round(source)));
+
+    if (normalizedDestination < 1 || normalizedDestination > visibleSize) return;
+
+    const current = mapRef.current.get(normalizedDestination) ?? normalizedDestination;
+    if (current === normalizedSource) return;
+
+    const nextMap = new Map(mapRef.current);
+    const conflictingDestination =
+      normalizedSource > 0
+        ? Array.from({ length: visibleSize }, (_, index) => index + 1).find(
+            (candidate) =>
+              candidate !== normalizedDestination &&
+              (nextMap.get(candidate) ?? candidate) === normalizedSource
+          )
+        : undefined;
+
+    if (conflictingDestination !== undefined) {
+      client.sendParam(baseParam + (conflictingDestination - 1), 0);
+      nextMap.set(conflictingDestination, 0);
+    }
+
+    client.sendParam(baseParam + (normalizedDestination - 1), normalizedSource);
+    nextMap.set(normalizedDestination, normalizedSource);
+
+    mapRef.current = nextMap;
+    setVisibleRoutes(
+      Array.from({ length: visibleSize }, (_, index) => {
+        const visibleDestination = index + 1;
+        return nextMap.get(visibleDestination) ?? visibleDestination;
+      })
+    );
+  }
+
+  async function applyExclusiveUsbInputToUsbPatchRoute(
+    destination: number,
+    source: number
+  ) {
+    const client = clientRef.current;
+    if (!client || !isConnected || !isAx32ProfileActive()) return;
+
+    const normalizedDestination = Math.round(destination);
+    const normalizedSource = Math.max(
+      0,
+      Math.min(AX32_USB_PATCH_VISIBLE_SIZE, Math.round(source))
+    );
+
+    if (
+      normalizedDestination < 1 ||
+      normalizedDestination > AX32_USB_PATCH_VISIBLE_SIZE
+    ) {
+      return;
+    }
+
+    const currentSource = usbInputToUsbPatchMapRef.current.get(normalizedDestination) ?? 0;
+    if (currentSource === normalizedSource) return;
+
+    const nextMap = new Map(usbInputToUsbPatchMapRef.current);
+    const conflictingDestination =
+      normalizedSource > 0
+        ? Array.from({ length: AX32_USB_PATCH_VISIBLE_SIZE }, (_, index) => index + 1).find(
+            (candidate) =>
+              candidate !== normalizedDestination &&
+              (nextMap.get(candidate) ?? 0) === normalizedSource
+          )
+        : undefined;
+
+    if (conflictingDestination !== undefined) {
+      client.sendParam(AX32_USB_INPUT_TO_USB_PATCH_BASE + (conflictingDestination - 1), 0);
+      nextMap.set(conflictingDestination, 0);
+    }
+
+    client.sendParam(AX32_USB_INPUT_TO_USB_PATCH_BASE + (normalizedDestination - 1), normalizedSource);
+    nextMap.set(normalizedDestination, normalizedSource);
+
+    usbInputToUsbPatchMapRef.current = nextMap;
+    syncVisibleUsbInputToUsbRoutes(nextMap);
+  }
+
+  async function applyExclusiveUsbReturnPatchRoute(
+    destination: number,
+    source: number
+  ) {
+    const client = clientRef.current;
+    if (!client || !isConnected || !isAx32ProfileActive()) return;
+
+    const normalizedDestination = Math.round(destination);
+    const normalizedSource = Math.max(
+      0,
+      Math.min(AX32_USB_PATCH_VISIBLE_SIZE, Math.round(source))
+    );
+
+    if (
+      normalizedDestination < 1 ||
+      normalizedDestination > AX32_USB_PATCH_VISIBLE_SIZE
+    ) {
+      return;
+    }
+
+    const currentSource = usbReturnPatchMapRef.current.get(normalizedDestination) ?? 0;
+    if (currentSource === normalizedSource) return;
+
+    const nextMap = new Map(usbReturnPatchMapRef.current);
+
+    if (normalizedSource === 0) {
+      if (currentSource > 0) {
+        client.sendParam(AX32_USB_RETURN_PATCH_BASE + (currentSource - 1), 0);
+      }
+      nextMap.set(normalizedDestination, 0);
+    } else {
+      const conflictingDestination = Array.from(
+        { length: AX32_USB_PATCH_VISIBLE_SIZE },
+        (_, index) => index + 1
+      ).find(
+        (candidate) =>
+          candidate !== normalizedDestination &&
+          (nextMap.get(candidate) ?? 0) === normalizedSource
+      );
+
+      if (currentSource > 0 && currentSource !== normalizedSource) {
+        client.sendParam(AX32_USB_RETURN_PATCH_BASE + (currentSource - 1), 0);
+      }
+
+      if (conflictingDestination !== undefined) {
+        nextMap.set(conflictingDestination, 0);
+      }
+
+      client.sendParam(AX32_USB_RETURN_PATCH_BASE + (normalizedSource - 1), normalizedDestination);
+      nextMap.set(normalizedDestination, normalizedSource);
+    }
+
+    usbReturnPatchMapRef.current = nextMap;
+    syncVisibleUsbReturnRoutes(nextMap);
+    await refreshResolvedInputSourceStates();
+  }
+
+  async function applyExclusivePhysicalInputPatchRoute(
+    destination: number,
+    source: number
+  ) {
+    const client = clientRef.current;
+    if (!client || !isConnected || !isAx32ProfileActive()) return;
+
+    const normalizedDestination = Math.round(destination);
+    const normalizedSource = Math.max(
+      0,
+      Math.min(AX32_PHYSICAL_INPUT_PATCH_SIZE, Math.round(source))
+    );
+
+    if (
+      normalizedDestination < 1 ||
+      normalizedDestination > AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE
+    ) {
+      return;
+    }
+
+    const currentSource =
+      ax32PhysicalInputPatchMapRef.current.get(normalizedDestination) ?? 0;
+
+    if (currentSource === normalizedSource) return;
+
+    const nextMap = new Map(ax32PhysicalInputPatchMapRef.current);
+
+    if (normalizedSource === 0) {
+      if (currentSource > 0) {
+        client.sendParam(
+          AX32_PHYSICAL_INPUT_PATCH_BASE + (currentSource - 1),
+          0
+        );
+      }
+      nextMap.set(normalizedDestination, 0);
+    } else {
+      const conflictingDestination = Array.from(
+        { length: AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE },
+        (_, index) => index + 1
+      ).find(
+        (candidate) =>
+          candidate !== normalizedDestination &&
+          (nextMap.get(candidate) ?? 0) === normalizedSource
+      );
+
+      if (currentSource > 0 && currentSource !== normalizedSource) {
+        client.sendParam(
+          AX32_PHYSICAL_INPUT_PATCH_BASE + (currentSource - 1),
+          0
+        );
+      }
+
+      if (conflictingDestination !== undefined) {
+        nextMap.set(conflictingDestination, 0);
+      }
+
+      client.sendParam(
+        AX32_PHYSICAL_INPUT_PATCH_BASE + (normalizedSource - 1),
+        normalizedDestination
+      );
+      nextMap.set(normalizedDestination, normalizedSource);
+    }
+
+    ax32PhysicalInputPatchMapRef.current = nextMap;
+    setInputPatchRoutes(
+      Array.from({ length: AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE }, (_, index) => {
+        const visibleDestination = index + 1;
+        return nextMap.get(visibleDestination) ?? 0;
+      })
+    );
+  }
+
+  function handleInputPatchRouteChange(destination: number, source: number) {
+    void applyExclusivePhysicalInputPatchRoute(
+      destination,
+      source
+    ).catch(() => {
+      setStatus("Falha ao atualizar patch de entrada.");
+    });
+  }
+
+  function handleUsbInputToUsbRouteChange(destination: number, source: number) {
+    void applyExclusiveUsbInputToUsbPatchRoute(destination, source).catch(() => {
+      setStatus("Falha ao atualizar Input to USB.");
+    });
+  }
+
+  function handleUsbReturnRouteChange(destination: number, source: number) {
+    void applyExclusiveUsbReturnPatchRoute(destination, source).catch(() => {
+      setStatus("Falha ao atualizar USB Return.");
+    });
+  }
+
+  function handleOutputPatchRouteChange(destination: number, source: number) {
+    void applyExclusivePatchRoute(
+      ax32OutputPatchMapRef,
+      AX32_OUTPUT_PATCH_BASE,
+      AX32_OUTPUT_PATCH_SIZE,
+      AX32_OUTPUT_PATCH_VISIBLE_SIZE,
+      destination,
+      source,
+      setOutputPatchRoutes
+    ).catch(() => {
+      setStatus("Falha ao atualizar patch de saida.");
+    });
   }
 
   function handleFaderChange(channelNumber: number, position: number) {
@@ -10904,7 +11477,7 @@ function App() {
           <div className="settings-dropdown-wrap">
             <button
               type="button"
-              className={`settings-gear-btn ${settingsDropdownOpen || (!detailView && mainView === "scenes") ? "settings-gear-btn--active" : ""}`}
+              className={`settings-gear-btn ${settingsDropdownOpen || (!detailView && (mainView === "scenes" || mainView === "patching")) ? "settings-gear-btn--active" : ""}`}
               title="Settings"
               onClick={() => setSettingsDropdownOpen((v) => !v)}
             >
@@ -10915,6 +11488,17 @@ function App() {
             </button>
             {settingsDropdownOpen && (
               <div className="settings-dropdown">
+                <button
+                  type="button"
+                  className={`settings-dropdown__item ${!detailView && mainView === "patching" ? "settings-dropdown__item--active" : ""}`}
+                  onClick={() => {
+                    setMainView("patching");
+                    setDetailView(null);
+                    setSettingsDropdownOpen(false);
+                  }}
+                >
+                  Patching
+                </button>
                 <button
                   type="button"
                   className={`settings-dropdown__item ${!detailView && mainView === "scenes" ? "settings-dropdown__item--active" : ""}`}
@@ -10966,6 +11550,8 @@ function App() {
                 ? <div className="global-view-shell"><DcaGroupsView isConnected={isConnected} channelCount={channelCount} groups={dcaGroups} onToggleEnabled={handleDcaGroupToggleEnabled} onMembersChange={handleDcaGroupMembersChange} onClear={handleDcaGroupClear} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} dcaNames={dcaNames} dcaColorIds={dcaColorIds} /></div>
             : mainView === "muteGroups"
                 ? <div className="global-view-shell"><MuteGroupsView isConnected={isConnected} channelCount={channelCount} groups={muteGroups} onToggleActive={handleMuteGroupToggleActive} onMembersChange={handleMuteGroupMembersChange} onClear={handleMuteGroupClear} onAllMuted={handleMuteGroupAllMuted} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} /></div>
+            : mainView === "patching"
+              ? <div className="global-view-shell"><PatchingView isConnected={isConnected} isAx32ProfileActive={isAx32ProfileActive()} channelCount={channelCount} usbInputToUsbRoutes={usbInputToUsbRoutes} usbReturnRoutes={usbReturnRoutes} inputRoutes={inputPatchRoutes} outputRoutes={outputPatchRoutes} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} onUsbInputToUsbRouteChange={handleUsbInputToUsbRouteChange} onUsbReturnRouteChange={handleUsbReturnRouteChange} onInputRouteChange={handleInputPatchRouteChange} onOutputRouteChange={handleOutputPatchRouteChange} /></div>
             : mainView === "scenes"
               ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} cacheScopeKey={activeMixerCacheIdentity} onCallScene={handleSceneCall} onSaveScene={handleSceneSave} /></div>
         : <section className="mixer-layout">

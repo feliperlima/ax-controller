@@ -9,7 +9,7 @@ import {
 
 type GroupStripProps = {
   kind: "dca" | "mute";
-  groupId: 1 | 2 | 3 | 4;
+  groupId: number;
   groupName: string;
   memberCount: number;
   active: boolean;
@@ -18,8 +18,8 @@ type GroupStripProps = {
   accentColor?: string;
   onToggleActive: () => void;
   onFaderChange?: (value: number) => void;
-  onOpenDetail?: (groupId: 1 | 2 | 3 | 4) => void;
-  onOpenEditMenu?: (groupId: 1 | 2 | 3 | 4) => void;
+  onOpenDetail?: (groupId: number) => void;
+  onOpenEditMenu?: (groupId: number) => void;
 };
 
 const DCA_FADER_TRACK_WIDTH = 23;
