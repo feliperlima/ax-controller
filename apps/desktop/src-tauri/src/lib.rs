@@ -91,6 +91,41 @@ struct LicenseValidateResponse {
     body: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LicenseApiRequestPayload {
+    method: String,
+    url: String,
+    body: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LicenseApiResponse {
+    status_code: u16,
+    body: serde_json::Value,
+    raw_body: String,
+}
+
+static LICENSE_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn license_http_client() -> Result<&'static reqwest::Client, String> {
+    if let Some(client) = LICENSE_HTTP_CLIENT.get() {
+        return Ok(client);
+    }
+
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|error| format!("client build error: {error}"))?;
+
+    let _ = LICENSE_HTTP_CLIENT.set(client);
+    LICENSE_HTTP_CLIENT
+        .get()
+        .ok_or_else(|| "failed to initialize license http client".to_string())
+}
+
 fn strip_html(value: &str) -> String {
     let tag_regex = Regex::new(r"<[^>]+>").expect("valid html tag regex");
 
@@ -1047,10 +1082,7 @@ async fn discover_mixers(preferred_ips: Option<Vec<String>>) -> Result<Vec<Disco
 
 #[tauri::command]
 async fn validate_license(payload: LicenseValidatePayload) -> Result<LicenseValidateResponse, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|error| format!("client build error: {error}"))?;
+    let client = license_http_client()?;
 
     let response = client
         .post("https://axcontrol.com.br/api/license/validate.php")
@@ -1081,12 +1113,63 @@ async fn validate_license(payload: LicenseValidatePayload) -> Result<LicenseVali
     Ok(LicenseValidateResponse { status_code, body })
 }
 
+#[tauri::command]
+async fn license_api_request(payload: LicenseApiRequestPayload) -> Result<LicenseApiResponse, String> {
+    let client = license_http_client()?;
+    let method = payload.method.trim().to_uppercase();
+    let url = payload.url.trim();
+
+    if url.is_empty() {
+        return Err("request error: empty url".to_string());
+    }
+
+    let request = match method.as_str() {
+        "GET" => client.get(url),
+        "POST" => client.post(url),
+        other => return Err(format!("request error: unsupported method {other}")),
+    };
+
+    let request = request.header("Content-Type", "application/json");
+    let request = if method == "POST" {
+        if let Some(body) = payload.body {
+            request.json(&body)
+        } else {
+            request
+        }
+    } else {
+        request
+    };
+
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("request error: {error}"))?;
+
+    let status_code = response.status().as_u16();
+    let raw_body = response
+        .text()
+        .await
+        .map_err(|error| format!("read body error: {error}"))?;
+
+    let body = serde_json::from_str::<serde_json::Value>(&raw_body)
+        .unwrap_or_else(|_| serde_json::json!({
+            "status": "error",
+            "message": raw_body,
+        }));
+
+    Ok(LicenseApiResponse {
+        status_code,
+        body,
+        raw_body,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_websocket::init())
-        .invoke_handler(tauri::generate_handler![discover_mixers, validate_license])
+        .invoke_handler(tauri::generate_handler![discover_mixers, validate_license, license_api_request])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

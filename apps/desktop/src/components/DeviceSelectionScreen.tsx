@@ -177,7 +177,7 @@ export function DeviceSelectionScreen({
             </p>
           </section>
           <div className="device-selection-grid device-selection-grid--reference">
-            <section className="startup-card device-selection-panel">
+            <section className="startup-card device-selection-panel device-selection-panel--discovery">
               <div className="device-selection-panel__header">
                 <h2 className="device-selection-panel__title">Mesas encontradas</h2>
                 <div className="device-selection-status">
@@ -232,7 +232,7 @@ export function DeviceSelectionScreen({
                   className="device-input"
                   value={manualIp}
                   onChange={(event) => setManualIp(event.target.value)}
-                  placeholder="192.168.1.75"
+                  placeholder="Informe o IP da Mesa"
                   inputMode="decimal"
                   autoComplete="off"
                   spellCheck={false}

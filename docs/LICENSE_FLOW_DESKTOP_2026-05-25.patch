@@ -1,0 +1,2489 @@
+diff --git a/apps/desktop/src/App.tsx b/apps/desktop/src/App.tsx
+index babbed0..a1a6f3f 100644
+--- a/apps/desktop/src/App.tsx
++++ b/apps/desktop/src/App.tsx
+@@ -86,7 +86,6 @@ import {
+   dcaValueToPosition,
+   dcaAccentColorFromId,
+   getDcaIdsForChannelCount,
+-  getMuteIdsForChannelCount,
+   type AssignableMemberId,
+   type DcaGroupState,
+   type MuteGroupState,
+@@ -105,6 +104,22 @@ import {
+   type SendStripView,
+   type SendTapPoint,
+ } from "./components/ChannelProcessors";
++import {
++  type LicenseDevice,
++  type LicenseFormalState,
++  type LicenseSnapshot,
++  type RuntimeLicenseCache,
++  isLicenseStateBlocked,
++  parseLicenseSnapshot,
++  resolveLicenseFormalState,
++} from "./lib/licenseState";
++import {
++  clearRuntimeLicenseCacheFromStorage,
++  computeNextRevalidationAt,
++  readRuntimeLicenseCacheFromStorage,
++  resolveBootDecision,
++  writeRuntimeLicenseCacheToStorage,
++} from "./lib/licenseEngine";
+ 
+ type ChannelState = {
+   muted: boolean;
+@@ -337,6 +352,14 @@ function getFxBusCount() {
+   return isAx32ProfileActive() ? AX32_FX_COUNT : AX16_24_FX_COUNT;
+ }
+ 
++function getDcaIdsForActiveProfile(): DcaGroupId[] {
++  return isAx32ProtocolProfile(ACTIVE_CHANNEL_PROFILE) ? [1, 2, 3, 4, 5, 6, 7, 8] : [1, 2, 3, 4];
++}
++
++function getMuteIdsForActiveProfile(): MuteGroupId[] {
++  return isAx32ProtocolProfile(ACTIVE_CHANNEL_PROFILE) ? [1, 2, 3, 4, 5, 6] : [1, 2, 3, 4];
++}
++
+ function faderPositionToDb(position: number) {
+   const points = [
+     { pos: 0, db: -120 },
+@@ -808,11 +831,16 @@ const DCA_NAMES_STORAGE_KEY_BASE = "ax_dca_group_names";
+ const DCA_COLOR_IDS_STORAGE_KEY_BASE = "ax_dca_group_color_ids";
+ const LICENSE_ACTIVATED_ONCE_STORAGE_KEY = "ax_license_activated_once";
+ const LICENSE_STATUS_STORAGE_KEY = "ax_license_status";
++const LICENSE_RUNTIME_CACHE_STORAGE_KEY = "ax_license_runtime_cache_v2";
+ const LICENSE_KEY_STORAGE_KEY = "ax_license_key_last";
+ const LICENSE_REVALIDATE_INTERVAL_DAYS = 30;
+ const LICENSE_REVALIDATE_WARNING_DAYS = 5;
+ const LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS = 2 * 60 * 1000;
+ const LICENSE_STRICT_SERVER_VALIDATION = true;
++const LICENSE_API_BASE_URL = (import.meta.env.VITE_LICENSE_API_BASE_URL ?? "").trim();
++const SUPPORT_WHATSAPP = (import.meta.env.VITE_SUPPORT_WHATSAPP ?? "").trim();
++const SUPPORT_EMAIL = (import.meta.env.VITE_SUPPORT_EMAIL ?? "").trim();
++const PORTAL_AUTH_TOKEN = (import.meta.env.VITE_PORTAL_AUTH_TOKEN ?? "").trim();
+ 
+ type CachedLicenseStatus = {
+   installationId: string;
+@@ -823,32 +851,6 @@ type CachedLicenseStatus = {
+   message: string;
+ };
+ 
+-function normalizeApiDateToIso(value: unknown): string | null {
+-  if (typeof value !== "string") return null;
+-
+-  const trimmed = value.trim();
+-  if (!trimmed) return null;
+-
+-  const parsedDirect = Date.parse(trimmed);
+-  if (!Number.isNaN(parsedDirect)) {
+-    return new Date(parsedDirect).toISOString();
+-  }
+-
+-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(trimmed)) {
+-    const normalized = `${trimmed.replace(" ", "T")}Z`;
+-    const parsedNormalized = Date.parse(normalized);
+-    if (!Number.isNaN(parsedNormalized)) {
+-      return new Date(parsedNormalized).toISOString();
+-    }
+-  }
+-
+-  return null;
+-}
+-
+-function addDaysToIso(isoDate: string, days: number) {
+-  return new Date(Date.parse(isoDate) + days * 24 * 60 * 60 * 1000).toISOString();
+-}
+-
+ function readCachedLicenseStatus(): CachedLicenseStatus | null {
+   const raw = localStorage.getItem(LICENSE_STATUS_STORAGE_KEY);
+   if (!raw) return null;
+@@ -1052,6 +1054,31 @@ function buildLicenseExpiryHint(cached: CachedLicenseStatus | null, installation
+   return "";
+ }
+ 
++function readRuntimeLicenseCache(): RuntimeLicenseCache | null {
++  return readRuntimeLicenseCacheFromStorage(LICENSE_RUNTIME_CACHE_STORAGE_KEY);
++}
++
++function writeRuntimeLicenseCache(cache: RuntimeLicenseCache) {
++  writeRuntimeLicenseCacheToStorage(LICENSE_RUNTIME_CACHE_STORAGE_KEY, cache);
++}
++
++function clearRuntimeLicenseCache() {
++  clearRuntimeLicenseCacheFromStorage(LICENSE_RUNTIME_CACHE_STORAGE_KEY);
++}
++
++function buildLicenseApiUrl(path: string) {
++  if (!LICENSE_API_BASE_URL) return "";
++  const base = LICENSE_API_BASE_URL.endsWith("/") ? LICENSE_API_BASE_URL.slice(0, -1) : LICENSE_API_BASE_URL;
++  const suffix = path.startsWith("/") ? path : `/${path}`;
++  return `${base}${suffix}`;
++}
++
++function normalizeLicenseApiPayload(payload: Record<string, unknown>): Record<string, unknown> {
++  const body = payload && typeof payload === "object" ? payload : {};
++  const data = body.data;
++  return data && typeof data === "object" ? (data as Record<string, unknown>) : body;
++}
++
+ type ColorScope = "input" | "aux" | "fx" | "master";
+ 
+ function clampColorId(colorId: number) {
+@@ -1268,21 +1295,16 @@ const GLOBAL_CONTROL_FAST_POLL_INTERVAL_MIXER_MS = 280;
+ const GLOBAL_CONTROL_FAST_POLL_INTERVAL_DETAIL_MS = 420;
+ const GLOBAL_CONTROL_FAST_POLL_INTERVAL_OTHER_MS = 650;
+ const GLOBAL_CONTROL_POLL_INTERVAL_MS = 2400;
+-const USB_RETURN_PATCH_POLL_INTERVAL_MS = 6200;
++const USB_RETURN_PATCH_POLL_INTERVAL_MS = 4200;
+ const LOCAL_WRITE_ECHO_SUPPRESSION_MS = 900;
+ const AX16_24_READ_TIMEOUT_MS = 1400;
+ const AX16_24_BATCH_CHANNEL_CHUNK = 30;
+ const AX16_24_BATCH_AUX_CHUNK = 28;
+ const AX16_24_FAST_CHANNEL_CHUNK = 34;
+ const SEND_PRE_FADER_FLAG = 32768;
+-const AX32_PHYSICAL_INPUT_PATCH_BASE = 2693;
+-const AX32_PHYSICAL_INPUT_PATCH_SIZE = 34;
+-const AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE = 32;
+-const AX32_USB_INPUT_TO_USB_PATCH_BASE = 2533;
+-const AX32_USB_INPUT_TO_USB_PATCH_SIZE = 32;
+-const AX32_USB_RETURN_PATCH_BASE = 2565;
+-const AX32_USB_RETURN_PATCH_SIZE = 32;
+-const AX32_USB_PATCH_VISIBLE_SIZE = 32;
++const AX32_INPUT_PATCH_BASE = 2693;
++const AX32_INPUT_PATCH_SIZE = 34;
++const AX32_INPUT_PATCH_VISIBLE_SIZE = 32;
+ const AX32_OUTPUT_PATCH_BASE = 4855;
+ const AX32_OUTPUT_PATCH_SIZE = 18;
+ const AX32_OUTPUT_PATCH_VISIBLE_SIZE = 14;
+@@ -2094,6 +2116,7 @@ function App() {
+   const [connectionError, setConnectionError] = useState<string | null>(null);
+   const [licenseModalOpen, setLicenseModalOpen] = useState(false);
+   const [licenseModalMandatory, setLicenseModalMandatory] = useState(false);
++  const [licenseModalMode, setLicenseModalMode] = useState<"onboarding" | "settings">("onboarding");
+   const [installationId, setInstallationId] = useState("");
+   const [licenseKeyInput, setLicenseKeyInput] = useState("");
+   const [licenseValidationBusy, setLicenseValidationBusy] = useState(false);
+@@ -2102,6 +2125,16 @@ function App() {
+     text: "",
+   });
+   const [isLicenseValidated, setIsLicenseValidated] = useState(false);
++  const [licenseFormalState, setLicenseFormalState] = useState<LicenseFormalState>("LICENSE_NOT_FOUND");
++  const [licenseNextRevalidationAt, setLicenseNextRevalidationAt] = useState<string | null>(null);
++  const [licenseTrialExpiryAt, setLicenseTrialExpiryAt] = useState<string | null>(null);
++  const [licenseDevices, setLicenseDevices] = useState<LicenseDevice[]>([]);
++  const [licenseDevicesLoading, setLicenseDevicesLoading] = useState(false);
++  const [licenseDeviceActionBusy, setLicenseDeviceActionBusy] = useState<string | null>(null);
++  const [licenseRegisterBusy, setLicenseRegisterBusy] = useState(false);
++  const [licenseRegisterWantsUpgrade, setLicenseRegisterWantsUpgrade] = useState(false);
++  const [portalActivationsLoading, setPortalActivationsLoading] = useState(false);
++  const [portalActivations, setPortalActivations] = useState<Array<{ deviceId: string; deviceName: string; platform: string; active: boolean }>>([]);
+   const [hasLicenseActivatedOnce, setHasLicenseActivatedOnce] = useState(false);
+   const [licenseRevalidationHint, setLicenseRevalidationHint] = useState("");
+   const [isOnline, setIsOnline] = useState(() =>
+@@ -2110,16 +2143,16 @@ function App() {
+   const [mainView, setMainView] = useState<MainView>("mixer");
+   const [settingsDropdownOpen, setSettingsDropdownOpen] = useState(false);
+   const [inputPatchRoutes, setInputPatchRoutes] = useState<number[]>(() =>
+-    createIdentityRoutes(AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE)
++    createIdentityRoutes(AX32_INPUT_PATCH_VISIBLE_SIZE)
+   );
+   const [outputPatchRoutes, setOutputPatchRoutes] = useState<number[]>(() =>
+     createIdentityRoutes(AX32_OUTPUT_PATCH_VISIBLE_SIZE)
+   );
+   const [usbInputToUsbRoutes, setUsbInputToUsbRoutes] = useState<number[]>(() =>
+-    createIdentityRoutes(AX32_USB_PATCH_VISIBLE_SIZE)
++    createIdentityRoutes(AX32_INPUT_PATCH_VISIBLE_SIZE)
+   );
+   const [usbReturnRoutes, setUsbReturnRoutes] = useState<number[]>(() =>
+-    createIdentityRoutes(AX32_USB_PATCH_VISIBLE_SIZE)
++    createIdentityRoutes(AX32_INPUT_PATCH_VISIBLE_SIZE)
+   );
+   const [detailView, setDetailView] = useState<DetailView>(null);
+   const [customizationView, setCustomizationView] = useState<CustomizationView>(null);
+@@ -2219,7 +2252,6 @@ function App() {
+   const recentLocalParamWritesRef = useRef<Map<number, LocalParamWrite>>(new Map());
+   const localParamWriteUnsubscribeRef = useRef<(() => void) | null>(null);
+   const fastControlSyncInFlightRef = useRef(false);
+-  const ax32PhysicalInputPatchMapRef = useRef<Map<number, number>>(new Map());
+   const usbInputToUsbPatchMapRef = useRef<Map<number, number>>(new Map());
+   const usbReturnPatchMapRef = useRef<Map<number, number>>(new Map());
+   const ax32OutputPatchMapRef = useRef<Map<number, number>>(new Map());
+@@ -2285,10 +2317,16 @@ function App() {
+     }
+     const activatedOnce = localStorage.getItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY) === "1";
+     const cached = readCachedLicenseStatus();
++    const runtimeCache = readRuntimeLicenseCache();
+     const hasValidCache = isCacheValidForInstallation(cached, nextInstallationId);
+     const cacheExpired = isLicenseCacheExpired(cached, nextInstallationId);
+     const licenseExpiredByDate = isLicenseExpiredByDate(cached?.expiryDate ?? null);
+-    const nextValidated = hasValidCache && !cacheExpired && !licenseExpiredByDate;
++    const bootDecision = resolveBootDecision(runtimeCache, Date.now(), LICENSE_REVALIDATE_WARNING_DAYS);
++    const runtimeState = bootDecision.formalState;
++    const runtimeBlocked = bootDecision.isBlocked;
++    const nextValidated =
++      (hasValidCache && !cacheExpired && !licenseExpiredByDate && !runtimeBlocked) ||
++      bootDecision.isValidated;
+ 
+     if (storedLicenseKey && !activatedOnce) {
+       localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+@@ -2304,6 +2342,9 @@ function App() {
+ 
+     setHasLicenseActivatedOnce(activatedOnce || Boolean(storedLicenseKey));
+     setIsLicenseValidated(nextValidated);
++    setLicenseFormalState(runtimeState);
++    setLicenseTrialExpiryAt(runtimeCache?.trialExpiryAt ?? null);
++    setLicenseNextRevalidationAt(runtimeCache?.nextRevalidationAt ?? null);
+     if (hasValidCache) {
+       const expiryHint = buildLicenseExpiryHint(cached, nextInstallationId);
+       const revalidationHint = buildLicenseRevalidationHint(
+@@ -2322,17 +2363,27 @@ function App() {
+     if (!installationId || strictStartupValidationDoneRef.current) return;
+ 
+     const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
++    const runtimeCache = readRuntimeLicenseCache();
++    const bootDecision = resolveBootDecision(runtimeCache, Date.now(), LICENSE_REVALIDATE_WARNING_DAYS);
+     const cached = readCachedLicenseStatus();
+     const hasValidCache = isCacheValidForInstallation(cached, installationId);
+     const cacheExpired = isLicenseCacheExpired(cached, installationId);
+     const licenseExpiredByDate = isLicenseExpiredByDate(cached?.expiryDate ?? null);
+ 
++    if (!storedLicenseKey && runtimeCache && bootDecision.isValidated && runtimeCache.licenseType === "trial") {
++      setIsLicenseValidated(true);
++      setLicenseFormalState(bootDecision.formalState);
++      strictStartupValidationDoneRef.current = true;
++      return;
++    }
++
+     if (!storedLicenseKey) {
+       setLicenseValidationMessage({
+         kind: "error",
+         text: "Informe e valide a chave para liberar este dispositivo.",
+       });
+       setLicenseModalMandatory(true);
++      setLicenseModalMode("onboarding");
+       setLicenseModalOpen(true);
+       strictStartupValidationDoneRef.current = true;
+       return;
+@@ -2361,6 +2412,7 @@ function App() {
+             : "Conecte-se a internet para validar a licenca deste dispositivo.",
+       });
+       setLicenseModalMandatory(true);
++      setLicenseModalMode("onboarding");
+       setLicenseModalOpen(true);
+       return;
+     }
+@@ -2389,8 +2441,22 @@ function App() {
+     }
+ 
+     const cached = readCachedLicenseStatus();
++    const runtimeCache = readRuntimeLicenseCache();
+     const expiryHint = buildLicenseExpiryHint(cached, installationId);
+     const revalidationHint = buildLicenseRevalidationHint(cached, installationId, isOnline);
++    if (runtimeCache?.licenseType === "purchased" && runtimeCache.nextRevalidationAt) {
++      const dueMs = Date.parse(runtimeCache.nextRevalidationAt);
++      if (!Number.isNaN(dueMs)) {
++        const days = Math.ceil((dueMs - Date.now()) / (24 * 60 * 60 * 1000));
++        if (days <= LICENSE_REVALIDATE_WARNING_DAYS && days >= 0) {
++          setLicenseRevalidationHint(
++            days === 0 ? "Revalidacao da licenca vence hoje." : `Revalidacao da licenca em ${days} dia(s).`
++          );
++          return;
++        }
++      }
++    }
++
+     setLicenseRevalidationHint(expiryHint || revalidationHint);
+   }, [installationId, isLicenseValidated, isOnline]);
+ 
+@@ -2398,6 +2464,17 @@ function App() {
+     if (!installationId) return;
+ 
+     const checkExpiryFromCache = () => {
++      const runtimeCache = readRuntimeLicenseCache();
++      const bootDecision = resolveBootDecision(runtimeCache, Date.now(), LICENSE_REVALIDATE_WARNING_DAYS);
++      if (runtimeCache && bootDecision.isBlocked) {
++        localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
++        setIsLicenseValidated(false);
++        setLicenseFormalState(bootDecision.formalState);
++        setLicenseRevalidationHint("");
++        enforceLicenseBlock("Licenca expirada/revalidacao vencida. Revalide para continuar.");
++        return;
++      }
++
+       const cached = readCachedLicenseStatus();
+       if (!cached || !isCacheValidForInstallation(cached, installationId)) return;
+       if (!isLicenseExpiredByDate(cached.expiryDate)) return;
+@@ -2430,6 +2507,12 @@ function App() {
+     void runBackgroundLicenseRevalidation();
+   }, [isOnline, installationId]);
+ 
++  useEffect(() => {
++    if (!licenseModalOpen || licenseModalMode !== "settings") return;
++    void handleRefreshLicenseStatus();
++    void requestMyActivations();
++  }, [licenseModalMode, licenseModalOpen]);
++
+   useEffect(() => {
+     if (!isOnline || !installationId) return;
+ 
+@@ -2856,17 +2939,15 @@ function App() {
+     return assignableMemberIds.filter((member) => expanded.has(member));
+   }
+ 
+-  async function syncAllGroupStates(options?: { ignoreConnectionState?: boolean; suppressManagedMuteWrites?: boolean; channelTotal?: number }) {
++  async function syncAllGroupStates(options?: { ignoreConnectionState?: boolean; suppressManagedMuteWrites?: boolean }) {
+     const client = clientRef.current;
+     if (!client || (!isConnected && !options?.ignoreConnectionState)) {
+       lastAppliedMuteGroupsSignatureRef.current = "";
+       return;
+     }
+ 
+-    const syncChannelTotal = options?.channelTotal ?? channelCount;
+-    const assignableMemberIdsSnapshot = buildAssignableMemberIds(syncChannelTotal);
+-    const dcaIdsSnapshot = getDcaIdsForChannelCount(syncChannelTotal);
+-    const muteIdsSnapshot = getMuteIdsForChannelCount(syncChannelTotal);
++    const dcaIdsSnapshot = getDcaIdsForActiveProfile();
++    const muteIdsSnapshot = getMuteIdsForActiveProfile();
+ 
+     const params = [
+       ...dcaIdsSnapshot.flatMap((id) => [
+@@ -2919,7 +3000,7 @@ function App() {
+         const words = getDcaMemberParams(id).map((param) => values.get(param));
+         const nextMembers = words.every((word) => word !== undefined)
+           ? decodeGroupMembers(words as [number, number, number, number]).filter(
+-              (member): member is AssignableMemberId => assignableMemberIdsSnapshot.includes(member as AssignableMemberId)
++              (member): member is AssignableMemberId => assignableMemberIds.includes(member as AssignableMemberId)
+             )
+           : group.members;
+ 
+@@ -2939,7 +3020,7 @@ function App() {
+         const words = getMuteGroupMemberParams(id).map((param) => values.get(param));
+         const nextMembers = words.every((word) => word !== undefined)
+           ? decodeGroupMembers(words as [number, number, number, number]).filter(
+-              (member): member is AssignableMemberId => assignableMemberIdsSnapshot.includes(member as AssignableMemberId)
++              (member): member is AssignableMemberId => assignableMemberIds.includes(member as AssignableMemberId)
+             )
+           : group.members;
+ 
+@@ -2950,6 +3031,9 @@ function App() {
+         };
+       });
+ 
++      if (!options?.suppressManagedMuteWrites) {
++        applyManagedMutes(next, options);
++      }
+       return next;
+     });
+   }
+@@ -3006,7 +3090,7 @@ function App() {
+ 
+     const syncGroupStates = async () => {
+       try {
+-        await syncAllGroupStates({ suppressManagedMuteWrites: true, channelTotal: channelCount });
++        await syncAllGroupStates();
+       } catch {
+         // Ignore transient read failures.
+       }
+@@ -3298,14 +3382,6 @@ function App() {
+     setAuxInputSendTapPoints({});
+     setFxInputSendValues({});
+     setFxInputSendTapPoints({});
+-    setInputPatchRoutes(createIdentityRoutes(AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE));
+-    setOutputPatchRoutes(createIdentityRoutes(AX32_OUTPUT_PATCH_VISIBLE_SIZE));
+-    setUsbInputToUsbRoutes(createIdentityRoutes(AX32_USB_PATCH_VISIBLE_SIZE));
+-    setUsbReturnRoutes(createIdentityRoutes(AX32_USB_PATCH_VISIBLE_SIZE));
+-    ax32PhysicalInputPatchMapRef.current = new Map();
+-    ax32OutputPatchMapRef.current = new Map();
+-    usbInputToUsbPatchMapRef.current = new Map();
+-    usbReturnPatchMapRef.current = new Map();
+   }
+ 
+   function hydrateDcaCacheForMixer(mixerCacheIdentity: string | null, channelTotal: number) {
+@@ -3584,30 +3660,12 @@ function App() {
+     applyChannelProcessorStateFromValues(channelNumber, values, params);
+   }
+ 
+-  function getAx32PhysicalInputPatchParamsForActiveProfile() {
+-    if (!isAx32ProfileActive()) return [];
+-
+-    return Array.from(
+-      { length: AX32_PHYSICAL_INPUT_PATCH_SIZE },
+-      (_, index) => AX32_PHYSICAL_INPUT_PATCH_BASE + index
+-    );
+-  }
+-
+-  function getUsbInputToUsbPatchParamsForActiveProfile() {
+-    if (!isAx32ProfileActive()) return [];
+-
+-    return Array.from(
+-      { length: AX32_USB_INPUT_TO_USB_PATCH_SIZE },
+-      (_, index) => AX32_USB_INPUT_TO_USB_PATCH_BASE + index
+-    );
+-  }
+-
+   function getUsbReturnPatchParamsForActiveProfile() {
+     if (!isAx32ProfileActive()) return [];
+ 
+     return Array.from(
+-      { length: AX32_USB_RETURN_PATCH_SIZE },
+-      (_, index) => AX32_USB_RETURN_PATCH_BASE + index
++      { length: AX32_INPUT_PATCH_SIZE },
++      (_, index) => AX32_INPUT_PATCH_BASE + index
+     );
+   }
+ 
+@@ -3622,10 +3680,10 @@ function App() {
+ 
+   function syncVisibleInputPatchRoutes(nextPatchMap: Map<number, number>) {
+     const nextVisible = Array.from(
+-      { length: AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE },
++      { length: AX32_INPUT_PATCH_VISIBLE_SIZE },
+       (_, index) => {
+         const destination = index + 1;
+-        return nextPatchMap.get(destination) ?? 0;
++        return nextPatchMap.get(destination) ?? destination;
+       }
+     );
+     setInputPatchRoutes(nextVisible);
+@@ -3642,28 +3700,6 @@ function App() {
+     setOutputPatchRoutes(nextVisible);
+   }
+ 
+-  function syncVisibleUsbInputToUsbRoutes(nextPatchMap: Map<number, number>) {
+-    const nextVisible = Array.from(
+-      { length: AX32_USB_PATCH_VISIBLE_SIZE },
+-      (_, index) => {
+-        const destination = index + 1;
+-        return nextPatchMap.get(destination) ?? 0;
+-      }
+-    );
+-    setUsbInputToUsbRoutes(nextVisible);
+-  }
+-
+-  function syncVisibleUsbReturnRoutes(nextPatchMap: Map<number, number>) {
+-    const nextVisible = Array.from(
+-      { length: AX32_USB_PATCH_VISIBLE_SIZE },
+-      (_, index) => {
+-        const destination = index + 1;
+-        return nextPatchMap.get(destination) ?? 0;
+-      }
+-    );
+-    setUsbReturnRoutes(nextVisible);
+-  }
+-
+   function resolveInputSourceControlChannel(channelNumber: number) {
+     if (!isAx32ProfileActive()) {
+       return channelNumber;
+@@ -3678,7 +3714,7 @@ function App() {
+       return null;
+     }
+ 
+-    if (mappedChannel < 1 || mappedChannel > AX32_USB_RETURN_PATCH_SIZE) {
++    if (mappedChannel < 1 || mappedChannel > AX32_INPUT_PATCH_VISIBLE_SIZE) {
+       return null;
+     }
+ 
+@@ -3722,116 +3758,6 @@ function App() {
+     }
+   }
+ 
+-  async function syncAx32PhysicalInputPatchMap() {
+-    const client = clientRef.current;
+-    if (!client || !isConnected) return;
+-
+-    const patchParams = getAx32PhysicalInputPatchParamsForActiveProfile();
+-
+-    if (patchParams.length === 0) {
+-      if (ax32PhysicalInputPatchMapRef.current.size > 0) {
+-        ax32PhysicalInputPatchMapRef.current = new Map();
+-      }
+-      return;
+-    }
+-
+-    const response = await client.readParams(patchParams, 1200);
+-    const nextPatchMap = new Map<number, number>(
+-      Array.from(
+-        { length: AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE },
+-        (_, index) => [index + 1, 0]
+-      )
+-    );
+-
+-    response.forEach(({ param, value }) => {
+-      const sourceChannel = param - AX32_PHYSICAL_INPUT_PATCH_BASE + 1;
+-      if (sourceChannel < 1 || sourceChannel > AX32_PHYSICAL_INPUT_PATCH_SIZE) {
+-        return;
+-      }
+-
+-      const destinationChannel = Math.round(value);
+-      if (destinationChannel < 0 || destinationChannel > AX32_PHYSICAL_INPUT_PATCH_SIZE) {
+-        return;
+-      }
+-
+-      if (
+-        destinationChannel >= 1 &&
+-        destinationChannel <= AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE
+-      ) {
+-        nextPatchMap.set(destinationChannel, sourceChannel);
+-      }
+-    });
+-
+-    let changed = nextPatchMap.size !== ax32PhysicalInputPatchMapRef.current.size;
+-    if (!changed) {
+-      for (let destination = 1; destination <= AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE; destination += 1) {
+-        if (ax32PhysicalInputPatchMapRef.current.get(destination) !== nextPatchMap.get(destination)) {
+-          changed = true;
+-          break;
+-        }
+-      }
+-    }
+-
+-    if (!changed) {
+-      return;
+-    }
+-
+-    ax32PhysicalInputPatchMapRef.current = nextPatchMap;
+-    syncVisibleInputPatchRoutes(nextPatchMap);
+-  }
+-
+-  async function syncUsbInputToUsbPatchMap() {
+-    const client = clientRef.current;
+-    if (!client || !isConnected) return;
+-
+-    const patchParams = getUsbInputToUsbPatchParamsForActiveProfile();
+-    if (patchParams.length === 0) {
+-      if (usbInputToUsbPatchMapRef.current.size > 0) {
+-        usbInputToUsbPatchMapRef.current = new Map();
+-      }
+-      return;
+-    }
+-
+-    const response = await client.readParams(patchParams, 1200);
+-    const nextPatchMap = new Map<number, number>(
+-      Array.from(
+-        { length: AX32_USB_PATCH_VISIBLE_SIZE },
+-        (_, index) => [index + 1, 0]
+-      )
+-    );
+-
+-    response.forEach(({ param, value }) => {
+-      const inputChannel = param - AX32_USB_INPUT_TO_USB_PATCH_BASE + 1;
+-      if (inputChannel < 1 || inputChannel > AX32_USB_INPUT_TO_USB_PATCH_SIZE) {
+-        return;
+-      }
+-
+-      const usbBus = Math.round(value);
+-      if (usbBus < 0 || usbBus > AX32_USB_INPUT_TO_USB_PATCH_SIZE) {
+-        return;
+-      }
+-
+-      nextPatchMap.set(inputChannel, usbBus);
+-    });
+-
+-    let changed = nextPatchMap.size !== usbInputToUsbPatchMapRef.current.size;
+-    if (!changed) {
+-      for (let destination = 1; destination <= AX32_USB_PATCH_VISIBLE_SIZE; destination += 1) {
+-        if (usbInputToUsbPatchMapRef.current.get(destination) !== nextPatchMap.get(destination)) {
+-          changed = true;
+-          break;
+-        }
+-      }
+-    }
+-
+-    if (!changed) {
+-      return;
+-    }
+-
+-    usbInputToUsbPatchMapRef.current = nextPatchMap;
+-    syncVisibleUsbInputToUsbRoutes(nextPatchMap);
+-  }
+-
+   async function syncUsbReturnPatchMap(options?: { refreshInputStates?: boolean }) {
+     const client = clientRef.current;
+     if (!client || !isConnected) return;
+@@ -3846,33 +3772,30 @@ function App() {
+     }
+ 
+     const response = await client.readParams(patchParams, 1200);
+-    const nextPatchMap = new Map<number, number>(
+-      Array.from(
+-        { length: AX32_USB_PATCH_VISIBLE_SIZE },
+-        (_, index) => [index + 1, 0]
+-      )
+-    );
++    const nextPatchMap = new Map<number, number>();
+ 
+     response.forEach(({ param, value }) => {
+-      const usbReturnSource = param - AX32_USB_RETURN_PATCH_BASE + 1;
+-      if (usbReturnSource < 1 || usbReturnSource > AX32_USB_RETURN_PATCH_SIZE) {
++      const sourceChannel = param - AX32_INPUT_PATCH_BASE + 1;
++      if (sourceChannel < 1 || sourceChannel > AX32_INPUT_PATCH_SIZE) {
+         return;
+       }
+ 
+       const destinationChannel = Math.round(value);
+-      if (destinationChannel < 0 || destinationChannel > AX32_USB_RETURN_PATCH_SIZE) {
++      if (destinationChannel < 0 || destinationChannel > AX32_INPUT_PATCH_SIZE) {
+         return;
+       }
+ 
+-      if (destinationChannel >= 1 && destinationChannel <= AX32_USB_PATCH_VISIBLE_SIZE) {
+-        nextPatchMap.set(destinationChannel, usbReturnSource);
+-      }
++      nextPatchMap.set(destinationChannel, sourceChannel);
+     });
+ 
++    if (nextPatchMap.size === 0) {
++      return;
++    }
++
+     let changed = nextPatchMap.size !== usbReturnPatchMapRef.current.size;
+     if (!changed) {
+-      for (let destination = 1; destination <= AX32_USB_PATCH_VISIBLE_SIZE; destination += 1) {
+-        if (usbReturnPatchMapRef.current.get(destination) !== nextPatchMap.get(destination)) {
++      for (const [destination, source] of nextPatchMap.entries()) {
++        if (usbReturnPatchMapRef.current.get(destination) !== source) {
+           changed = true;
+           break;
+         }
+@@ -3880,14 +3803,11 @@ function App() {
+     }
+ 
+     if (!changed) {
+-      if (options?.refreshInputStates === true) {
+-        await refreshResolvedInputSourceStates();
+-      }
+       return;
+     }
+ 
+     usbReturnPatchMapRef.current = nextPatchMap;
+-    syncVisibleUsbReturnRoutes(nextPatchMap);
++    syncVisibleInputPatchRoutes(nextPatchMap);
+ 
+     if (options?.refreshInputStates !== false) {
+       await refreshResolvedInputSourceStates();
+@@ -6175,7 +6095,7 @@ function App() {
+       await syncChannelEqPreviewStates();
+       await syncAllStripNames({ forceFromMixer: forceNamesFromMixer });
+       await syncAllSoloStates();
+-      await syncAllGroupStates({ suppressManagedMuteWrites: true, channelTotal: channelCount });
++      await syncAllGroupStates();
+       await syncVisibleSendsState();
+     };
+ 
+@@ -6204,7 +6124,7 @@ function App() {
+         ["previews de EQ", syncChannelEqPreviewStates],
+         ["nomes", () => syncAllStripNames({ forceFromMixer: false })],
+         ["solos", syncAllSoloStates],
+-        ["grupos", () => syncAllGroupStates({ suppressManagedMuteWrites: true, channelTotal: channelCount })],
++        ["grupos", syncAllGroupStates],
+         ["sends visiveis", syncVisibleSendsState],
+       ];
+ 
+@@ -6571,8 +6491,6 @@ function App() {
+ 
+       usbReturnPatchSyncInFlightRef.current = true;
+       void Promise.all([
+-        syncAx32PhysicalInputPatchMap(),
+-        syncUsbInputToUsbPatchMap(),
+         syncUsbReturnPatchMap({ refreshInputStates: true }),
+         syncAx32OutputPatchMap(),
+       ]).catch(() => {
+@@ -7158,6 +7076,63 @@ function App() {
+     forcedProfile?: AxiosProtocolProfile,
+     forcedChannelCount?: number
+   ) {
++    const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
++    const runtimeCache = readRuntimeLicenseCache();
++    const bootDecision = resolveBootDecision(runtimeCache, Date.now(), LICENSE_REVALIDATE_WARNING_DAYS);
++    const allowsTrialWithoutKey = runtimeCache?.licenseType === "trial" && bootDecision.formalState === "TRIAL_ACTIVE";
++
++    if (!storedLicenseKey && !allowsTrialWithoutKey) {
++      setLicenseValidationMessage({
++        kind: "error",
++        text: "Valide a licenca antes de conectar ao mixer.",
++      });
++      openLicenseModal(true, "onboarding");
++      return false;
++    }
++
++    if (LICENSE_API_BASE_URL && installationId && isOnline && storedLicenseKey) {
++      try {
++        const snapshot = await requestLicenseStatus(false, storedLicenseKey);
++        if (snapshot) {
++          const formalState = resolveLicenseFormalState({
++            snapshot,
++            warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
++            fallbackTrialExpiryAt: licenseTrialExpiryAt,
++            fallbackNextRevalidationAt: licenseNextRevalidationAt,
++          });
++
++          applyLicenseSnapshot(snapshot, storedLicenseKey, snapshot.message || "Status de licenca atualizado.");
++
++          if (isLicenseStateBlocked(formalState)) {
++            setLicenseValidationMessage({
++              kind: "error",
++              text: snapshot.message || "Licenca revogada/suspensa neste dispositivo.",
++            });
++            openLicenseModal(true, "onboarding");
++            return false;
++          }
++        }
++      } catch {
++        if (LICENSE_STRICT_SERVER_VALIDATION) {
++          setLicenseValidationMessage({
++            kind: "error",
++            text: "Nao foi possivel validar online a licenca antes da conexao.",
++          });
++          openLicenseModal(true, "onboarding");
++          return false;
++        }
++      }
++    }
++
++    if ((!isLicenseValidated || isLicenseStateBlocked(licenseFormalState)) && !allowsTrialWithoutKey) {
++      setLicenseValidationMessage({
++        kind: "error",
++        text: "Valide a licenca antes de conectar ao mixer.",
++      });
++      openLicenseModal(true, "onboarding");
++      return false;
++    }
++
+     const normalizedIp = targetIp.trim();
+ 
+     if (!normalizedIp) {
+@@ -7228,6 +7203,7 @@ function App() {
+ 
+       if (!hasLicenseActivatedOnce && !LICENSE_STRICT_SERVER_VALIDATION) {
+         setLicenseModalMandatory(true);
++        setLicenseModalMode("onboarding");
+         setLicenseModalOpen(true);
+       }
+       mixerChannelsScrollLeftRef.current = 0;
+@@ -7273,7 +7249,6 @@ function App() {
+         await syncAllGroupStates({
+           ignoreConnectionState: true,
+           suppressManagedMuteWrites: true,
+-          channelTotal: targetChannelCount,
+         });
+       });
+ 
+@@ -7337,260 +7312,472 @@ function App() {
+     }
+   }
+ 
+-  function handleDisconnect() {
+-    stopMeterPolling();
+-    clearScheduledSendWrites();
+-    clearLocalParamWriteTracking();
++  function applyLicenseSnapshot(snapshot: LicenseSnapshot, licenseKey: string, sourceMessage?: string) {
++    const validatedAtIso = new Date().toISOString();
++    const resolvedTrialExpiryAt =
++      snapshot.licenseType === "trial"
++        ? snapshot.trialExpiryAt ?? new Date(Date.parse(validatedAtIso) + 7 * 24 * 60 * 60 * 1000).toISOString()
++        : snapshot.trialExpiryAt;
++    const resolvedNextRevalidationAt =
++      snapshot.licenseType === "purchased"
++        ? snapshot.nextRevalidationAt ?? computeNextRevalidationAt(validatedAtIso, LICENSE_REVALIDATE_INTERVAL_DAYS)
++        : snapshot.nextRevalidationAt;
++
++    const formalState = resolveLicenseFormalState({
++      snapshot: {
++        ...snapshot,
++        trialExpiryAt: resolvedTrialExpiryAt,
++        nextRevalidationAt: resolvedNextRevalidationAt,
++      },
++      warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
++      fallbackTrialExpiryAt: licenseTrialExpiryAt,
++      fallbackNextRevalidationAt: licenseNextRevalidationAt,
++    });
+ 
+-    clientRef.current?.disconnect();
+-    clientRef.current = null;
+-    setIsConnected(false);
+-    setConnectionError(null);
+-    setStatus("Desconectado");
+-    setDetailView(null);
+-    setMainView("mixer");
+-    setSettingsDropdownOpen(false);
+-    setAppStage("device-selection");
+-    setConnectingSource(null);
+-    setActiveMixerCacheIdentity(null);
+-    setLicenseModalOpen(false);
+-    setLicenseModalMandatory(false);
++    setLicenseFormalState(formalState);
++    setLicenseTrialExpiryAt(resolvedTrialExpiryAt);
++    setLicenseNextRevalidationAt(resolvedNextRevalidationAt);
++    setLicenseDevices(snapshot.devices);
++
++    const blocked = isLicenseStateBlocked(formalState);
++    setIsLicenseValidated(!blocked);
++
++    const cache: RuntimeLicenseCache = {
++      installationUuid: installationId,
++      licenseKey,
++      licenseType: snapshot.licenseType,
++      trialExpiryAt: resolvedTrialExpiryAt,
++      lastValidatedAt: validatedAtIso,
++      nextRevalidationAt: resolvedNextRevalidationAt,
++      cachedState: formalState,
++      feedbackMessage: sourceMessage ?? snapshot.message,
++    };
++    writeRuntimeLicenseCache(cache);
++
++    if (resolvedNextRevalidationAt) {
++      const pseudoCache: CachedLicenseStatus = {
++        installationId,
++        code: snapshot.code || "LICENSE_VALID",
++        validatedAt: cache.lastValidatedAt || validatedAtIso,
++        nextRevalidationAt: resolvedNextRevalidationAt,
++        expiryDate: resolvedTrialExpiryAt,
++        message: snapshot.message || "Licenca validada.",
++      };
++      localStorage.setItem(LICENSE_STATUS_STORAGE_KEY, JSON.stringify(pseudoCache));
++      const hintExpiry = buildLicenseExpiryHint(pseudoCache, installationId);
++      const hintRevalidation = buildLicenseRevalidationHint(pseudoCache, installationId, isOnline);
++      setLicenseRevalidationHint(hintExpiry || hintRevalidation);
++    } else {
++      setLicenseRevalidationHint("");
++    }
++
++    if (blocked) {
++      const blockingMessage =
++        sourceMessage ||
++        snapshot.message ||
++        (formalState === "TRIAL_EXPIRED"
++          ? "Periodo de teste expirado. Entre em contato para adquirir a licenca."
++          : "Licenca bloqueada. Revalide para continuar.");
++      enforceLicenseBlock(blockingMessage);
++    }
+   }
+ 
+-  function enforceLicenseBlock(message: string) {
+-    stopMeterPolling();
+-    clearScheduledSendWrites();
+-    clearLocalParamWriteTracking();
++  async function requestLicenseRegister(wantsUpgrade: boolean) {
++    if (!LICENSE_API_BASE_URL || !installationId) {
++      return null;
++    }
+ 
+-    clientRef.current?.disconnect();
+-    clientRef.current = null;
++    const endpoint = buildLicenseApiUrl("register.php");
++    if (!endpoint) return null;
+ 
+-    setIsConnected(false);
+-    setConnectionError(message);
+-    setStatus(message);
+-    setConnectingSource(null);
+-    setDetailView(null);
+-    setMainView("mixer");
+-    setSettingsDropdownOpen(false);
+-    setAppStage("device-selection");
+-    setLicenseModalMandatory(true);
+-    setLicenseModalOpen(true);
+-  }
++    const response = await fetch(endpoint, {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({
++        installation_uuid: installationId,
++        wants_upgrade: wantsUpgrade ? "1" : "0",
++      }),
++    });
+ 
+-  function openLicenseModal(mandatory = false) {
+-    setLicenseModalMandatory(mandatory);
+-    setLicenseValidationMessage({ kind: "idle", text: "" });
+-    setLicenseModalOpen(true);
+-    setSettingsDropdownOpen(false);
++    const payload = normalizeLicenseApiPayload((await response.json()) as Record<string, unknown>);
++    const returnedLicenseKey = typeof payload.license_key === "string" ? payload.license_key.trim() : "";
++    return {
++      snapshot: parseLicenseSnapshot(payload),
++      returnedLicenseKey,
++    };
+   }
+ 
+-  function closeLicenseModal() {
+-    if (licenseModalMandatory) return;
+-    setLicenseModalOpen(false);
++  async function requestLicenseValidateApi(licenseValue: string) {
++    if (!LICENSE_API_BASE_URL) return null;
++
++    const endpoint = buildLicenseApiUrl("validate.php");
++    if (!endpoint) return null;
++
++    const response = await fetch(endpoint, {
++      method: "POST",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({
++        license_key: licenseValue,
++        series: licenseValue,
++        device_id: installationId,
++        device_name: getDeviceNameLabel(),
++        platform: getPlatformLabel(),
++        app_version: APP_VERSION,
++      }),
++    });
++
++    const payload = normalizeLicenseApiPayload((await response.json()) as Record<string, unknown>);
++    return parseLicenseSnapshot(payload);
+   }
+ 
+-  async function handleCopyInstallationId() {
+-    if (!installationId) return;
+-    try {
+-      await navigator.clipboard.writeText(installationId);
+-      setLicenseValidationMessage({ kind: "success", text: "UUID copiado para a area de transferencia." });
+-    } catch {
+-      setLicenseValidationMessage({ kind: "error", text: "Nao foi possivel copiar o UUID." });
++  async function requestLicenseStatus(includeDevices = true, licenseKeyOverride?: string) {
++    const effectiveLicenseKey = (licenseKeyOverride ?? licenseKeyInput).trim();
++    if (!LICENSE_API_BASE_URL || !effectiveLicenseKey || !installationId) {
++      return null;
+     }
+-  }
+ 
+-  async function handleValidateLicense() {
+-    const licenseValue = licenseKeyInput.trim();
++    const endpoint = buildLicenseApiUrl("status.php");
++    if (!endpoint) return null;
+ 
+-    if (!licenseValue) {
+-      setLicenseValidationMessage({ kind: "error", text: "Informe a chave da licenca." });
+-      return;
+-    }
++    const query = new URLSearchParams({
++      license_key: effectiveLicenseKey,
++      series: installationId,
++      include_devices: includeDevices ? "1" : "0",
++    });
+ 
+-    if (!installationId) {
+-      setLicenseValidationMessage({ kind: "error", text: "UUID da instalacao indisponivel." });
+-      return;
++    let response = await fetch(`${endpoint}?${query.toString()}`, {
++      method: "GET",
++      headers: { "Content-Type": "application/json" },
++    });
++
++    if (!response.ok) {
++      response = await fetch(endpoint, {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({
++          license_key: effectiveLicenseKey,
++          series: installationId,
++          include_devices: includeDevices ? "1" : "0",
++        }),
++      });
+     }
+ 
+-    localStorage.setItem(LICENSE_KEY_STORAGE_KEY, licenseValue);
++    const payload = normalizeLicenseApiPayload((await response.json()) as Record<string, unknown>);
++    return parseLicenseSnapshot(payload);
++  }
+ 
+-    setLicenseValidationBusy(true);
+-    setLicenseValidationMessage({ kind: "idle", text: "" });
++  async function requestMyActivations() {
++    if (!LICENSE_API_BASE_URL || !PORTAL_AUTH_TOKEN) return;
++    const endpoint = buildLicenseApiUrl("my-activations.php");
++    if (!endpoint) return;
+ 
++    setPortalActivationsLoading(true);
+     try {
+-      const response = await invoke<{ statusCode: number; body: Record<string, unknown> }>("validate_license", {
+-        payload: {
+-          licenseKey: licenseValue,
+-          series: licenseValue,
+-          deviceId: installationId,
+-          deviceName: getDeviceNameLabel(),
+-          platform: getPlatformLabel(),
+-          appVersion: APP_VERSION,
++      const response = await fetch(endpoint, {
++        method: "GET",
++        headers: {
++          Authorization: `Bearer ${PORTAL_AUTH_TOKEN}`,
++          "Content-Type": "application/json",
+         },
+       });
++      const payload = normalizeLicenseApiPayload((await response.json()) as Record<string, unknown>);
++      const items = Array.isArray(payload.activations) ? payload.activations : [];
++      const normalized = items
++        .map((item) => {
++          const record = item && typeof item === "object" ? (item as Record<string, unknown>) : null;
++          if (!record) return null;
++          const deviceId = typeof record.device_id === "string" ? record.device_id : "";
++          if (!deviceId) return null;
++          return {
++            deviceId,
++            deviceName: typeof record.device_name === "string" ? record.device_name : "Dispositivo",
++            platform: typeof record.device_platform === "string" ? record.device_platform : "unknown",
++            active: record.active !== false,
++          };
++        })
++        .filter((item): item is { deviceId: string; deviceName: string; platform: string; active: boolean } => item !== null);
+ 
+-      const body = response.body ?? {};
+-      const nested = body.data;
+-      const scoped = nested && typeof nested === "object"
+-        ? (nested as Record<string, unknown>)
+-        : body;
+-
+-      const toBooleanish = (value: unknown): boolean | undefined => {
+-        if (typeof value === "boolean") return value;
+-        if (typeof value === "number") {
+-          if (value === 1) return true;
+-          if (value === 0) return false;
+-          return undefined;
+-        }
+-        if (typeof value === "string") {
+-          const normalized = value.trim().toLowerCase();
+-          if (["1", "true", "yes", "sim", "ok", "valid", "active", "ativo", "valida", "aprovada", "approved", "success"].includes(normalized)) {
+-            return true;
+-          }
+-          if (["0", "false", "no", "nao", "invalid", "inactive", "inativo", "invalida", "expirada", "revoked", "blocked", "error", "erro"].includes(normalized)) {
+-            return false;
+-          }
+-        }
+-        return undefined;
+-      };
++      setPortalActivations(normalized);
++    } catch {
++      setPortalActivations([]);
++    } finally {
++      setPortalActivationsLoading(false);
++    }
++  }
+ 
+-      const statusValue = String(scoped.status ?? body.status ?? "").trim().toLowerCase();
+-      const codeValue = String(scoped.code ?? body.code ?? "").trim().toUpperCase();
+-      const messageValue = String(scoped.message ?? body.message ?? "").trim();
+-      const successValue = toBooleanish(scoped.success ?? body.success);
+-
+-      const validValues: unknown[] = [
+-        scoped.valid,
+-        scoped.is_valid,
+-        scoped.license_valid,
+-        body.valid,
+-        body.is_valid,
+-        body.license_valid,
+-      ];
++  async function handleRefreshLicenseStatus() {
++    setLicenseDevicesLoading(true);
++    try {
++      const snapshot = await requestLicenseStatus(true);
++      if (!snapshot) {
++        setLicenseValidationMessage({ kind: "error", text: "Status indisponivel. Configure a URL da API de licenca." });
++        return;
++      }
+ 
+-      const activeValues: unknown[] = [
+-        scoped.active,
+-        scoped.is_active,
+-        scoped.license_active,
+-        body.active,
+-        body.is_active,
+-        body.license_active,
+-      ];
++      applyLicenseSnapshot(snapshot, licenseKeyInput.trim(), snapshot.message || "Status atualizado.");
++      setLicenseValidationMessage({ kind: "success", text: snapshot.message || "Status atualizado." });
++    } catch {
++      setLicenseValidationMessage({ kind: "error", text: "Falha ao consultar status da licenca." });
++    } finally {
++      setLicenseDevicesLoading(false);
++    }
++  }
+ 
+-      const validFlag = validValues.some((value) => toBooleanish(value) === true);
+-      const activeFlag = activeValues.some((value) => toBooleanish(value) === true);
+-      const invalidFlag = validValues.some((value) => toBooleanish(value) === false);
+-      const inactiveFlag = activeValues.some((value) => toBooleanish(value) === false);
++  async function handleRevokeLicenseDevice(targetDeviceId: string) {
++    if (!LICENSE_API_BASE_URL || !licenseKeyInput.trim() || !installationId || !targetDeviceId) return;
+ 
+-      const approvedByStatus = ["valid", "active", "approved", "ok", "success", "valida", "ativo", "aprovada"].includes(statusValue);
+-      const rejectedByStatus = ["invalid", "inactive", "error", "expired", "blocked", "revoked", "invalida", "inativo", "expirada"].includes(statusValue);
++    setLicenseDeviceActionBusy(targetDeviceId);
++    try {
++      const endpoint = buildLicenseApiUrl("revoke-device.php");
++      if (!endpoint) {
++        setLicenseValidationMessage({ kind: "error", text: "URL da API de licenca nao configurada." });
++        return;
++      }
+ 
+-      const messageLower = messageValue.toLowerCase();
+-      const approvedByMessage = ["licenca valida", "licenca ativa", "license valid", "license active", "validada com sucesso"].some((token) =>
+-        messageLower.includes(token)
+-      );
+-      const rejectedByMessage = ["licenca invalida", "licenca inativa", "expirada", "bloqueada", "invalid", "inactive", "expired", "revoked"].some((token) =>
+-        messageLower.includes(token)
+-      );
++      await fetch(endpoint, {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({
++          license_key: licenseKeyInput.trim(),
++          series: installationId,
++          device_id: targetDeviceId,
++        }),
++      });
+ 
+-      const hasSuccessSignal = validFlag || activeFlag || approvedByStatus || approvedByMessage;
+-      const hasRejectSignal = invalidFlag || inactiveFlag || rejectedByStatus || rejectedByMessage;
+-
+-      const approvedByCode = codeValue === "LICENSE_VALID";
+-      const approved =
+-        response.statusCode >= 200 &&
+-        response.statusCode < 300 &&
+-        successValue !== false &&
+-        approvedByCode &&
+-        hasSuccessSignal &&
+-        !hasRejectSignal;
+-
+-      const knownRejectCodes = new Set([
+-        "LICENSE_NOT_FOUND",
+-        "LICENSE_INACTIVE",
+-        "LICENSE_EXPIRED",
+-        "ACTIVATION_LIMIT_REACHED",
+-        "LICENSE_PENDING",
+-        "LICENSE_SUSPENDED",
+-        "LICENSE_BLOCKED",
+-      ]);
++      await handleRefreshLicenseStatus();
++      setLicenseValidationMessage({ kind: "success", text: "Dispositivo revogado com sucesso." });
++    } catch {
++      setLicenseValidationMessage({ kind: "error", text: "Falha ao revogar dispositivo." });
++    } finally {
++      setLicenseDeviceActionBusy(null);
++    }
++  }
+ 
+-      const codeMessageMap: Record<string, string> = {
+-        LICENSE_VALID: "Licenca valida.",
+-        LICENSE_NOT_FOUND: "Licenca nao encontrada.",
+-        LICENSE_INACTIVE: "Licenca inativa.",
+-        LICENSE_EXPIRED: "Licenca expirada.",
+-        ACTIVATION_LIMIT_REACHED: "Limite de ativacoes atingido.",
+-      };
++  async function handleCopyLicenseKey() {
++    const value = licenseKeyInput.trim();
++    if (!value) return;
+ 
+-      const licenseObject = scoped.license && typeof scoped.license === "object"
+-        ? (scoped.license as Record<string, unknown>)
+-        : body.license && typeof body.license === "object"
+-          ? (body.license as Record<string, unknown>)
+-          : null;
+-
+-      const serverTimeIso = normalizeApiDateToIso(scoped.server_time ?? body.server_time);
+-      const validatedAt = serverTimeIso ?? new Date().toISOString();
+-      const nextRevalidationAt = addDaysToIso(validatedAt, LICENSE_REVALIDATE_INTERVAL_DAYS);
+-      const expiryDate = normalizeApiDateToIso(licenseObject?.expiry_date ?? null);
+-      const isExpiredByDate = isLicenseExpiredByDate(expiryDate, Date.parse(validatedAt));
+-
+-      const feedbackMessage = messageValue || codeMessageMap[codeValue] || "Nao foi possivel validar a licenca.";
+-
+-      if (approved && !isExpiredByDate) {
+-        const cache: CachedLicenseStatus = {
+-          installationId,
+-          code: codeValue || "LICENSE_VALID",
+-          validatedAt,
+-          nextRevalidationAt,
+-          expiryDate,
+-          message: feedbackMessage,
+-        };
++    try {
++      await navigator.clipboard.writeText(value);
++      setLicenseValidationMessage({ kind: "success", text: "Chave de licenca copiada." });
++    } catch {
++      setLicenseValidationMessage({ kind: "error", text: "Nao foi possivel copiar a chave de licenca." });
++    }
++  }
+ 
+-        localStorage.setItem(LICENSE_STATUS_STORAGE_KEY, JSON.stringify(cache));
+-        localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
+-        localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+-        setHasLicenseActivatedOnce(true);
+-        setIsLicenseValidated(true);
+-        // License validated
+-        const expiryHint = buildLicenseExpiryHint(cache, installationId);
+-        const revalidationHint = buildLicenseRevalidationHint(cache, installationId, isOnline);
+-        setLicenseRevalidationHint(expiryHint || revalidationHint);
+-        setLicenseModalOpen(false);
+-        setLicenseModalMandatory(false);
+-        setLicenseValidationMessage({ kind: "success", text: feedbackMessage || "Licenca validada com sucesso." });
++  function buildLicenseRegistrationDraft() {
++    return [
++      "Solicitacao de cadastro/licenca - AX Controller",
++      `UUID: ${installationId || "indisponivel"}`,
++      `Dispositivo: ${getDeviceNameLabel()}`,
++      `Plataforma: ${getPlatformLabel()}`,
++      `Versao app: ${APP_VERSION}`,
++      `Data: ${new Date().toISOString()}`,
++    ].join("\n");
++  }
++
++  async function handleRequestLicenseRegistration() {
++    if (!installationId) {
++      setLicenseValidationMessage({ kind: "error", text: "UUID da instalacao indisponivel." });
++      return;
++    }
++
++    setLicenseRegisterBusy(true);
++    setLicenseValidationMessage({ kind: "idle", text: "" });
++    try {
++      const registered = await requestLicenseRegister(licenseRegisterWantsUpgrade);
++      if (registered) {
++        const returnedKey = registered.returnedLicenseKey || licenseKeyInput.trim();
++        if (returnedKey) {
++          localStorage.setItem(LICENSE_KEY_STORAGE_KEY, returnedKey);
++          setLicenseKeyInput(returnedKey);
++        }
++
++        applyLicenseSnapshot(
++          registered.snapshot,
++          returnedKey,
++          registered.snapshot.message || "Cadastro concluido. Trial iniciado."
++        );
++
++        if (!isLicenseStateBlocked(resolveLicenseFormalState({ snapshot: registered.snapshot }))) {
++          localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
++          setHasLicenseActivatedOnce(true);
++          setLicenseValidationMessage({
++            kind: "success",
++            text: registered.snapshot.message || "Cadastro concluido com sucesso.",
++          });
++          return;
++        }
++      }
++
++      const draft = buildLicenseRegistrationDraft();
++      try {
++        await navigator.clipboard.writeText(draft);
++      } catch {
++        // Se falhar copiar, ainda tentamos abrir canal de contato.
++      }
++
++      if (SUPPORT_WHATSAPP) {
++        const digits = SUPPORT_WHATSAPP.replace(/\D/g, "");
++        const url = `https://wa.me/${digits}?text=${encodeURIComponent(draft)}`;
++        window.open(url, "_blank", "noopener,noreferrer");
++        setLicenseValidationMessage({
++          kind: "success",
++          text: "Cadastro nao disponivel via API. Dados copiados e WhatsApp aberto.",
++        });
+         return;
+       }
+ 
+-      if (approved && isExpiredByDate) {
+-        localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+-        localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
+-        setIsLicenseValidated(false);
+-        // License expired
+-        setLicenseRevalidationHint("");
+-        setLicenseModalMandatory(true);
+-        setLicenseModalOpen(true);
++      if (SUPPORT_EMAIL) {
++        const subject = encodeURIComponent("Cadastro de licenca - AX Controller");
++        const body = encodeURIComponent(draft);
++        window.location.href = `mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`;
+         setLicenseValidationMessage({
+-          kind: "error",
+-          text: "Periodo de teste expirado. Entre em contato para adquirir a licenca.",
++          kind: "success",
++          text: "Cadastro nao disponivel via API. Dados copiados e e-mail aberto.",
+         });
+         return;
+       }
+ 
+-      const isPendingByMessage = messageValue.toLowerCase().includes("pendente");
++      setLicenseValidationMessage({
++        kind: "error",
++        text: "Cadastro indisponivel nesta API. Solicite criacao da licenca no admin.",
++      });
++    } catch {
++      setLicenseValidationMessage({ kind: "error", text: "Falha ao cadastrar licenca/trial." });
++    } finally {
++      setLicenseRegisterBusy(false);
++    }
++  }
+ 
+-      if (knownRejectCodes.has(codeValue) || isPendingByMessage) {
+-        localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+-        localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
+-        setIsLicenseValidated(false);
+-        setLicenseRevalidationHint("");
+-        setLicenseModalMandatory(true);
+-        setLicenseModalOpen(true);
++  function handleDisconnect() {
++    stopMeterPolling();
++    clearScheduledSendWrites();
++    clearLocalParamWriteTracking();
++
++    clientRef.current?.disconnect();
++    clientRef.current = null;
++    setIsConnected(false);
++    setConnectionError(null);
++    setStatus("Desconectado");
++    setDetailView(null);
++    setMainView("mixer");
++    setSettingsDropdownOpen(false);
++    setAppStage("device-selection");
++    setConnectingSource(null);
++    setActiveMixerCacheIdentity(null);
++    const blocked = isLicenseStateBlocked(licenseFormalState);
++    setLicenseModalMandatory(blocked);
++    setLicenseModalMode(blocked ? "onboarding" : "settings");
++    setLicenseModalOpen(blocked);
++  }
++
++  function enforceLicenseBlock(message: string) {
++    stopMeterPolling();
++    clearScheduledSendWrites();
++    clearLocalParamWriteTracking();
++
++    clientRef.current?.disconnect();
++    clientRef.current = null;
++
++    setIsConnected(false);
++    setConnectionError(message);
++    setStatus(message);
++    setConnectingSource(null);
++    setDetailView(null);
++    setMainView("mixer");
++    setSettingsDropdownOpen(false);
++    setAppStage("device-selection");
++    setLicenseModalMandatory(true);
++    setLicenseModalMode("onboarding");
++    setLicenseModalOpen(true);
++  }
++
++  function openLicenseModal(mandatory = false, mode: "onboarding" | "settings" = "settings") {
++    setLicenseModalMandatory(mandatory);
++    setLicenseModalMode(mandatory ? "onboarding" : mode);
++    setLicenseValidationMessage({ kind: "idle", text: "" });
++    setLicenseModalOpen(true);
++    setSettingsDropdownOpen(false);
++  }
++
++  function closeLicenseModal() {
++    if (licenseModalMandatory) return;
++    setLicenseModalOpen(false);
++  }
++
++  async function handleCopyInstallationId() {
++    if (!installationId) return;
++    try {
++      await navigator.clipboard.writeText(installationId);
++      setLicenseValidationMessage({ kind: "success", text: "UUID copiado para a area de transferencia." });
++    } catch {
++      setLicenseValidationMessage({ kind: "error", text: "Nao foi possivel copiar o UUID." });
++    }
++  }
++
++  async function handleValidateLicense() {
++    const licenseValue = licenseKeyInput.trim();
++
++    if (!licenseValue) {
++      setLicenseValidationMessage({ kind: "error", text: "Informe a chave da licenca." });
++      return;
++    }
++
++    if (!installationId) {
++      setLicenseValidationMessage({ kind: "error", text: "UUID da instalacao indisponivel." });
++      return;
++    }
++
++    localStorage.setItem(LICENSE_KEY_STORAGE_KEY, licenseValue);
++
++    setLicenseValidationBusy(true);
++    setLicenseValidationMessage({ kind: "idle", text: "" });
++
++    try {
++      let snapshot = await requestLicenseValidateApi(licenseValue);
++      if (!snapshot) {
++        const response = await invoke<{ statusCode: number; body: Record<string, unknown> }>("validate_license", {
++          payload: {
++            licenseKey: licenseValue,
++            series: licenseValue,
++            deviceId: installationId,
++            deviceName: getDeviceNameLabel(),
++            platform: getPlatformLabel(),
++            appVersion: APP_VERSION,
++          },
++        });
++        const payload = normalizeLicenseApiPayload(response.body ?? {});
++        snapshot = parseLicenseSnapshot(payload);
+       }
+ 
++      const formalState = resolveLicenseFormalState({
++        snapshot,
++        warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
++        fallbackTrialExpiryAt: licenseTrialExpiryAt,
++        fallbackNextRevalidationAt: licenseNextRevalidationAt,
++      });
++
++      applyLicenseSnapshot(snapshot, licenseValue, snapshot.message || "Licenca validada.");
++
++      if (!isLicenseStateBlocked(formalState)) {
++        localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
++        localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
++        setHasLicenseActivatedOnce(true);
++        setLicenseModalOpen(false);
++        setLicenseModalMandatory(false);
++        setLicenseModalMode("settings");
++        setLicenseValidationMessage({ kind: "success", text: snapshot.message || "Licenca validada com sucesso." });
++        return;
++      }
++
++      localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
++      localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
++      clearRuntimeLicenseCache();
++      setIsLicenseValidated(false);
+       setLicenseValidationMessage({
+         kind: "error",
+-        text: feedbackMessage,
++        text: snapshot.message || "Licenca bloqueada. Revalide para continuar.",
+       });
+     } catch {
+       setLicenseValidationMessage({ kind: "error", text: "Falha ao consultar o endpoint de licenca." });
+@@ -7625,6 +7812,7 @@ function App() {
+         text: "Validacao online obrigatoria. Conecte-se a internet para continuar.",
+       });
+       setLicenseModalMandatory(true);
++      setLicenseModalMode("onboarding");
+       setLicenseModalOpen(true);
+       return false;
+     }
+@@ -7637,6 +7825,7 @@ function App() {
+         setLicenseRevalidationHint("");
+         setLicenseValidationMessage({ kind: "error", text: "Chave de licenca nao encontrada neste dispositivo." });
+         setLicenseModalMandatory(true);
++        setLicenseModalMode("onboarding");
+         setLicenseModalOpen(true);
+       }
+       return false;
+@@ -7646,127 +7835,75 @@ function App() {
+     lastBackgroundRevalidationAtRef.current = now;
+ 
+     try {
+-      const response = await invoke<{ statusCode: number; body: Record<string, unknown> }>("validate_license", {
+-        payload: {
+-          licenseKey: licenseValue,
+-          series: licenseValue,
+-          deviceId: installationId,
+-          deviceName: getDeviceNameLabel(),
+-          platform: getPlatformLabel(),
+-          appVersion: APP_VERSION,
+-        },
+-      });
++      if (LICENSE_API_BASE_URL) {
++        const statusSnapshot = await requestLicenseStatus(false, licenseValue);
++        if (statusSnapshot) {
++          const formalState = resolveLicenseFormalState({
++            snapshot: statusSnapshot,
++            warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
++            fallbackTrialExpiryAt: licenseTrialExpiryAt,
++            fallbackNextRevalidationAt: licenseNextRevalidationAt,
++          });
+ 
+-      const body = response.body ?? {};
+-      const nested = body.data;
+-      const scoped = nested && typeof nested === "object"
+-        ? (nested as Record<string, unknown>)
+-        : body;
+-
+-      const toBooleanish = (value: unknown): boolean | undefined => {
+-        if (typeof value === "boolean") return value;
+-        if (typeof value === "number") {
+-          if (value === 1) return true;
+-          if (value === 0) return false;
+-          return undefined;
+-        }
+-        if (typeof value === "string") {
+-          const normalized = value.trim().toLowerCase();
+-          if (["1", "true", "yes", "sim", "ok", "success"].includes(normalized)) return true;
+-          if (["0", "false", "no", "nao", "error", "erro"].includes(normalized)) return false;
+-        }
+-        return undefined;
+-      };
++          applyLicenseSnapshot(statusSnapshot, licenseValue, statusSnapshot.message || "Status de licenca atualizado.");
++
++          if (!isLicenseStateBlocked(formalState)) {
++            localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
++            return true;
++          }
+ 
+-      const codeValue = String(scoped.code ?? body.code ?? "").trim().toUpperCase();
+-      const messageValue = String(scoped.message ?? body.message ?? "").trim();
+-      const successValue = toBooleanish(scoped.success ?? body.success);
+-      const validValue = toBooleanish(scoped.valid ?? body.valid ?? scoped.is_valid ?? body.is_valid);
+-
+-      const approved =
+-        response.statusCode >= 200 &&
+-        response.statusCode < 300 &&
+-        successValue !== false &&
+-        validValue === true &&
+-        codeValue === "LICENSE_VALID";
+-
+-      if (approved) {
+-        const licenseObject = scoped.license && typeof scoped.license === "object"
+-          ? (scoped.license as Record<string, unknown>)
+-          : body.license && typeof body.license === "object"
+-            ? (body.license as Record<string, unknown>)
+-            : null;
+-
+-        const serverTimeIso = normalizeApiDateToIso(scoped.server_time ?? body.server_time);
+-        const validatedAt = serverTimeIso ?? new Date().toISOString();
+-        const nextRevalidationAt = addDaysToIso(validatedAt, LICENSE_REVALIDATE_INTERVAL_DAYS);
+-        const expiryDate = normalizeApiDateToIso(licenseObject?.expiry_date ?? null);
+-        const isExpiredByDate = isLicenseExpiredByDate(expiryDate, Date.parse(validatedAt));
+-
+-        if (isExpiredByDate) {
+           localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+           localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
++          clearRuntimeLicenseCache();
+           setIsLicenseValidated(false);
+           setLicenseRevalidationHint("");
+           setLicenseValidationMessage({
+             kind: "error",
+-            text: "Periodo de teste expirado. Entre em contato para adquirir a licenca.",
++            text: statusSnapshot.message || "Licenca revogada/suspensa neste dispositivo.",
+           });
+-          enforceLicenseBlock("Periodo de teste expirado. Entre em contato para adquirir a licenca.");
++          enforceLicenseBlock(statusSnapshot.message || "Licenca revogada/suspensa neste dispositivo.");
+           return false;
+         }
++      }
+ 
+-        const refreshedCache: CachedLicenseStatus = {
+-          installationId,
+-          code: "LICENSE_VALID",
+-          validatedAt,
+-          nextRevalidationAt,
+-          expiryDate,
+-          message: messageValue || "Licenca valida.",
+-        };
++      const response = await invoke<{ statusCode: number; body: Record<string, unknown> }>("validate_license", {
++        payload: {
++          licenseKey: licenseValue,
++          series: licenseValue,
++          deviceId: installationId,
++          deviceName: getDeviceNameLabel(),
++          platform: getPlatformLabel(),
++          appVersion: APP_VERSION,
++        },
++      });
++
++      const payload = normalizeLicenseApiPayload(response.body ?? {});
++      const snapshot = parseLicenseSnapshot(payload);
++      const formalState = resolveLicenseFormalState({
++        snapshot,
++        warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
++        fallbackTrialExpiryAt: licenseTrialExpiryAt,
++        fallbackNextRevalidationAt: licenseNextRevalidationAt,
++      });
+ 
+-        localStorage.setItem(LICENSE_STATUS_STORAGE_KEY, JSON.stringify(refreshedCache));
++      applyLicenseSnapshot(snapshot, licenseValue, snapshot.message || "Licenca validada.");
++
++      if (!isLicenseStateBlocked(formalState)) {
+         localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
+-        setIsLicenseValidated(true);
+-        const expiryHint = buildLicenseExpiryHint(refreshedCache, installationId);
+-        const revalidationHint = buildLicenseRevalidationHint(refreshedCache, installationId, isOnline);
+-        setLicenseRevalidationHint(expiryHint || revalidationHint);
+         return true;
+       }
+ 
+-      const rejectCodes = new Set([
+-        "LICENSE_NOT_FOUND",
+-        "LICENSE_INACTIVE",
+-        "LICENSE_EXPIRED",
+-        "ACTIVATION_LIMIT_REACHED",
+-        "LICENSE_PENDING",
+-        "LICENSE_SUSPENDED",
+-        "LICENSE_BLOCKED",
+-      ]);
+-
+-      const isPendingByMessage = messageValue.toLowerCase().includes("pendente");
+-
+-      if (rejectCodes.has(codeValue) || isPendingByMessage) {
+-        localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+-        localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
+-        setIsLicenseValidated(false);
+-        setLicenseRevalidationHint("");
+-        const rejectMessageMap: Record<string, string> = {
+-          LICENSE_EXPIRED: "Periodo de teste/licenca expirado. Entre em contato para adquirir.",
+-          LICENSE_SUSPENDED: "Licenca suspensa. Fale com o suporte para reativacao.",
+-          LICENSE_PENDING: "Licenca pendente de ativacao no servidor.",
+-          LICENSE_INACTIVE: "Licenca inativa. Fale com o suporte.",
+-          LICENSE_BLOCKED: "Licenca bloqueada. Fale com o suporte.",
+-        };
+-        const rejectMessage =
+-          messageValue || rejectMessageMap[codeValue] || "Licenca suspensa ou invalida. Revalide para continuar.";
+-        setLicenseValidationMessage({
+-          kind: "error",
+-          text: rejectMessage,
+-        });
+-        enforceLicenseBlock(rejectMessage);
+-        return false;
+-      }
++      localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
++      localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
++      clearRuntimeLicenseCache();
++      setIsLicenseValidated(false);
++      setLicenseRevalidationHint("");
++      setLicenseValidationMessage({
++        kind: "error",
++        text: snapshot.message || "Licenca suspensa ou invalida. Revalide para continuar.",
++      });
++      enforceLicenseBlock(snapshot.message || "Licenca suspensa ou invalida. Revalide para continuar.");
++      return false;
+     } catch {
+       if (strict) {
+         localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+@@ -7786,6 +7923,15 @@ function App() {
+   }
+ 
+   function handlePreconnectMixerSelection(mixer: DiscoveredMixer) {
++    if (!isLicenseValidated || isLicenseStateBlocked(licenseFormalState)) {
++      setLicenseValidationMessage({
++        kind: "error",
++        text: "Valide a licenca antes de conectar ao mixer.",
++      });
++      openLicenseModal(true, "onboarding");
++      return;
++    }
++
+     const compatibility = getMixerCompatibility(mixer);
+ 
+     if (!compatibility.supported) {
+@@ -7850,291 +7996,110 @@ function App() {
+   async function toggleInputSource(channelNumber: number) {
+     const client = clientRef.current;
+     if (!client) return;
+-
+-    const current = channels[channelNumber - 1];
+-    const nextValue = !current.usbInputOn;
+-    const expectedRawValue = nextValue ? 0 : 1;
+-    const controlChannel = resolveInputSourceControlChannel(channelNumber);
+-    if (controlChannel === null) {
+-      setStatus("Canal sem rota valida de entrada no Patching (use CH 1..32).");
+-      return;
+-    }
+-    const sourceParam = inputSourceParam(controlChannel);
+-
+-    try {
+-      client.setInputSource(controlChannel, nextValue ? "usb" : "input");
+-    } catch (error) {
+-      setStatus(
+-        error instanceof Error
+-          ? error.message
+-          : "Falha ao alternar INPUT/USB deste canal."
+-      );
+-      return;
+-    }
+-
+-    updateChannelState(channelNumber, { usbInputOn: nextValue });
+-
+-    try {
+-      for (let attempt = 0; attempt < 3; attempt += 1) {
+-        const verify = await client.readParams([sourceParam], 900);
+-        const rawValue = verify[0]?.value;
+-
+-        if (rawValue === undefined) continue;
+-
+-        updateChannelState(channelNumber, { usbInputOn: rawValue === 0 });
+-        if (rawValue === expectedRawValue) {
+-          return;
+-        }
+-      }
+-
+-      setStatus("Mesa nao confirmou a troca de INPUT/USB deste canal.");
+-    } catch {
+-      setStatus("Falha ao confirmar INPUT/USB na mesa.");
+-    }
+-  }
+-
+-  async function applyExclusivePatchRoute(
+-    mapRef: { current: Map<number, number> },
+-    baseParam: number,
+-    fullSize: number,
+-    visibleSize: number,
+-    destination: number,
+-    source: number,
+-    setVisibleRoutes: (routes: number[]) => void
+-  ) {
+-    const client = clientRef.current;
+-    if (!client || !isConnected || !isAx32ProfileActive()) return;
+-
+-    const normalizedDestination = Math.round(destination);
+-    const normalizedSource = Math.max(0, Math.min(fullSize, Math.round(source)));
+-
+-    if (normalizedDestination < 1 || normalizedDestination > visibleSize) return;
+-
+-    const current = mapRef.current.get(normalizedDestination) ?? normalizedDestination;
+-    if (current === normalizedSource) return;
+-
+-    const nextMap = new Map(mapRef.current);
+-    const conflictingDestination =
+-      normalizedSource > 0
+-        ? Array.from({ length: visibleSize }, (_, index) => index + 1).find(
+-            (candidate) =>
+-              candidate !== normalizedDestination &&
+-              (nextMap.get(candidate) ?? candidate) === normalizedSource
+-          )
+-        : undefined;
+-
+-    if (conflictingDestination !== undefined) {
+-      client.sendParam(baseParam + (conflictingDestination - 1), 0);
+-      nextMap.set(conflictingDestination, 0);
+-    }
+-
+-    client.sendParam(baseParam + (normalizedDestination - 1), normalizedSource);
+-    nextMap.set(normalizedDestination, normalizedSource);
+-
+-    mapRef.current = nextMap;
+-    setVisibleRoutes(
+-      Array.from({ length: visibleSize }, (_, index) => {
+-        const visibleDestination = index + 1;
+-        return nextMap.get(visibleDestination) ?? visibleDestination;
+-      })
+-    );
+-  }
+-
+-  async function applyExclusiveUsbInputToUsbPatchRoute(
+-    destination: number,
+-    source: number
+-  ) {
+-    const client = clientRef.current;
+-    if (!client || !isConnected || !isAx32ProfileActive()) return;
+-
+-    const normalizedDestination = Math.round(destination);
+-    const normalizedSource = Math.max(
+-      0,
+-      Math.min(AX32_USB_PATCH_VISIBLE_SIZE, Math.round(source))
+-    );
+-
+-    if (
+-      normalizedDestination < 1 ||
+-      normalizedDestination > AX32_USB_PATCH_VISIBLE_SIZE
+-    ) {
+-      return;
+-    }
+-
+-    const currentSource = usbInputToUsbPatchMapRef.current.get(normalizedDestination) ?? 0;
+-    if (currentSource === normalizedSource) return;
+-
+-    const nextMap = new Map(usbInputToUsbPatchMapRef.current);
+-    const conflictingDestination =
+-      normalizedSource > 0
+-        ? Array.from({ length: AX32_USB_PATCH_VISIBLE_SIZE }, (_, index) => index + 1).find(
+-            (candidate) =>
+-              candidate !== normalizedDestination &&
+-              (nextMap.get(candidate) ?? 0) === normalizedSource
+-          )
+-        : undefined;
+-
+-    if (conflictingDestination !== undefined) {
+-      client.sendParam(AX32_USB_INPUT_TO_USB_PATCH_BASE + (conflictingDestination - 1), 0);
+-      nextMap.set(conflictingDestination, 0);
+-    }
+-
+-    client.sendParam(AX32_USB_INPUT_TO_USB_PATCH_BASE + (normalizedDestination - 1), normalizedSource);
+-    nextMap.set(normalizedDestination, normalizedSource);
+-
+-    usbInputToUsbPatchMapRef.current = nextMap;
+-    syncVisibleUsbInputToUsbRoutes(nextMap);
+-  }
+-
+-  async function applyExclusiveUsbReturnPatchRoute(
+-    destination: number,
+-    source: number
+-  ) {
+-    const client = clientRef.current;
+-    if (!client || !isConnected || !isAx32ProfileActive()) return;
+-
+-    const normalizedDestination = Math.round(destination);
+-    const normalizedSource = Math.max(
+-      0,
+-      Math.min(AX32_USB_PATCH_VISIBLE_SIZE, Math.round(source))
+-    );
+-
+-    if (
+-      normalizedDestination < 1 ||
+-      normalizedDestination > AX32_USB_PATCH_VISIBLE_SIZE
+-    ) {
++
++    const current = channels[channelNumber - 1];
++    const nextValue = !current.usbInputOn;
++    const expectedRawValue = nextValue ? 0 : 1;
++    const controlChannel = resolveInputSourceControlChannel(channelNumber);
++    if (controlChannel === null) {
++      setStatus("Canal sem rota valida de entrada no Patching (use CH 1..32).");
+       return;
+     }
++    const sourceParam = inputSourceParam(controlChannel);
+ 
+-    const currentSource = usbReturnPatchMapRef.current.get(normalizedDestination) ?? 0;
+-    if (currentSource === normalizedSource) return;
++    try {
++      client.setInputSource(controlChannel, nextValue ? "usb" : "input");
++    } catch (error) {
++      setStatus(
++        error instanceof Error
++          ? error.message
++          : "Falha ao alternar INPUT/USB deste canal."
++      );
++      return;
++    }
+ 
+-    const nextMap = new Map(usbReturnPatchMapRef.current);
++    updateChannelState(channelNumber, { usbInputOn: nextValue });
+ 
+-    if (normalizedSource === 0) {
+-      if (currentSource > 0) {
+-        client.sendParam(AX32_USB_RETURN_PATCH_BASE + (currentSource - 1), 0);
+-      }
+-      nextMap.set(normalizedDestination, 0);
+-    } else {
+-      const conflictingDestination = Array.from(
+-        { length: AX32_USB_PATCH_VISIBLE_SIZE },
+-        (_, index) => index + 1
+-      ).find(
+-        (candidate) =>
+-          candidate !== normalizedDestination &&
+-          (nextMap.get(candidate) ?? 0) === normalizedSource
+-      );
++    try {
++      for (let attempt = 0; attempt < 3; attempt += 1) {
++        const verify = await client.readParams([sourceParam], 900);
++        const rawValue = verify[0]?.value;
+ 
+-      if (currentSource > 0 && currentSource !== normalizedSource) {
+-        client.sendParam(AX32_USB_RETURN_PATCH_BASE + (currentSource - 1), 0);
+-      }
++        if (rawValue === undefined) continue;
+ 
+-      if (conflictingDestination !== undefined) {
+-        nextMap.set(conflictingDestination, 0);
++        updateChannelState(channelNumber, { usbInputOn: rawValue === 0 });
++        if (rawValue === expectedRawValue) {
++          return;
++        }
+       }
+ 
+-      client.sendParam(AX32_USB_RETURN_PATCH_BASE + (normalizedSource - 1), normalizedDestination);
+-      nextMap.set(normalizedDestination, normalizedSource);
++      setStatus("Mesa nao confirmou a troca de INPUT/USB deste canal.");
++    } catch {
++      setStatus("Falha ao confirmar INPUT/USB na mesa.");
+     }
+-
+-    usbReturnPatchMapRef.current = nextMap;
+-    syncVisibleUsbReturnRoutes(nextMap);
+-    await refreshResolvedInputSourceStates();
+   }
+ 
+-  async function applyExclusivePhysicalInputPatchRoute(
++  async function applyExclusivePatchRoute(
++    mapRef: { current: Map<number, number> },
++    baseParam: number,
++    fullSize: number,
++    visibleSize: number,
+     destination: number,
+-    source: number
++    source: number,
++    setVisibleRoutes: (routes: number[]) => void
+   ) {
+     const client = clientRef.current;
+     if (!client || !isConnected || !isAx32ProfileActive()) return;
+ 
+     const normalizedDestination = Math.round(destination);
+-    const normalizedSource = Math.max(
+-      0,
+-      Math.min(AX32_PHYSICAL_INPUT_PATCH_SIZE, Math.round(source))
+-    );
+-
+-    if (
+-      normalizedDestination < 1 ||
+-      normalizedDestination > AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE
+-    ) {
+-      return;
+-    }
+-
+-    const currentSource =
+-      ax32PhysicalInputPatchMapRef.current.get(normalizedDestination) ?? 0;
+-
+-    if (currentSource === normalizedSource) return;
+-
+-    const nextMap = new Map(ax32PhysicalInputPatchMapRef.current);
++    const normalizedSource = Math.max(0, Math.min(fullSize, Math.round(source)));
+ 
+-    if (normalizedSource === 0) {
+-      if (currentSource > 0) {
+-        client.sendParam(
+-          AX32_PHYSICAL_INPUT_PATCH_BASE + (currentSource - 1),
+-          0
+-        );
+-      }
+-      nextMap.set(normalizedDestination, 0);
+-    } else {
+-      const conflictingDestination = Array.from(
+-        { length: AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE },
+-        (_, index) => index + 1
+-      ).find(
+-        (candidate) =>
+-          candidate !== normalizedDestination &&
+-          (nextMap.get(candidate) ?? 0) === normalizedSource
+-      );
++    if (normalizedDestination < 1 || normalizedDestination > visibleSize) return;
+ 
+-      if (currentSource > 0 && currentSource !== normalizedSource) {
+-        client.sendParam(
+-          AX32_PHYSICAL_INPUT_PATCH_BASE + (currentSource - 1),
+-          0
+-        );
+-      }
++    const current = mapRef.current.get(normalizedDestination) ?? normalizedDestination;
++    if (current === normalizedSource) return;
+ 
+-      if (conflictingDestination !== undefined) {
+-        nextMap.set(conflictingDestination, 0);
+-      }
++    const nextMap = new Map(mapRef.current);
++    const conflictingDestination =
++      normalizedSource > 0
++        ? Array.from({ length: visibleSize }, (_, index) => index + 1).find(
++            (candidate) =>
++              candidate !== normalizedDestination &&
++              (nextMap.get(candidate) ?? candidate) === normalizedSource
++          )
++        : undefined;
+ 
+-      client.sendParam(
+-        AX32_PHYSICAL_INPUT_PATCH_BASE + (normalizedSource - 1),
+-        normalizedDestination
+-      );
+-      nextMap.set(normalizedDestination, normalizedSource);
++    if (conflictingDestination !== undefined) {
++      client.sendParam(baseParam + (conflictingDestination - 1), 0);
++      nextMap.set(conflictingDestination, 0);
+     }
+ 
+-    ax32PhysicalInputPatchMapRef.current = nextMap;
+-    setInputPatchRoutes(
+-      Array.from({ length: AX32_PHYSICAL_INPUT_PATCH_VISIBLE_SIZE }, (_, index) => {
++    client.sendParam(baseParam + (normalizedDestination - 1), normalizedSource);
++    nextMap.set(normalizedDestination, normalizedSource);
++
++    mapRef.current = nextMap;
++    setVisibleRoutes(
++      Array.from({ length: visibleSize }, (_, index) => {
+         const visibleDestination = index + 1;
+-        return nextMap.get(visibleDestination) ?? 0;
++        return nextMap.get(visibleDestination) ?? visibleDestination;
+       })
+     );
+   }
+ 
+   function handleInputPatchRouteChange(destination: number, source: number) {
+-    void applyExclusivePhysicalInputPatchRoute(
++    void applyExclusivePatchRoute(
++      usbReturnPatchMapRef,
++      AX32_INPUT_PATCH_BASE,
++      AX32_INPUT_PATCH_SIZE,
++      AX32_INPUT_PATCH_VISIBLE_SIZE,
+       destination,
+-      source
+-    ).catch(() => {
++      source,
++      setInputPatchRoutes
++    ).then(() => refreshResolvedInputSourceStates()).catch(() => {
+       setStatus("Falha ao atualizar patch de entrada.");
+     });
+   }
+ 
+-  function handleUsbInputToUsbRouteChange(destination: number, source: number) {
+-    void applyExclusiveUsbInputToUsbPatchRoute(destination, source).catch(() => {
+-      setStatus("Falha ao atualizar Input to USB.");
+-    });
+-  }
+-
+-  function handleUsbReturnRouteChange(destination: number, source: number) {
+-    void applyExclusiveUsbReturnPatchRoute(destination, source).catch(() => {
+-      setStatus("Falha ao atualizar USB Return.");
+-    });
+-  }
+-
+   function handleOutputPatchRouteChange(destination: number, source: number) {
+     void applyExclusivePatchRoute(
+       ax32OutputPatchMapRef,
+@@ -8149,6 +8114,34 @@ function App() {
+     });
+   }
+ 
++  function handleUsbInputToUsbRouteChange(destination: number, source: number) {
++    void applyExclusivePatchRoute(
++      usbInputToUsbPatchMapRef,
++      AX32_INPUT_PATCH_BASE,
++      AX32_INPUT_PATCH_SIZE,
++      AX32_INPUT_PATCH_VISIBLE_SIZE,
++      destination,
++      source,
++      setUsbInputToUsbRoutes
++    ).catch(() => {
++      setStatus("Falha ao atualizar patch USB input->USB.");
++    });
++  }
++
++  function handleUsbReturnRouteChange(destination: number, source: number) {
++    void applyExclusivePatchRoute(
++      usbReturnPatchMapRef,
++      AX32_INPUT_PATCH_BASE,
++      AX32_INPUT_PATCH_SIZE,
++      AX32_INPUT_PATCH_VISIBLE_SIZE,
++      destination,
++      source,
++      setUsbReturnRoutes
++    ).catch(() => {
++      setStatus("Falha ao atualizar patch USB return.");
++    });
++  }
++
+   function handleFaderChange(channelNumber: number, position: number) {
+     const targets = getLinkedChannelTargets(channelNumber);
+     const db = faderPositionToDb(position);
+@@ -11366,25 +11359,296 @@ function App() {
+     });
+   }, [detailView, isConnected]);
+ 
++  const licenseModalNode = licenseModalOpen ? (
++    <div
++      className="settings-modal-backdrop"
++      onClick={() => {
++        if (!licenseModalMandatory) {
++          closeLicenseModal();
++        }
++      }}
++    >
++      <section
++        className="settings-modal"
++        role="dialog"
++        aria-modal="true"
++        aria-label="License Validation"
++        onClick={(event) => event.stopPropagation()}
++      >
++        <div className="settings-modal__header">
++          <div>
++            <h2>{licenseModalMode === "onboarding" ? "Ativacao obrigatoria" : "Licenca deste dispositivo"}</h2>
++            <p>
++              {licenseModalMode === "onboarding"
++                ? "Cadastre, inicie trial, valide chave ou solicite upgrade para continuar usando o mixer."
++                : "Consulte status, revalide e gerencie ativacoes deste dispositivo."}
++            </p>
++            {!isOnline && <p>Sem internet no momento. Alguns recursos exigem conexao.</p>}
++            {licenseRevalidationHint && <p>{licenseRevalidationHint}</p>}
++            {licenseFormalState === "LICENSE_NOT_FOUND" && (
++              <p>
++                Nao existe licenca cadastrada para esta chave/instalacao. Solicite cadastro no admin e valide novamente.
++              </p>
++            )}
++            {(SUPPORT_WHATSAPP || SUPPORT_EMAIL) && (
++              <p>
++                Suporte: {SUPPORT_WHATSAPP ? `WhatsApp ${SUPPORT_WHATSAPP}` : ""}
++                {SUPPORT_WHATSAPP && SUPPORT_EMAIL ? " | " : ""}
++                {SUPPORT_EMAIL ? `E-mail ${SUPPORT_EMAIL}` : ""}
++              </p>
++            )}
++          </div>
++        </div>
++
++        <div className="settings-modal__row">
++          <label htmlFor="settings-installation-id">Installation UUID</label>
++          <div className="settings-modal__inline">
++            <input
++              id="settings-installation-id"
++              className="settings-modal__input"
++              value={installationId}
++              readOnly
++            />
++            <button
++              type="button"
++              className="startup-button startup-button--secondary settings-modal__copy"
++              onClick={handleCopyInstallationId}
++            >
++              Copy
++            </button>
++          </div>
++        </div>
++
++        <div className="settings-modal__row">
++          <label htmlFor="settings-license-key">License Key / Series</label>
++          <div className="settings-modal__inline">
++            <input
++              id="settings-license-key"
++              className="settings-modal__input"
++              value={licenseKeyInput}
++              onChange={(event) => setLicenseKeyInput(event.target.value)}
++              placeholder="Digite sua licenca"
++              disabled={licenseValidationBusy}
++            />
++            <button
++              type="button"
++              className="startup-button startup-button--secondary settings-modal__copy"
++              onClick={() => {
++                void handleCopyLicenseKey();
++              }}
++            >
++              Copy
++            </button>
++          </div>
++        </div>
++
++        {licenseModalMode === "onboarding" && (
++          <div className="settings-modal__row">
++            <label>Cadastro e trial</label>
++            <div className="settings-modal__inline" style={{ justifyContent: "space-between", alignItems: "center" }}>
++              <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
++                <input
++                  type="checkbox"
++                  checked={licenseRegisterWantsUpgrade}
++                  onChange={(event) => setLicenseRegisterWantsUpgrade(event.target.checked)}
++                  disabled={licenseRegisterBusy}
++                />
++                Quero upgrade para Purchased
++              </label>
++              <button
++                type="button"
++                className="startup-button startup-button--secondary"
++                disabled={licenseRegisterBusy}
++                onClick={() => {
++                  void handleRequestLicenseRegistration();
++                }}
++              >
++                {licenseRegisterBusy ? "Processando..." : "Iniciar cadastro/trial"}
++              </button>
++            </div>
++          </div>
++        )}
++
++        {licenseModalMode === "settings" && (
++          <>
++            <div className="settings-modal__row">
++              <label>Status formal</label>
++              <div className="settings-modal__inline" style={{ justifyContent: "space-between", alignItems: "center" }}>
++                <span>{licenseFormalState}</span>
++                <button
++                  type="button"
++                  className="startup-button startup-button--secondary"
++                  disabled={licenseValidationBusy}
++                  onClick={() => {
++                    void handleValidateLicense();
++                  }}
++                >
++                  {licenseValidationBusy ? "Validando..." : "Validar agora"}
++                </button>
++              </div>
++              <div style={{ marginTop: 8 }}>
++                Proxima revalidacao: {licenseNextRevalidationAt ? new Date(licenseNextRevalidationAt).toLocaleString() : "Nao agendada"}
++              </div>
++            </div>
++
++            <div className="settings-modal__row">
++              <label>Ativacoes locais</label>
++              <div className="settings-modal__inline" style={{ justifyContent: "space-between", alignItems: "center" }}>
++                <span>{licenseDevices.length} dispositivo(s) vinculado(s)</span>
++                <button
++                  type="button"
++                  className="startup-button startup-button--secondary"
++                  disabled={licenseDevicesLoading}
++                  onClick={() => {
++                    void handleRefreshLicenseStatus();
++                  }}
++                >
++                  {licenseDevicesLoading ? "Atualizando..." : "Atualizar status"}
++                </button>
++              </div>
++              {licenseDevices.length > 0 && (
++                <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
++                  {licenseDevices.map((device) => (
++                    <div
++                      key={device.deviceId}
++                      style={{
++                        display: "flex",
++                        justifyContent: "space-between",
++                        gap: 12,
++                        alignItems: "center",
++                        padding: "8px 10px",
++                        border: "1px solid var(--color-border-subtle)",
++                        borderRadius: 10,
++                      }}
++                    >
++                      <div>
++                        <strong>{device.deviceName}</strong>
++                        <div>{device.devicePlatform}</div>
++                      </div>
++                      <button
++                        type="button"
++                        className="startup-button startup-button--secondary"
++                        disabled={licenseDeviceActionBusy === device.deviceId}
++                        onClick={() => {
++                          void handleRevokeLicenseDevice(device.deviceId);
++                        }}
++                      >
++                        {licenseDeviceActionBusy === device.deviceId ? "Revogando..." : "Revogar"}
++                      </button>
++                    </div>
++                  ))}
++                </div>
++              )}
++            </div>
++
++            {PORTAL_AUTH_TOKEN && (
++              <div className="settings-modal__row">
++                <label>Ativacoes do portal</label>
++                {portalActivationsLoading ? (
++                  <div>Carregando ativacoes...</div>
++                ) : portalActivations.length === 0 ? (
++                  <div>Nenhuma ativacao retornada pelo portal.</div>
++                ) : (
++                  <div style={{ display: "grid", gap: 8 }}>
++                    {portalActivations.map((activation) => (
++                      <div
++                        key={`portal-${activation.deviceId}`}
++                        style={{
++                          display: "flex",
++                          justifyContent: "space-between",
++                          alignItems: "center",
++                          padding: "8px 10px",
++                          border: "1px solid var(--color-border-subtle)",
++                          borderRadius: 10,
++                        }}
++                      >
++                        <span>{activation.deviceName} ({activation.platform})</span>
++                        <span>{activation.active ? "Ativo" : "Revogado"}</span>
++                      </div>
++                    ))}
++                  </div>
++                )}
++              </div>
++            )}
++          </>
++        )}
++
++        {licenseValidationMessage.kind !== "idle" && (
++          <div
++            className={`settings-modal__result ${licenseValidationMessage.kind === "success" ? "settings-modal__result--success" : "settings-modal__result--error"}`}
++          >
++            {licenseValidationMessage.text}
++          </div>
++        )}
++
++        <div className="settings-modal__actions">
++          {licenseModalMode === "onboarding" && licenseFormalState === "LICENSE_NOT_FOUND" && (
++            <button
++              type="button"
++              className="startup-button startup-button--secondary"
++              disabled={licenseRegisterBusy}
++              onClick={() => {
++                void handleRequestLicenseRegistration();
++              }}
++            >
++              {licenseRegisterBusy ? "Processando..." : "Solicitar cadastro"}
++            </button>
++          )}
++          <button
++            type="button"
++            className="startup-button startup-button--primary"
++            disabled={licenseValidationBusy}
++            onClick={() => {
++              void handleValidateLicense();
++            }}
++          >
++            {licenseValidationBusy ? "Validando..." : "Validar licenca"}
++          </button>
++          {!licenseModalMandatory && (
++            <button
++              type="button"
++              className="startup-button startup-button--secondary"
++              onClick={closeLicenseModal}
++            >
++              Fechar
++            </button>
++          )}
++          {licenseModalMandatory && isConnected && (
++            <button
++              type="button"
++              className="startup-button startup-button--secondary"
++              onClick={handleDisconnect}
++            >
++              Disconnect
++            </button>
++          )}
++        </div>
++      </section>
++    </div>
++  ) : null;
++
+   if (appStage === "splash") {
+     return <SplashScreen version={APP_VERSION} />;
+   }
+ 
+   if (appStage === "device-selection") {
+     return (
+-      <DeviceSelectionScreen
+-        mixers={discoveredMixers}
+-        discoveryLoading={isDiscoveringMixers}
+-        discoveryError={discoveryError}
+-        connectBusy={connectingSource !== null}
+-        connectionError={connectionError}
+-        version={APP_VERSION}
+-        onRefresh={() => {
+-          setConnectionError(null);
+-          void refreshMixerDiscovery();
+-        }}
+-        onConnectMixer={handlePreconnectMixerSelection}
+-      />
++      <>
++        <DeviceSelectionScreen
++          mixers={discoveredMixers}
++          discoveryLoading={isDiscoveringMixers}
++          discoveryError={discoveryError}
++          connectBusy={connectingSource !== null}
++          connectionError={connectionError}
++          version={APP_VERSION}
++          onRefresh={() => {
++            setConnectionError(null);
++            void refreshMixerDiscovery();
++          }}
++          onConnectMixer={handlePreconnectMixerSelection}
++        />
++        {licenseModalNode}
++      </>
+     );
+   }
+ 
+@@ -11551,7 +11815,7 @@ function App() {
+             : mainView === "muteGroups"
+                 ? <div className="global-view-shell"><MuteGroupsView isConnected={isConnected} channelCount={channelCount} groups={muteGroups} onToggleActive={handleMuteGroupToggleActive} onMembersChange={handleMuteGroupMembersChange} onClear={handleMuteGroupClear} onAllMuted={handleMuteGroupAllMuted} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} /></div>
+             : mainView === "patching"
+-              ? <div className="global-view-shell"><PatchingView isConnected={isConnected} isAx32ProfileActive={isAx32ProfileActive()} channelCount={channelCount} usbInputToUsbRoutes={usbInputToUsbRoutes} usbReturnRoutes={usbReturnRoutes} inputRoutes={inputPatchRoutes} outputRoutes={outputPatchRoutes} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} onUsbInputToUsbRouteChange={handleUsbInputToUsbRouteChange} onUsbReturnRouteChange={handleUsbReturnRouteChange} onInputRouteChange={handleInputPatchRouteChange} onOutputRouteChange={handleOutputPatchRouteChange} /></div>
++              ? <div className="global-view-shell"><PatchingView isConnected={isConnected} isAx32ProfileActive={isAx32ProfileActive()} usbInputToUsbRoutes={usbInputToUsbRoutes} usbReturnRoutes={usbReturnRoutes} inputRoutes={inputPatchRoutes} outputRoutes={outputPatchRoutes} onUsbInputToUsbRouteChange={handleUsbInputToUsbRouteChange} onUsbReturnRouteChange={handleUsbReturnRouteChange} onInputRouteChange={handleInputPatchRouteChange} onOutputRouteChange={handleOutputPatchRouteChange} /></div>
+             : mainView === "scenes"
+               ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} cacheScopeKey={activeMixerCacheIdentity} onCallScene={handleSceneCall} onSaveScene={handleSceneSave} /></div>
+         : <section className="mixer-layout">
+@@ -11923,106 +12187,7 @@ function App() {
+         />
+       )}
+ 
+-      {licenseModalOpen && (
+-        <div
+-          className="settings-modal-backdrop"
+-          onClick={() => {
+-            if (!licenseModalMandatory) {
+-              closeLicenseModal();
+-            }
+-          }}
+-        >
+-          <section
+-            className="settings-modal"
+-            role="dialog"
+-            aria-modal="true"
+-            aria-label="License Validation"
+-            onClick={(event) => event.stopPropagation()}
+-          >
+-            <div className="settings-modal__header">
+-              <div>
+-                <h2>Device ID / License</h2>
+-                <p>
+-                  {licenseModalMandatory
+-                    ? "Validacao obrigatoria para liberar o mixer."
+-                    : "Consulte e valide a licenca para esta instalacao."}
+-                </p>
+-                {licenseRevalidationHint && <p>{licenseRevalidationHint}</p>}
+-              </div>
+-            </div>
+-
+-            <div className="settings-modal__row">
+-              <label htmlFor="settings-installation-id">Installation UUID</label>
+-              <div className="settings-modal__inline">
+-                <input
+-                  id="settings-installation-id"
+-                  className="settings-modal__input"
+-                  value={installationId}
+-                  readOnly
+-                />
+-                <button
+-                  type="button"
+-                  className="startup-button startup-button--secondary settings-modal__copy"
+-                  onClick={handleCopyInstallationId}
+-                >
+-                  Copy
+-                </button>
+-              </div>
+-            </div>
+-
+-            <div className="settings-modal__row">
+-              <label htmlFor="settings-license-key">License Key / Series</label>
+-              <input
+-                id="settings-license-key"
+-                className="settings-modal__input"
+-                value={licenseKeyInput}
+-                onChange={(event) => setLicenseKeyInput(event.target.value)}
+-                placeholder="Digite sua licenca"
+-                disabled={licenseValidationBusy}
+-              />
+-            </div>
+-
+-            {licenseValidationMessage.kind !== "idle" && (
+-              <div
+-                className={`settings-modal__result ${licenseValidationMessage.kind === "success" ? "settings-modal__result--success" : "settings-modal__result--error"}`}
+-              >
+-                {licenseValidationMessage.text}
+-              </div>
+-            )}
+-
+-            <div className="settings-modal__actions">
+-              <button
+-                type="button"
+-                className="startup-button startup-button--primary"
+-                disabled={licenseValidationBusy}
+-                onClick={() => {
+-                  void handleValidateLicense();
+-                }}
+-              >
+-                {licenseValidationBusy ? "Validando..." : "Validate License"}
+-              </button>
+-              {!licenseModalMandatory && (
+-                <button
+-                  type="button"
+-                  className="startup-button startup-button--secondary"
+-                  onClick={closeLicenseModal}
+-                >
+-                  Close
+-                </button>
+-              )}
+-              {licenseModalMandatory && (
+-                <button
+-                  type="button"
+-                  className="startup-button startup-button--secondary"
+-                  onClick={handleDisconnect}
+-                >
+-                  Disconnect
+-                </button>
+-              )}
+-            </div>
+-          </section>
+-        </div>
+-      )}
++      {licenseModalNode}
+     </main>
+   );
+ }
