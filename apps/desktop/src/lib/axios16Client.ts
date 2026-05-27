@@ -488,7 +488,7 @@ function auxSoloParams(auxNumber: number) {
 
 function inputSourceParam(channel: number) {
   if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
-    return 2660 + channel;
+    return 2662 + channel;
   }
 
   return 2846 + channel;

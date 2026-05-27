@@ -504,7 +504,7 @@ function channelParam(channel: number, base: number) {
 }
 
 function inputSourceParam(channel: number) {
-  return isAx32ProfileActive() ? 2660 + channel : 2846 + channel;
+  return isAx32ProfileActive() ? 2662 + channel : 2846 + channel;
 }
 
 function channelColorParam(channel: number) {
@@ -1522,6 +1522,14 @@ function getLinkMaskParam() {
 
 function getMasterLinkBit() {
   return isAx32ProfileActive() ? 256 : 16;
+}
+
+function isUsbInputSelectedFromRaw(rawValue: number) {
+  return rawValue === 0;
+}
+
+function rawValueFromUsbInputSelected(usbSelected: boolean) {
+  return usbSelected ? 0 : 1;
 }
 
 function auxBlockStart(aux: number) {
@@ -4116,11 +4124,37 @@ function App() {
     setOutputPatchRoutes(nextVisible);
   }
 
+  function clearAx32PatchRoutingState() {
+    const hadAnyPatchState =
+      usbReturnPatchMapRef.current.size > 0 ||
+      usbInputToUsbPatchMapRef.current.size > 0 ||
+      usbReturnOutputPatchMapRef.current.size > 0;
+
+    if (!hadAnyPatchState) {
+      return;
+    }
+
+    usbReturnPatchMapRef.current = new Map();
+    usbInputToUsbPatchMapRef.current = new Map();
+    usbReturnOutputPatchMapRef.current = new Map();
+
+    const emptyMap = new Map<number, number>();
+    syncVisibleInputPatchRoutes(emptyMap);
+    syncVisibleUsbInputPatchRoutes(emptyMap);
+    syncVisibleUsbReturnRoutes(emptyMap);
+    syncVisibleOutputPatchRoutes(emptyMap);
+  }
+
   function resolveInputSourceControlChannel(channelNumber: number) {
+    if (channelNumber < 1 || channelNumber > channelCount) {
+      return null;
+    }
+
     if (!isAx32ProfileActive()) {
       return channelNumber;
     }
 
+    // AX32: source select follows input patching (CH -> CH) for the destination channel.
     const mappedChannel = usbReturnPatchMapRef.current.get(channelNumber);
     if (mappedChannel === undefined) {
       return channelNumber;
@@ -4131,18 +4165,42 @@ function App() {
     }
 
     if (mappedChannel < 1 || mappedChannel > AX32_INPUT_PATCH_VISIBLE_SIZE) {
-      return null;
+      return channelNumber;
     }
 
-    // Regra híbrida:
-    // - patch padrão (destino = source): 1:1 no próprio canal
-    // - patch não-identidade: segue o canal mapeado pela mesa
-    return mappedChannel === channelNumber ? channelNumber : mappedChannel;
+    return mappedChannel;
+  }
+
+  function resolveUsbInputOnFromRaw(rawValue: number) {
+    return isUsbInputSelectedFromRaw(rawValue);
+  }
+
+  function resolveExpectedInputSourceRawForToggle(usbInputOn: boolean) {
+    return rawValueFromUsbInputSelected(usbInputOn);
   }
 
   async function refreshResolvedInputSourceStates() {
     const client = clientRef.current;
     if (!client || !isConnected) return;
+
+    if (!isAx32ProfileActive()) {
+      const readParams = Array.from(
+        { length: channelCount },
+        (_, index) => inputSourceParam(index + 1)
+      );
+      const values = await readValuesMapChunked(client, readParams, 24, 900);
+
+      for (let index = 0; index < channelCount; index += 1) {
+        const channelNumber = index + 1;
+        const rawValue = values.get(inputSourceParam(channelNumber));
+        if (rawValue === undefined) continue;
+
+        updateChannelState(channelNumber, {
+          usbInputOn: resolveUsbInputOnFromRaw(rawValue),
+        });
+      }
+      return;
+    }
 
     const pendingUpdates: Array<{ channelNumber: number; controlChannel: number }> = [];
 
@@ -4170,7 +4228,9 @@ function App() {
       const rawValue = values.get(sourceParam);
       if (rawValue === undefined) continue;
 
-      updateChannelState(channelNumber, { usbInputOn: rawValue === 0 });
+      updateChannelState(channelNumber, {
+        usbInputOn: resolveUsbInputOnFromRaw(rawValue),
+      });
     }
   }
 
@@ -4180,6 +4240,14 @@ function App() {
   }) {
     const client = clientRef.current;
     if (!client || (!isConnected && !options?.ignoreConnectionState)) return;
+
+    if (!isAx32ProfileActive()) {
+      clearAx32PatchRoutingState();
+      if (options?.refreshInputStates !== false) {
+        await refreshResolvedInputSourceStates();
+      }
+      return;
+    }
 
     const patchParams = getUsbReturnPatchParamsForActiveProfile();
 
@@ -4235,9 +4303,20 @@ function App() {
     }
   }
 
-  async function syncUsbInputPatchMap(options?: { ignoreConnectionState?: boolean }) {
+  async function syncUsbInputPatchMap(options?: {
+    ignoreConnectionState?: boolean;
+    refreshInputStates?: boolean;
+  }) {
     const client = clientRef.current;
-    if (!client || (!isConnected && !options?.ignoreConnectionState) || !isAx32ProfileActive()) return;
+    if (!client || (!isConnected && !options?.ignoreConnectionState)) return;
+
+    if (!isAx32ProfileActive()) {
+      clearAx32PatchRoutingState();
+      if (options?.refreshInputStates !== false) {
+        await refreshResolvedInputSourceStates();
+      }
+      return;
+    }
 
     const patchParams = getUsbInputPatchParamsForActiveProfile();
     if (patchParams.length === 0) return;
@@ -4273,15 +4352,35 @@ function App() {
       }
     }
 
-    if (!changed) return;
+    if (!changed) {
+      if (options?.refreshInputStates !== false) {
+        await refreshResolvedInputSourceStates();
+      }
+      return;
+    }
 
     usbInputToUsbPatchMapRef.current = nextPatchMap;
     syncVisibleUsbInputPatchRoutes(nextPatchMap);
+
+    if (options?.refreshInputStates !== false) {
+      await refreshResolvedInputSourceStates();
+    }
   }
 
-  async function syncUsbReturnOutputPatchMap(options?: { ignoreConnectionState?: boolean }) {
+  async function syncUsbReturnOutputPatchMap(options?: {
+    ignoreConnectionState?: boolean;
+    refreshInputStates?: boolean;
+  }) {
     const client = clientRef.current;
-    if (!client || (!isConnected && !options?.ignoreConnectionState) || !isAx32ProfileActive()) return;
+    if (!client || (!isConnected && !options?.ignoreConnectionState)) return;
+
+    if (!isAx32ProfileActive()) {
+      clearAx32PatchRoutingState();
+      if (options?.refreshInputStates !== false) {
+        await refreshResolvedInputSourceStates();
+      }
+      return;
+    }
 
     const patchParams = getUsbReturnOutputPatchParamsForActiveProfile();
     if (patchParams.length === 0) return;
@@ -4319,10 +4418,19 @@ function App() {
       }
     }
 
-    if (!changed) return;
+    if (!changed) {
+      if (options?.refreshInputStates !== false) {
+        await refreshResolvedInputSourceStates();
+      }
+      return;
+    }
 
     usbReturnOutputPatchMapRef.current = nextPatchMap;
     syncVisibleUsbReturnRoutes(nextPatchMap);
+
+    if (options?.refreshInputStates !== false) {
+      await refreshResolvedInputSourceStates();
+    }
   }
 
   async function syncAx32OutputPatchMap(options?: { ignoreConnectionState?: boolean }) {
@@ -4420,7 +4528,7 @@ function App() {
 
     const inputSource = readAccepted(params.inputSource);
     if (inputSource !== undefined) {
-      patch.usbInputOn = inputSource === 0;
+      patch.usbInputOn = resolveUsbInputOnFromRaw(inputSource);
     }
 
     const phantom = readAccepted(params.phantom);
@@ -5967,7 +6075,11 @@ function App() {
 
     const linkMaskParam = getLinkMaskParam();
     const response = await client.readParams([linkMaskParam]);
-    const value3056 = response[0]?.value ?? 0;
+    const value3056 = response[0]?.value;
+
+    if (value3056 === undefined) {
+      return;
+    }
 
     applyLinkStateFromRead(value3056, linkMaskParam);
   }
@@ -6118,12 +6230,101 @@ function App() {
     return [`aux${odd}` as SendStripId, `aux${even}` as SendStripId];
   }
 
+  function parseBusFromSendId(sendId: SendStripId): { busType: "aux" | "fx"; busNumber: number } | null {
+    if (sendId.startsWith("aux")) {
+      const busNumber = Number(sendId.replace("aux", ""));
+      if (!Number.isFinite(busNumber)) return null;
+      return { busType: "aux", busNumber };
+    }
+
+    if (sendId.startsWith("fx")) {
+      const busNumber = Number(sendId.replace("fx", ""));
+      if (!Number.isFinite(busNumber)) return null;
+      return { busType: "fx", busNumber };
+    }
+
+    return null;
+  }
+
+  function resolveLinkedSendWrites(params: {
+    sourceChannel: number;
+    targetBusType: "aux" | "fx";
+    targetBusNumber: number;
+    value: number;
+    offValue?: number;
+    channelCount: number;
+    auxCount: number;
+    channelLinkState: PairLinkState;
+    auxLinkState: PairLinkState;
+  }) {
+    const {
+      sourceChannel,
+      targetBusType,
+      targetBusNumber,
+      value,
+      offValue = 0,
+      channelCount: maxChannel,
+      auxCount: maxAux,
+      channelLinkState,
+      auxLinkState,
+    } = params;
+
+    if (!Number.isInteger(sourceChannel) || sourceChannel < 1 || sourceChannel > maxChannel) {
+      return [] as Array<{ channel: number; busType: "aux" | "fx"; busNumber: number; value: number }>;
+    }
+
+    const resolvedValue = Math.max(0, Math.min(1300, Math.round(value)));
+    const resolvedOffValue = Math.max(0, Math.min(1300, Math.round(offValue)));
+
+    const [channelOdd, channelEven] = getChannelPair(sourceChannel);
+    const channelPairKey = pairKey(channelOdd, channelEven);
+    const channelLinked = Boolean(channelLinkState[channelPairKey]);
+    const channelTargets = channelLinked ? [channelOdd, channelEven] : [sourceChannel];
+
+    let busTargets = [targetBusNumber];
+
+    if (targetBusType === "aux") {
+      if (!Number.isInteger(targetBusNumber) || targetBusNumber < 1 || targetBusNumber > maxAux) {
+        return [] as Array<{ channel: number; busType: "aux" | "fx"; busNumber: number; value: number }>;
+      }
+
+      const [auxOdd, auxEven] = getAuxPair(targetBusNumber);
+      const auxPairKey = pairKey(auxOdd, auxEven);
+      const auxLinked = auxEven <= maxAux && Boolean(auxLinkState[auxPairKey]);
+      busTargets = auxLinked ? [auxOdd, auxEven] : [targetBusNumber];
+    }
+
+    if (targetBusType === "aux" && channelTargets.length === 2 && busTargets.length === 2) {
+      const [auxOdd, auxEven] = busTargets;
+      return [
+        { channel: channelOdd, busType: targetBusType, busNumber: auxOdd, value: resolvedValue },
+        { channel: channelOdd, busType: targetBusType, busNumber: auxEven, value: resolvedOffValue },
+        { channel: channelEven, busType: targetBusType, busNumber: auxOdd, value: resolvedOffValue },
+        { channel: channelEven, busType: targetBusType, busNumber: auxEven, value: resolvedValue },
+      ];
+    }
+
+    return channelTargets.flatMap((channel) =>
+      busTargets.map((busNumber) => ({
+        channel,
+        busType: targetBusType,
+        busNumber,
+        value: resolvedValue,
+      }))
+    );
+  }
+
   async function syncChannelSendsState(channelNumber: number) {
     const client = clientRef.current;
     if (!client) return;
 
+    const [channelOdd, channelEven] = getChannelPair(channelNumber);
+    const channelKey = pairKey(channelOdd, channelEven);
+    const readFromOddWhenLinked = Boolean(channelLinks[channelKey]);
+    const channelForRead = readFromOddWhenLinked ? channelOdd : channelNumber;
+
     const sendIds = getActiveSendIds();
-    const sendParams = sendIds.map((id) => sendIdToParam(channelNumber, id));
+    const sendParams = sendIds.map((id) => sendIdToParam(channelForRead, id));
     const linkMaskParam = getLinkMaskParam();
     const response = await client.readParams([...sendParams, linkMaskParam], 2200);
     const values = new Map(response.map((item) => [item.param, item.value]));
@@ -6133,19 +6334,36 @@ function App() {
       const nextTapPoints = createDefaultSendTapPoints();
 
       sendIds.forEach((id) => {
-        const param = sendIdToParam(channelNumber, id);
+        const param = sendIdToParam(channelForRead, id);
         const decoded = decodeSendRawValue(values.get(param));
         next[id] = decoded.value;
         nextTapPoints[id] = decoded.tapPoint;
       });
+
+      if (readFromOddWhenLinked) {
+        const auxCount = getAuxBusCount();
+        for (let aux = 1; aux <= auxCount; aux += 2) {
+          const even = aux + 1;
+          if (even > auxCount) continue;
+          const auxKey = pairKey(aux, even);
+          if (!auxLinks[auxKey]) continue;
+
+          const oddId = `aux${aux}` as SendStripId;
+          const evenId = `aux${even}` as SendStripId;
+          next[evenId] = next[oddId];
+          nextTapPoints[evenId] = nextTapPoints[oddId];
+        }
+      }
 
       setSendTapPoints(nextTapPoints);
 
       return next;
     });
 
-    const value3056 = values.get(linkMaskParam) ?? 0;
-    applyLinkStateFromRead(value3056, linkMaskParam);
+    const value3056 = values.get(linkMaskParam);
+    if (value3056 !== undefined) {
+      applyLinkStateFromRead(value3056, linkMaskParam);
+    }
   }
 
   async function syncBusInputSendsState(busType: "aux" | "fx", busNumber: number) {
@@ -6171,8 +6389,10 @@ function App() {
       nextTapPoints[id] = decoded.tapPoint;
     }
 
-    const linkMaskValue = valuesByParam.get(linkMaskParam) ?? 0;
-    applyLinkStateFromRead(linkMaskValue, linkMaskParam);
+    const linkMaskValue = valuesByParam.get(linkMaskParam);
+    if (linkMaskValue !== undefined) {
+      applyLinkStateFromRead(linkMaskValue, linkMaskParam);
+    }
 
     if (busType === "aux") {
       setAuxInputSendValues((current) => ({
@@ -6234,19 +6454,31 @@ function App() {
     nextValue: number
   ) {
     const clampedValue = Math.max(0, Math.min(1300, Math.round(nextValue)));
-    const busTargets = busType === "aux" ? getLinkedAuxTargets(busNumber) : [busNumber];
-    const channelTargets = getLinkedChannelInputTargets(sendId);
+    const sourceChannel = channelFromInputSendId(sendId);
+    if (!sourceChannel) return;
+
+    const resolvedWrites = resolveLinkedSendWrites({
+      sourceChannel,
+      targetBusType: busType,
+      targetBusNumber: busNumber,
+      value: clampedValue,
+      offValue: 0,
+      channelCount,
+      auxCount: getAuxBusCount(),
+      channelLinkState: channelLinks,
+      auxLinkState: auxLinks,
+    });
+
+    if (resolvedWrites.length === 0) return;
 
     if (busType === "aux") {
       setAuxInputSendValues((current) => {
         const next = { ...current };
-        busTargets.forEach((target) => {
-          next[target] = {
-            ...(next[target] ?? createDefaultChannelInputSendValues(channelCount)),
-            ...channelTargets.reduce<Record<string, number>>((acc, channelTarget) => {
-              acc[channelTarget] = clampedValue;
-              return acc;
-            }, {}),
+        resolvedWrites.forEach(({ channel, busNumber: targetBus, value }) => {
+          const channelTarget = `ch${channel}`;
+          next[targetBus] = {
+            ...(next[targetBus] ?? createDefaultChannelInputSendValues(channelCount)),
+            [channelTarget]: value,
           };
         });
         return next;
@@ -6256,27 +6488,24 @@ function App() {
         ...current,
         [busNumber]: {
           ...(current[busNumber] ?? createDefaultChannelInputSendValues(channelCount)),
-          ...channelTargets.reduce<Record<string, number>>((acc, channelTarget) => {
-            acc[channelTarget] = clampedValue;
+          ...resolvedWrites.reduce<Record<string, number>>((acc, write) => {
+            if (write.busNumber !== busNumber) return acc;
+            acc[`ch${write.channel}`] = write.value;
             return acc;
           }, {}),
         },
       }));
     }
 
-    busTargets.forEach((busTarget) => {
-      const mappedSendId = `${busType}${busTarget}` as SendStripId;
-
-      channelTargets.forEach((channelTarget) => {
-        const channel = channelFromInputSendId(channelTarget);
-        if (!channel) return;
-        const tapPoint =
-          busType === "aux"
-            ? auxInputSendTapPoints[busTarget]?.[channelTarget] ?? "post"
-            : fxInputSendTapPoints[busTarget]?.[channelTarget] ?? "post";
-        const param = sendIdToParam(channel, mappedSendId);
-        scheduleSendParamWrite(param, encodeSendRawValue(clampedValue, tapPoint));
-      });
+    resolvedWrites.forEach(({ channel, busNumber: targetBus, value }) => {
+      const mappedSendId = `${busType}${targetBus}` as SendStripId;
+      const channelTarget = `ch${channel}`;
+      const tapPoint =
+        busType === "aux"
+          ? auxInputSendTapPoints[targetBus]?.[channelTarget] ?? "post"
+          : fxInputSendTapPoints[targetBus]?.[channelTarget] ?? "post";
+      const param = sendIdToParam(channel, mappedSendId);
+      scheduleSendParamWrite(param, encodeSendRawValue(value, tapPoint));
     });
   }
 
@@ -6363,20 +6592,43 @@ function App() {
 
   function handleSendValueChange(channelNumber: number, sendId: SendStripId, nextValue: number) {
     const clampedValue = Math.max(0, Math.min(1300, Math.round(nextValue)));
-    const targets = getLinkedAuxSendTargets(sendId);
+    const parsedBus = parseBusFromSendId(sendId);
+    if (!parsedBus) return;
+
+    const resolvedWrites = resolveLinkedSendWrites({
+      sourceChannel: channelNumber,
+      targetBusType: parsedBus.busType,
+      targetBusNumber: parsedBus.busNumber,
+      value: clampedValue,
+      offValue: 0,
+      channelCount,
+      auxCount: getAuxBusCount(),
+      channelLinkState: channelLinks,
+      auxLinkState: auxLinks,
+    });
+
+    if (resolvedWrites.length === 0) return;
 
     setChannelSendValues((current) => {
       const next = { ...current };
-      targets.forEach((target) => {
-        next[target] = clampedValue;
-      });
+
+      if (parsedBus.busType === "aux") {
+        const targets = getLinkedAuxSendTargets(sendId);
+        targets.forEach((target) => {
+          next[target] = clampedValue;
+        });
+      } else {
+        next[sendId] = clampedValue;
+      }
+
       return next;
     });
 
-    targets.forEach((target) => {
-      const param = sendIdToParam(channelNumber, target);
+    resolvedWrites.forEach(({ channel, busType: writeBusType, busNumber, value }) => {
+      const target = `${writeBusType}${busNumber}` as SendStripId;
+      const param = sendIdToParam(channel, target);
       const tapPoint = sendTapPoints[target] ?? "post";
-      scheduleSendParamWrite(param, encodeSendRawValue(clampedValue, tapPoint));
+      scheduleSendParamWrite(param, encodeSendRawValue(value, tapPoint));
     });
   }
 
@@ -9046,8 +9298,10 @@ function App() {
 
     const current = channels[channelNumber - 1];
     const nextValue = !current.usbInputOn;
-    const expectedRawValue = nextValue ? 0 : 1;
-    const controlChannel = resolveInputSourceControlChannel(channelNumber);
+    const expectedRawValue = resolveExpectedInputSourceRawForToggle(nextValue);
+    const controlChannel = isAx32ProfileActive()
+      ? resolveInputSourceControlChannel(channelNumber)
+      : channelNumber;
     if (controlChannel === null) {
       setStatus("Canal sem rota valida de entrada no Patching (use CH 1..32).");
       return;
@@ -9055,7 +9309,7 @@ function App() {
     const sourceParam = inputSourceParam(controlChannel);
 
     try {
-      client.setInputSource(controlChannel, nextValue ? "usb" : "input");
+      client.sendParam(sourceParam, expectedRawValue);
     } catch (error) {
       setStatus(
         error instanceof Error
@@ -9074,7 +9328,9 @@ function App() {
 
         if (rawValue === undefined) continue;
 
-        updateChannelState(channelNumber, { usbInputOn: rawValue === 0 });
+        updateChannelState(channelNumber, {
+          usbInputOn: resolveUsbInputOnFromRaw(rawValue),
+        });
         if (rawValue === expectedRawValue) {
           return;
         }
@@ -9219,7 +9475,7 @@ function App() {
       source,
       setUsbInputToUsbRoutes
     ).then(async () => {
-      await syncUsbInputPatchMap();
+      await syncUsbInputPatchMap({ refreshInputStates: true });
     }).catch(() => {
       setStatus("Falha ao atualizar patch USB input->USB.");
     });
@@ -9235,7 +9491,7 @@ function App() {
       source,
       setUsbReturnRoutes
     ).then(async () => {
-      await syncUsbReturnOutputPatchMap();
+      await syncUsbReturnOutputPatchMap({ refreshInputStates: true });
     }).catch(() => {
       setStatus("Falha ao atualizar patch USB return.");
     });
@@ -9258,8 +9514,8 @@ function App() {
       }
 
       await Promise.all([
-        syncUsbInputPatchMap(),
-        syncUsbReturnOutputPatchMap(),
+        syncUsbInputPatchMap({ refreshInputStates: true }),
+        syncUsbReturnOutputPatchMap({ refreshInputStates: true }),
       ]);
 
       setStatus("Patching USB restaurado para o padrao.");
@@ -9562,6 +9818,14 @@ function App() {
     auxLinkBusyRef.current = true;
     lockAuxPairTransition(key);
 
+    const previousLinked = Boolean(auxLinks[key]);
+    const optimisticLinked = !previousLinked;
+    setAuxLinks((current) => ({
+      ...current,
+      [key]: optimisticLinked,
+    }));
+    setStatus(optimisticLinked ? "Ativando link AUX..." : "Desativando link AUX...");
+
     if (shouldResumeMeter) {
       stopMeterPolling();
     }
@@ -9569,9 +9833,11 @@ function App() {
     try {
       const linkMaskParam = getLinkMaskParam();
       const initialMaskResponse = await client.readParams([linkMaskParam], 2000);
-      const currentMask = initialMaskResponse[0]?.value ?? 0;
-      const isLinked = Boolean(currentMask & bit);
-      const nextLinked = !isLinked;
+      const currentMask = initialMaskResponse[0]?.value;
+      if (currentMask === undefined) {
+        throw new Error("Nao foi possivel ler o estado atual de link AUX.");
+      }
+      const nextLinked = optimisticLinked;
 
       if (nextLinked) {
         const sourceStart = auxBlockStart(odd);
@@ -9631,7 +9897,7 @@ function App() {
 
       client.sendParam(linkMaskParam, nextMask);
 
-      let confirmedMask = nextMask;
+      let confirmedMask: number | undefined;
       for (let attempt = 0; attempt < 4; attempt++) {
         const verify = await client.readParams([linkMaskParam], 2000);
         const value = verify[0]?.value;
@@ -9642,11 +9908,65 @@ function App() {
         if (Boolean(value & bit) === nextLinked) break;
       }
 
+      if (confirmedMask === undefined) {
+        throw new Error("A mesa nao confirmou o estado de link AUX.");
+      }
+
       const confirmedLinked = Boolean(confirmedMask & bit);
       applyLinkStateFrom3056(confirmedMask);
 
       if (confirmedLinked !== nextLinked) {
         throw new Error("A mesa nao confirmou o estado de link AUX.");
+      }
+
+      if (!nextLinked) {
+        // After unlink is confirmed, collapse linked channel pairs to mono per AUX bus,
+        // keeping each bus's active side instead of preserving cross OFF values.
+        const pairTargets = Array.from({ length: channelCount / 2 }, (_, index) => {
+          const channelOdd = index * 2 + 1;
+          const channelEven = channelOdd + 1;
+          const channelKey = pairKey(channelOdd, channelEven);
+
+          return {
+            channelOdd,
+            channelEven,
+            linked: Boolean(channelLinks[channelKey]),
+          };
+        }).filter((pair) => pair.linked);
+
+        const buses = [odd, even];
+
+        for (const bus of buses) {
+          if (pairTargets.length === 0) continue;
+
+          const sendId = `aux${bus}` as SendStripId;
+          const params = pairTargets.flatMap((pair) => [
+            sendIdToParam(pair.channelOdd, sendId),
+            sendIdToParam(pair.channelEven, sendId),
+          ]);
+
+          const response = await client.readParams(params, 2600);
+          const valuesByParam = new Map(response.map((item) => [item.param, item.value]));
+
+          pairTargets.forEach((pair) => {
+            const oddParam = sendIdToParam(pair.channelOdd, sendId);
+            const evenParam = sendIdToParam(pair.channelEven, sendId);
+            const oddRaw = valuesByParam.get(oddParam);
+            const evenRaw = valuesByParam.get(evenParam);
+
+            if (oddRaw === undefined && evenRaw === undefined) return;
+
+            const oddDecoded = decodeSendRawValue(oddRaw);
+            const evenDecoded = decodeSendRawValue(evenRaw);
+            const chooseEven = oddDecoded.value === 0 && evenDecoded.value > 0;
+            const monoRaw = chooseEven
+              ? evenRaw ?? oddRaw ?? encodeSendRawValue(evenDecoded.value, evenDecoded.tapPoint)
+              : oddRaw ?? evenRaw ?? encodeSendRawValue(oddDecoded.value, oddDecoded.tapPoint);
+
+            client.sendParam(oddParam, monoRaw);
+            client.sendParam(evenParam, monoRaw);
+          });
+        }
       }
 
       if (nextLinked) {
@@ -9710,24 +10030,124 @@ function App() {
             [targetId]: sourceTapPoint,
           };
         });
+      } else {
+        setAuxInputSendValues((current) => {
+          const next = {
+            ...current,
+            [odd]: {
+              ...(current[odd] ?? createDefaultChannelInputSendValues(channelCount)),
+            },
+            [even]: {
+              ...(current[even] ?? createDefaultChannelInputSendValues(channelCount)),
+            },
+          };
+
+          for (let channelOdd = 1; channelOdd <= channelCount; channelOdd += 2) {
+            const channelEven = channelOdd + 1;
+            if (channelEven > channelCount) continue;
+            const channelKey = pairKey(channelOdd, channelEven);
+            if (!channelLinks[channelKey]) continue;
+
+            const oddId = `ch${channelOdd}`;
+            const evenId = `ch${channelEven}`;
+
+            [odd, even].forEach((bus) => {
+              const busValues = next[bus];
+              const left = busValues[oddId] ?? 0;
+              const right = busValues[evenId] ?? 0;
+              const mono = left === 0 && right > 0 ? right : left;
+              busValues[oddId] = mono;
+              busValues[evenId] = mono;
+            });
+          }
+
+          return {
+            ...current,
+            [odd]: next[odd],
+            [even]: next[even],
+          };
+        });
+
+        setAuxInputSendTapPoints((current) => {
+          const next = {
+            ...current,
+            [odd]: {
+              ...(current[odd] ?? createDefaultChannelInputSendTapPoints(channelCount)),
+            },
+            [even]: {
+              ...(current[even] ?? createDefaultChannelInputSendTapPoints(channelCount)),
+            },
+          };
+
+          for (let channelOdd = 1; channelOdd <= channelCount; channelOdd += 2) {
+            const channelEven = channelOdd + 1;
+            if (channelEven > channelCount) continue;
+            const channelKey = pairKey(channelOdd, channelEven);
+            if (!channelLinks[channelKey]) continue;
+
+            const oddId = `ch${channelOdd}`;
+            const evenId = `ch${channelEven}`;
+
+            [odd, even].forEach((bus) => {
+              const busValues = next[bus];
+              const leftValue = auxInputSendValues[bus]?.[oddId] ?? 0;
+              const rightValue = auxInputSendValues[bus]?.[evenId] ?? 0;
+              const monoTap =
+                leftValue === 0 && rightValue > 0
+                  ? busValues[evenId] ?? "post"
+                  : busValues[oddId] ?? "post";
+              busValues[oddId] = monoTap;
+              busValues[evenId] = monoTap;
+            });
+          }
+
+          return {
+            ...current,
+            [odd]: next[odd],
+            [even]: next[even],
+          };
+        });
+
+        setChannelSendValues((current) => {
+          return {
+            ...current,
+            [`aux${odd}`]: current[`aux${odd}`] ?? 1200,
+            [`aux${even}`]: current[`aux${even}`] ?? current[`aux${odd}`] ?? 1200,
+          };
+        });
+
+        setSendTapPoints((current) => {
+          return {
+            ...current,
+            [`aux${odd}`]: current[`aux${odd}`] ?? "post",
+            [`aux${even}`]: current[`aux${even}`] ?? current[`aux${odd}`] ?? "post",
+          };
+        });
       }
 
-      // Re-sync pair sends after link toggle so UI and desk stay aligned,
-      // including the pre/post flag for all channel strips.
-      await Promise.allSettled([
+      // Re-sync pair sends after link toggle in background so click feedback stays instant.
+      void Promise.allSettled([
         syncBusInputSendsState("aux", odd),
         syncBusInputSendsState("aux", even),
-      ]);
+      ]).then(() => {
+        if (detailView?.type === "channel") {
+          void syncChannelSendsState(detailView.channel).catch(() => {
+            // Keep optimistic state if readback fails transiently.
+          });
+        }
 
-      if (detailView?.type === "channel") {
-        await syncChannelSendsState(detailView.channel);
-      }
-
-      if (mainView === "auxSends") {
-        const currentAuxTarget = Math.max(1, Math.min(getAuxBusCount(), selectedAuxSendsTarget));
-        await syncBusInputSendsState("aux", currentAuxTarget);
-      }
+        if (mainView === "auxSends") {
+          const currentAuxTarget = Math.max(1, Math.min(getAuxBusCount(), selectedAuxSendsTarget));
+          void syncBusInputSendsState("aux", currentAuxTarget).catch(() => {
+            // Keep optimistic state if readback fails transiently.
+          });
+        }
+      });
     } catch (error) {
+      setAuxLinks((current) => ({
+        ...current,
+        [key]: previousLinked,
+      }));
       setStatus(
         error instanceof Error ? error.message : "Erro ao alternar link de auxiliar"
       );
@@ -10409,8 +10829,10 @@ function App() {
     (async () => {
       // Garante estado de link antes da leitura do processador do canal.
       await syncLinkStates();
+      await syncUsbReturnPatchMap({ refreshInputStates: true });
       await syncChannelPairVisualState();
       await Promise.all([
+        syncChannelState(nextChannel),
         syncChannelProcessorState(nextChannel),
         syncChannelSendsState(nextChannel),
         syncChannelPairContext(nextChannel),
@@ -10571,13 +10993,20 @@ function App() {
   function buildChannelInputSendsView(
     values: ChannelInputSendValues = createDefaultChannelInputSendValues(),
     tapPoints: ChannelInputSendTapPointState = createDefaultChannelInputSendTapPoints(),
-    contextLabel?: string
+    contextLabel?: string,
+    options?: { mirrorLinkedChannels?: boolean }
   ): SendStripView[] {
+    const mirrorLinkedChannels = options?.mirrorLinkedChannels === true;
+
     return channels.map((channelState, index) => {
       const channelNumber = index + 1;
       const [odd, even] = getChannelPair(channelNumber);
       const linkKey = pairKey(odd, even);
       const id = `ch${channelNumber}`;
+      const oddId = `ch${odd}`;
+      const linked = Boolean(channelLinks[linkKey]);
+      const useOddReference = mirrorLinkedChannels && linked && channelNumber === even;
+      const valueRefId = useOddReference ? oddId : id;
 
       return {
         id,
@@ -10586,11 +11015,23 @@ function App() {
         label: `CH ${channelNumber}`,
         name: channelState.channelName?.trim() || `Channel ${channelNumber}`,
         contextLabel,
-        value: values[id] ?? 1200,
-        tapPoint: tapPoints[id] ?? "post",
-        isLinked: Boolean(channelLinks[linkKey]),
+        value: values[valueRefId] ?? 1200,
+        tapPoint: tapPoints[valueRefId] ?? "post",
+        isLinked: linked,
       };
     });
+  }
+
+  function resolveAuxSendsViewSource(auxNumber: number) {
+    const [odd, even] = getAuxPair(auxNumber);
+    const key = pairKey(odd, even);
+    const linked = even <= getAuxBusCount() && Boolean(auxLinks[key]);
+    const sourceAux = linked ? odd : auxNumber;
+
+    return {
+      values: auxInputSendValues[sourceAux],
+      tapPoints: auxInputSendTapPoints[sourceAux],
+    };
   }
 
   function renderFxPresetsContent() {
@@ -11030,10 +11471,12 @@ function App() {
     const [pairOdd, pairEven] = getAuxPair(auxNumber);
     const linkKey = pairKey(pairOdd, pairEven);
     const isLinked = Boolean(auxLinks[linkKey]);
+    const auxViewSource = resolveAuxSendsViewSource(auxNumber);
     const sendsView = buildChannelInputSendsView(
-      auxInputSendValues[auxNumber],
-      auxInputSendTapPoints[auxNumber],
-      `TO AUX ${auxNumber}`
+      auxViewSource.values,
+      auxViewSource.tapPoints,
+      `TO AUX ${auxNumber}`,
+      { mirrorLinkedChannels: isLinked }
     );
 
     return (
@@ -12219,14 +12662,13 @@ function App() {
     const selectedBus = isAux ? selectedAuxSendsTarget : selectedFxSendsTarget;
     const destinationCount = isAux ? auxStrips.length : fxStrips.length;
     const destinations = Array.from({ length: destinationCount }, (_, index) => index + 1);
+    const auxViewSource = isAux ? resolveAuxSendsViewSource(selectedBus) : null;
     const values = isAux
-      ? auxInputSendValues[selectedBus]
+      ? auxViewSource?.values
       : fxInputSendValues[selectedBus];
     const tapPoints = isAux
-      ? auxInputSendTapPoints[selectedBus]
+      ? auxViewSource?.tapPoints
       : fxInputSendTapPoints[selectedBus];
-    const sendsView = buildChannelInputSendsView(values, tapPoints);
-
     const selectedBusProcessorState = isAux
       ? auxProcessorStates[selectedBus - 1] ?? createDefaultAuxProcessorState()
       : fxProcessorStates[selectedBus - 1] ?? createDefaultProcessorState();
@@ -12235,6 +12677,12 @@ function App() {
     const selectedAuxPair = isAux ? getAuxPair(selectedBus) : null;
     const selectedAuxLinkKey = selectedAuxPair ? pairKey(selectedAuxPair[0], selectedAuxPair[1]) : null;
     const selectedAuxLinked = selectedAuxLinkKey ? Boolean(auxLinks[selectedAuxLinkKey]) : false;
+    const sendsView = buildChannelInputSendsView(
+      values,
+      tapPoints,
+      undefined,
+      { mirrorLinkedChannels: isAux && selectedAuxLinked }
+    );
 
     return (
       <div
