@@ -978,6 +978,41 @@ body {
   grid-template-rows: 76px minmax(0, 1fr);
 }
 
+.connect-blocking-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 220;
+  display: grid;
+  place-items: center;
+  background: var(--surface-overlay-strong);
+  backdrop-filter: blur(2px);
+  pointer-events: all;
+}
+
+.connect-blocking-overlay__card {
+  min-width: min(480px, calc(100vw - 48px));
+  max-width: min(640px, calc(100vw - 48px));
+  display: grid;
+  gap: 8px;
+  padding: 20px 24px;
+  border-radius: 14px;
+  border: 1px solid var(--border-default);
+  background: var(--surface-card);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.35);
+  text-align: center;
+}
+
+.connect-blocking-overlay__card strong {
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.connect-blocking-overlay__card span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .top-nav {
   height: 100%;
   min-height: 76px;

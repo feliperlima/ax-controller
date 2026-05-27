@@ -2470,6 +2470,7 @@ function App() {
   void _ip;
   const [status, setStatus] = useState("Desconectado");
   const [connectingSource, setConnectingSource] = useState<"manual" | "discovered" | null>(null);
+  const [initialConnectSyncBusy, setInitialConnectSyncBusy] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -7617,42 +7618,6 @@ function App() {
       return false;
     }
 
-    if (LICENSE_API_BASE_URL && installationId && isOnline && storedLicenseKey) {
-      try {
-        const snapshot = await requestLicenseStatus(false, storedLicenseKey);
-        if (snapshot) {
-          const formalState = resolveLicenseFormalState({
-            snapshot,
-            warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
-            fallbackTrialExpiryAt: licenseTrialExpiryAt,
-            fallbackNextRevalidationAt: licenseNextRevalidationAt,
-          });
-
-          applyLicenseSnapshot(snapshot, storedLicenseKey, snapshot.message || "Status de licença atualizado.");
-
-          if (isLicenseStateBlocked(formalState)) {
-            setLicenseValidationMessage({
-              kind: "error",
-              text: snapshot.message || "Licença revogada/suspensa neste dispositivo.",
-            });
-            openLicenseModal(true, "onboarding");
-            setConnectingSource(null);
-            return false;
-          }
-        }
-      } catch {
-        if (LICENSE_STRICT_SERVER_VALIDATION) {
-          setLicenseValidationMessage({
-            kind: "error",
-            text: "Não foi possível validar online a licença antes da conexão.",
-          });
-          openLicenseModal(true, "onboarding");
-          setConnectingSource(null);
-          return false;
-        }
-      }
-    }
-
     if ((!isLicenseValidated || isLicenseStateBlocked(licenseFormalState)) && !allowsTrialWithoutKey) {
       setLicenseValidationMessage({
         kind: "error",
@@ -7672,6 +7637,10 @@ function App() {
       setConnectingSource(null);
       return false;
     }
+
+    setAppStage("mixer");
+    setInitialConnectSyncBusy(true);
+    setStatus("Conectando à mesa...");
 
     try {
       if (source === "manual") {
@@ -7716,7 +7685,6 @@ function App() {
         : `Conectado em ${normalizedIp}`;
 
       setStatus("Sincronizando mesa...");
-      setAppStage("mixer");
 
       if (channelCount !== targetChannelCount || ACTIVE_CHANNEL_PROFILE !== selectedProfile) {
         applyMixerChannelProfile(targetChannelCount);
@@ -7848,12 +7816,16 @@ function App() {
         void refreshResolvedInputSourceStates().catch(() => {
           // Background refresh for INPUT/USB state after connect to keep startup responsive.
         });
-      })();
+      })().finally(() => {
+        setInitialConnectSyncBusy(false);
+      });
       return true;
     } catch (error) {
       stopMeterPolling();
       clearLocalParamWriteTracking();
       setIsConnected(false);
+      setInitialConnectSyncBusy(false);
+      setAppStage("device-selection");
       setActiveMixerCacheIdentity(null);
       const detail = error instanceof Error ? error.message : "Erro ao conectar";
       setStatus(detail);
@@ -8711,6 +8683,49 @@ function App() {
     setLicenseModalMandatory(blocked);
     setLicenseModalMode(blocked ? (licenseFormalState === "TRIAL_EXPIRED" ? "upgrade" : "onboarding") : "settings");
     setLicenseModalOpen(blocked);
+  }
+
+  function handleLogout() {
+    stopMeterPolling();
+    clearScheduledSendWrites();
+    clearLocalParamWriteTracking();
+
+    clientRef.current?.disconnect();
+    clientRef.current = null;
+
+    localStorage.removeItem(LICENSE_KEY_STORAGE_KEY);
+    localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+    localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
+    localStorage.removeItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY);
+    clearRuntimeLicenseCache();
+
+    setIsConnected(false);
+    setConnectionError(null);
+    setStatus("Sessao encerrada");
+    setDetailView(null);
+    setMainView("mixer");
+    setSettingsDropdownOpen(false);
+    setAppStage("device-selection");
+    setConnectingSource(null);
+    setActiveMixerCacheIdentity(null);
+    setPendingDiscoveryMixer(null);
+
+    setLicenseKeyInput("");
+    setLicenseSignInEmail("");
+    setLicenseSignInPassword("");
+    setLicenseRegisterPassword("");
+    setLicenseRegisterConfirmPassword("");
+    setHasLicenseActivatedOnce(false);
+    setIsLicenseValidated(false);
+    setLicenseFormalState("LICENSE_NOT_FOUND");
+    setLicenseNextRevalidationAt(null);
+    setLicenseTrialExpiryAt(null);
+    setLicenseDevices([]);
+    setLicenseRevalidationHint("");
+    setLicenseValidationMessage({ kind: "idle", text: "" });
+    setLicenseModalMandatory(true);
+    setLicenseModalMode("onboarding");
+    setLicenseModalOpen(true);
   }
 
   function enforceLicenseBlock(message: string, mode: "onboarding" | "upgrade" = "onboarding") {
@@ -13049,6 +13064,11 @@ function App() {
     );
   }
 
+  const showConnectBlockingOverlay = connectingSource !== null || initialConnectSyncBusy;
+  const connectBlockingText = connectingSource !== null
+    ? "Conectando à mesa..."
+    : "Sincronizando mesa...";
+
   return (
     <main
       key={`scene-ui-refresh-${sceneUiRefreshNonce}`}
@@ -13058,6 +13078,15 @@ function App() {
       <div className="portrait-orientation-hint">
         Para melhor experiência, use em modo paisagem.
       </div>
+
+      {showConnectBlockingOverlay && (
+        <div className="connect-blocking-overlay" role="status" aria-live="polite">
+          <div className="connect-blocking-overlay__card">
+            <strong>{connectBlockingText}</strong>
+            <span>Aguarde, preparando controles e sincronização inicial.</span>
+          </div>
+        </div>
+      )}
 
       <nav className="top-nav" data-node-id="18:438">
         <div className="top-nav__brand" data-node-id="73:2724">
@@ -13188,6 +13217,13 @@ function App() {
                   }}
                 >
                   Disconnect
+                </button>
+                <button
+                  type="button"
+                  className="settings-dropdown__item settings-dropdown__item--danger"
+                  onClick={handleLogout}
+                >
+                  Logout
                 </button>
               </div>
             )}
