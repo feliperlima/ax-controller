@@ -4,6 +4,7 @@ import { stripColorForScope } from "./stripColor";
 type PatchingViewProps = {
   isConnected: boolean;
   isAx32ProfileActive: boolean;
+  resetBusy?: boolean;
   channelCount?: number;
   usbInputToUsbRoutes: number[];
   usbReturnRoutes: number[];
@@ -17,6 +18,8 @@ type PatchingViewProps = {
   onUsbReturnRouteChange: (destination: number, source: number) => void;
   onInputRouteChange: (destination: number, source: number) => void;
   onOutputRouteChange: (destination: number, source: number) => void;
+  onResetRecordPatchingDefaults: () => void;
+  onResetPlayPatchingDefaults: () => void;
 };
 
 function sourceLabel(prefix: string, source: number) {
@@ -26,6 +29,7 @@ function sourceLabel(prefix: string, source: number) {
 export function PatchingView({
   isConnected,
   isAx32ProfileActive,
+  resetBusy = false,
   channelCount = 32,
   usbInputToUsbRoutes,
   usbReturnRoutes,
@@ -39,6 +43,8 @@ export function PatchingView({
   onUsbReturnRouteChange,
   onInputRouteChange,
   onOutputRouteChange,
+  onResetRecordPatchingDefaults,
+  onResetPlayPatchingDefaults,
 }: PatchingViewProps) {
   if (!isAx32ProfileActive) {
     return (
@@ -87,17 +93,87 @@ export function PatchingView({
   const inputSourceOptions = Array.from({ length: inputSourceMax }, (_, sourceIndex) => sourceIndex + 1);
   const outputSourceOptions = Array.from({ length: outputSourceMax }, (_, sourceIndex) => sourceIndex + 1);
 
+  const secondaryRows = activeTab === "record"
+    ? channels.slice(0, usbReturnVisibleCount).map((channel) => ({
+        key: `record-return-${channel.id}`,
+        tag: channel.tag,
+        name: channel.name,
+        color: channel.color,
+        destination: channel.id,
+        currentSource: usbReturnRoutes[channel.id - 1] ?? 0,
+        sourcePrefix: "USB ",
+        options: usbSourceOptions,
+        onChange: onUsbReturnRouteChange,
+      }))
+    : auxRows.map((row) => ({
+        key: `play-output-${row.id}`,
+        tag: row.tag,
+        name: row.name,
+        color: row.color,
+        destination: row.id,
+        currentSource: outputRoutes[row.id - 1] ?? 0,
+        sourcePrefix: "AUX ",
+        options: outputSourceOptions,
+        onChange: onOutputRouteChange,
+      }));
+
+  const secondarySplitIndex = Math.ceil(secondaryRows.length / 2);
+  const secondaryCol1 = activeTab === "record" ? secondaryRows.slice(0, secondarySplitIndex) : secondaryRows;
+  const secondaryCol2 = activeTab === "record" ? secondaryRows.slice(secondarySplitIndex) : [];
+
+  const hasAnyPatchedRoute = activeTab === "record"
+    ? channels.some((channel) => (usbInputToUsbRoutes[channel.id - 1] ?? 0) !== 0) ||
+      channels.slice(0, usbReturnVisibleCount).some((channel) => (usbReturnRoutes[channel.id - 1] ?? 0) !== 0)
+    : channels.some((channel) => (inputRoutes[channel.id - 1] ?? 0) !== 0) ||
+      auxRows.some((row) => (outputRoutes[row.id - 1] ?? 0) !== 0);
+
+  const handleClearActiveTab = () => {
+    if (activeTab === "record") {
+      onResetRecordPatchingDefaults();
+
+      return;
+    }
+
+    onResetPlayPatchingDefaults();
+  };
+
+  const renderPatchingRow = (row: {
+    key: string;
+    tag: string;
+    name: string;
+    color: string;
+    destination: number;
+    currentSource: number;
+    sourcePrefix: string;
+    options: number[];
+    allowUnpatched?: boolean;
+    onChange: (destination: number, source: number) => void;
+  }) => (
+    <div key={row.key} className="patching-structured-row">
+      <span className="groups-structured-row__tag" style={{ "--channel-accent": row.color } as CSSProperties}>
+        {row.tag}
+      </span>
+      <span className="groups-structured-row__name">{row.name}</span>
+      <select
+        className={`patching-row__select patching-row__select--matrix ${row.currentSource === 0 ? "patching-row__select--empty" : ""}`}
+        value={row.currentSource}
+        disabled={!isConnected}
+        onChange={(event) => {
+          row.onChange(row.destination, Number(event.target.value));
+        }}
+      >
+        {row.allowUnpatched !== false && <option value={0}>Unpatched</option>}
+        {row.options.map((source) => (
+          <option key={`${row.key}-source-${source}`} value={source}>
+            {sourceLabel(row.sourcePrefix, source)}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+
   return (
     <section className="patching-view">
-      <div className="patching-view__header">
-        <h2 className="patching-view__title">Patching</h2>
-        <p className="patching-view__hint">
-          {activeTab === "record"
-            ? "Controle USB (Record/Play). Escolher uma rota ja usada libera o destino anterior como Unpatched."
-            : "Patching fisico de canais. Escolher uma rota ja usada libera o destino anterior como Unpatched."}
-        </p>
-      </div>
-
       <div className="groups-structured-tabs" role="tablist" aria-label="Patching tabs">
         <button
           id="patching-tab-record"
@@ -122,6 +198,22 @@ export function PatchingView({
       </div>
 
       <section className="groups-structured-panel" role="tabpanel" aria-labelledby={`patching-tab-${activeTab}`}>
+        <div className="groups-view__matrix-header">
+          <span className="groups-view__matrix-title">
+            {activeTab === "record" ? "Patching USB" : "Patching Fisico"}
+          </span>
+          <div className="groups-view__matrix-actions groups-view__matrix-actions--outline">
+            <button
+              type="button"
+              className="groups-view__action-btn"
+              disabled={!isConnected || !hasAnyPatchedRoute || resetBusy}
+              onClick={handleClearActiveTab}
+            >
+              CLEAR ALL
+            </button>
+          </div>
+        </div>
+
         <div className="groups-matrix-card patching-matrix-card">
           <section className="groups-matrix-col groups-matrix-col--channels patching-matrix-col">
             <header className="groups-matrix-col__header">
@@ -137,32 +229,18 @@ export function PatchingView({
                       : (inputRoutes[destination - 1] ?? 0);
 
                     return (
-                      <div key={`${activeTab}-left-${destination}`} className="patching-structured-row">
-                        <span className="groups-structured-row__tag" style={{ "--channel-accent": channel.color } as CSSProperties}>
-                          {channel.tag}
-                        </span>
-                        <span className="groups-structured-row__name">{channel.name}</span>
-                        <select
-                          className={`patching-row__select patching-row__select--matrix ${currentSource === 0 ? "patching-row__select--empty" : ""}`}
-                          value={currentSource}
-                          disabled={!isConnected}
-                          onChange={(event) => {
-                            const value = Number(event.target.value);
-                            if (activeTab === "record") {
-                              onUsbInputToUsbRouteChange(destination, value);
-                              return;
-                            }
-                            onInputRouteChange(destination, value);
-                          }}
-                        >
-                          <option value={0}>Unpatched</option>
-                          {(activeTab === "record" ? usbSourceOptions : inputSourceOptions).map((source) => (
-                            <option key={`${activeTab}-left-${destination}-source-${source}`} value={source}>
-                              {sourceLabel(activeTab === "record" ? "USB " : "CH ", source)}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                      renderPatchingRow({
+                        key: `${activeTab}-left-${destination}`,
+                        tag: channel.tag,
+                        name: channel.name,
+                        color: channel.color,
+                        destination,
+                        currentSource,
+                        sourcePrefix: activeTab === "record" ? "USB " : "CH ",
+                        options: activeTab === "record" ? usbSourceOptions : inputSourceOptions,
+                        allowUnpatched: activeTab !== "record",
+                        onChange: activeTab === "record" ? onUsbInputToUsbRouteChange : onInputRouteChange,
+                      })
                     );
                   })}
                 </div>
@@ -175,32 +253,18 @@ export function PatchingView({
                       : (inputRoutes[destination - 1] ?? 0);
 
                     return (
-                      <div key={`${activeTab}-right-${destination}`} className="patching-structured-row">
-                        <span className="groups-structured-row__tag" style={{ "--channel-accent": channel.color } as CSSProperties}>
-                          {channel.tag}
-                        </span>
-                        <span className="groups-structured-row__name">{channel.name}</span>
-                        <select
-                          className={`patching-row__select patching-row__select--matrix ${currentSource === 0 ? "patching-row__select--empty" : ""}`}
-                          value={currentSource}
-                          disabled={!isConnected}
-                          onChange={(event) => {
-                            const value = Number(event.target.value);
-                            if (activeTab === "record") {
-                              onUsbInputToUsbRouteChange(destination, value);
-                              return;
-                            }
-                            onInputRouteChange(destination, value);
-                          }}
-                        >
-                          <option value={0}>Unpatched</option>
-                          {(activeTab === "record" ? usbSourceOptions : inputSourceOptions).map((source) => (
-                            <option key={`${activeTab}-right-${destination}-source-${source}`} value={source}>
-                              {sourceLabel(activeTab === "record" ? "USB " : "CH ", source)}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                      renderPatchingRow({
+                        key: `${activeTab}-right-${destination}`,
+                        tag: channel.tag,
+                        name: channel.name,
+                        color: channel.color,
+                        destination,
+                        currentSource,
+                        sourcePrefix: activeTab === "record" ? "USB " : "CH ",
+                        options: activeTab === "record" ? usbSourceOptions : inputSourceOptions,
+                        allowUnpatched: activeTab !== "record",
+                        onChange: activeTab === "record" ? onUsbInputToUsbRouteChange : onInputRouteChange,
+                      })
                     );
                   })}
                 </div>
@@ -212,53 +276,17 @@ export function PatchingView({
             <header className="groups-matrix-col__header">
               <span className="groups-matrix-col__title">{activeTab === "record" ? "USB RETURN" : "AUX / BUSSES"}</span>
             </header>
-            <div className="groups-matrix-col__list patching-matrix-list">
-              {(activeTab === "record"
-                ? channels.slice(0, usbReturnVisibleCount).map((channel) => ({
-                    key: `record-return-${channel.id}`,
-                    tag: channel.tag,
-                    name: channel.name,
-                    color: channel.color,
-                    destination: channel.id,
-                    currentSource: usbReturnRoutes[channel.id - 1] ?? 0,
-                    sourcePrefix: "USB ",
-                    options: usbSourceOptions,
-                    onChange: onUsbReturnRouteChange,
-                  }))
-                : auxRows.map((row) => ({
-                    key: `play-output-${row.id}`,
-                    tag: row.tag,
-                    name: row.name,
-                    color: row.color,
-                    destination: row.id,
-                    currentSource: outputRoutes[row.id - 1] ?? 0,
-                    sourcePrefix: "AUX ",
-                    options: outputSourceOptions,
-                    onChange: onOutputRouteChange,
-                  }))
-              ).map((row) => (
-                <div key={row.key} className="patching-structured-row">
-                  <span className="groups-structured-row__tag" style={{ "--channel-accent": row.color } as CSSProperties}>
-                    {row.tag}
-                  </span>
-                  <span className="groups-structured-row__name">{row.name}</span>
-                  <select
-                    className={`patching-row__select patching-row__select--matrix ${row.currentSource === 0 ? "patching-row__select--empty" : ""}`}
-                    value={row.currentSource}
-                    disabled={!isConnected}
-                    onChange={(event) => {
-                      row.onChange(row.destination, Number(event.target.value));
-                    }}
-                  >
-                    <option value={0}>Unpatched</option>
-                    {row.options.map((source) => (
-                      <option key={`${row.key}-source-${source}`} value={source}>
-                        {sourceLabel(row.sourcePrefix, source)}
-                      </option>
-                    ))}
-                  </select>
+            <div className="groups-matrix-col__list">
+              <div className={`groups-matrix-col__split patching-matrix-split ${activeTab === "record" ? "patching-matrix-split--secondary" : ""}`}>
+                <div className="patching-matrix-list">
+                  {secondaryCol1.map((row) => renderPatchingRow(row))}
                 </div>
-              ))}
+                {activeTab === "record" && secondaryCol2.length > 0 && (
+                  <div className="patching-matrix-list">
+                    {secondaryCol2.map((row) => renderPatchingRow(row))}
+                  </div>
+                )}
+              </div>
             </div>
           </section>
         </div>

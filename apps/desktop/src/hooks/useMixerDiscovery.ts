@@ -75,12 +75,28 @@ export function useMixerDiscovery(enabled: boolean): UseMixerDiscoveryResult {
 
     const timer = window.setInterval(() => {
       void refresh(true);
-    }, mixers.length > 0 ? 8000 : 2000);
+    }, mixers.length > 0 ? 3000 : 1200);
 
     return () => {
       window.clearInterval(timer);
     };
   }, [enabled, mixers.length, refresh]);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    const onFocus = () => {
+      void refresh(true);
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [enabled, refresh]);
 
   return {
     mixers,

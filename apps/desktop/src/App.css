@@ -344,7 +344,14 @@ body {
 
 .patching-view__header {
   display: grid;
-  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-card) 92%, transparent);
 }
 
 .patching-view__title {
@@ -387,6 +394,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .patching-structured-row {
@@ -409,6 +417,12 @@ body {
   height: 30px;
   padding: 0 8px;
   justify-self: end;
+  width: 100%;
+  min-width: 0;
+}
+
+.patching-matrix-split--secondary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .patching-card {
@@ -499,6 +513,10 @@ body {
   .patching-row__select--matrix {
     grid-column: 1 / -1;
     justify-self: stretch;
+  }
+
+  .patching-matrix-split--secondary {
+    grid-template-columns: 1fr;
   }
 }
 
