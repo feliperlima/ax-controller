@@ -1802,8 +1802,8 @@ body {
 }
 
 .settings-modal--settings {
-  width: min(700px, 100%);
-  gap: 14px;
+  width: min(720px, 100%);
+  gap: 12px;
 }
 
 .settings-modal__hint {
@@ -1825,10 +1825,10 @@ body {
 .settings-modal__license-overview-capacity {
   display: grid;
   align-content: center;
-  gap: 2px;
-  min-height: 70px;
-  padding: 12px 14px;
-  border-radius: 12px;
+  gap: 1px;
+  min-height: 68px;
+  padding: 12px 16px;
+  border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--semantic-accent-base) 24%, var(--border-default));
   background:
     radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--semantic-accent-base) 14%, transparent), transparent 58%),
@@ -1837,7 +1837,7 @@ body {
 
 .settings-modal__license-overview-status strong,
 .settings-modal__license-overview-capacity strong {
-  font-size: 18px;
+  font-size: 22px;
   line-height: 1.1;
   font-weight: 800;
   color: var(--text-primary);
@@ -1845,15 +1845,30 @@ body {
 
 .settings-modal__license-overview-status span,
 .settings-modal__license-overview-capacity span {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.35;
   color: color-mix(in srgb, var(--text-secondary) 92%, transparent);
 }
 
 .settings-modal__license-overview-capacity {
-  min-width: 172px;
+  min-width: 188px;
   justify-items: end;
   text-align: right;
+}
+
+.settings-modal--settings-trial .settings-modal__license-overview-status {
+  border-color: color-mix(in srgb, var(--semantic-accent-base) 30%, transparent);
+}
+
+.settings-modal--settings-full .settings-modal__license-overview-status {
+  border-color: color-mix(in srgb, var(--semantic-success-base) 38%, transparent);
+  background:
+    radial-gradient(circle at 0% 0%, color-mix(in srgb, var(--semantic-success-base) 14%, transparent), transparent 58%),
+    color-mix(in srgb, #13243e 76%, transparent);
+}
+
+.settings-modal--settings-full .settings-modal__license-overview-capacity strong {
+  color: color-mix(in srgb, var(--semantic-success-base) 70%, var(--text-primary));
 }
 
 .settings-modal__row {
@@ -1930,9 +1945,9 @@ body {
 
 .settings-modal__settings-card {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   padding: 16px;
-  border-radius: 12px;
+  border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--border-default) 90%, transparent);
   background: color-mix(in srgb, #13243e 70%, transparent);
 }
@@ -1950,7 +1965,7 @@ body {
 
 .settings-modal__settings-card-header h3 {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   line-height: 1.15;
   font-weight: 800;
   color: var(--text-primary);
@@ -1958,7 +1973,7 @@ body {
 
 .settings-modal__settings-card-header p {
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.45;
   color: color-mix(in srgb, var(--text-secondary) 92%, transparent);
 }
@@ -1970,28 +1985,7 @@ body {
 }
 
 .settings-modal__settings-inline-actions .startup-button {
-  min-width: 168px;
-}
-
-.settings-modal__license-usage {
-  display: grid;
-  gap: 2px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--semantic-accent-base) 20%, transparent);
-  background: color-mix(in srgb, var(--semantic-accent-base) 10%, transparent);
-}
-
-.settings-modal__license-usage strong {
-  font-size: 13px;
-  line-height: 1.3;
-  color: var(--text-primary);
-}
-
-.settings-modal__license-usage span {
-  font-size: 11px;
-  line-height: 1.35;
-  color: color-mix(in srgb, var(--text-secondary) 92%, transparent);
+  min-width: 176px;
 }
 
 .settings-modal__device-list {
@@ -2004,8 +1998,8 @@ body {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
-  padding: 12px 14px;
-  border-radius: 10px;
+  padding: 12px 16px;
+  border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--border-default) 88%, transparent);
   background: color-mix(in srgb, var(--surface-control) 86%, transparent);
 }
@@ -2017,13 +2011,13 @@ body {
 }
 
 .settings-modal__device-copy strong {
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.3;
   color: var(--text-primary);
 }
 
 .settings-modal__device-copy span {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.35;
   color: color-mix(in srgb, var(--text-secondary) 90%, transparent);
 }
@@ -2457,7 +2451,7 @@ body {
 .settings-modal__actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
   padding-top: 4px;
 }

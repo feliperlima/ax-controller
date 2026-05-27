@@ -14,8 +14,43 @@ export type AxiosProtocolProfile = "ax16_24" | "ax32" | "ax32_experimental";
 
 let ACTIVE_PROTOCOL_PROFILE: AxiosProtocolProfile = "ax16_24";
 
+type ProfileCapabilities = {
+  channelCount: number;
+  fxCount: number;
+  auxCount: number;
+  nameMaxLength: number;
+};
+
+let ACTIVE_PROFILE_CAPABILITIES: ProfileCapabilities = {
+  channelCount: 24,
+  fxCount: 2,
+  auxCount: 8,
+  nameMaxLength: 12,
+};
+
 function normalizeProtocolProfile(profile: AxiosProtocolProfile): AxiosProtocolProfile {
   return profile === "ax32" ? "ax32_experimental" : profile;
+}
+
+function resolveProfileCapabilities(
+  profile: AxiosProtocolProfile,
+  overrides?: Partial<Pick<ProfileCapabilities, "channelCount">>
+): ProfileCapabilities {
+  const isAx32 = profile === "ax32_experimental";
+  const defaultChannelCount = isAx32 ? 32 : 24;
+  const maxChannelCount = isAx32 ? 32 : 24;
+
+  const channelCount = Math.max(
+    1,
+    Math.min(maxChannelCount, Math.round(overrides?.channelCount ?? defaultChannelCount))
+  );
+
+  return {
+    channelCount,
+    fxCount: isAx32 ? 4 : 2,
+    auxCount: isAx32 ? 14 : 8,
+    nameMaxLength: 12,
+  };
 }
 
 const CHANNEL_STRIDE = 62;
@@ -423,7 +458,7 @@ function fxColorParam(fxNumber: number) {
 function channelSoloParams(channel: number) {
   const rounded = Math.round(channel);
 
-  const maxChannel = ACTIVE_PROTOCOL_PROFILE === "ax32_experimental" ? 32 : 16;
+  const maxChannel = ACTIVE_PROFILE_CAPABILITIES.channelCount;
 
   if (rounded < 1 || rounded > maxChannel) {
     throw new Error(`Canal inválido para solo. Use de 1 a ${maxChannel}.`);
@@ -657,26 +692,38 @@ function decodeNameResponse(buffer: ArrayBuffer) {
 }
 
 function getNameTargetIndex(target: NameTarget) {
+  const { channelCount, fxCount, auxCount } = ACTIVE_PROFILE_CAPABILITIES;
+
   if (target.type === "channel") {
     const channel = Math.round(target.channel);
-    if (channel < 1 || channel > 16) {
-      throw new Error("Canal inválido para nome. Use de 1 a 16.");
+    if (channel < 1 || channel > channelCount) {
+      throw new Error(`Canal inválido para nome. Use de 1 a ${channelCount}.`);
     }
     return channel - 1;
   }
 
   if (target.type === "fx") {
     const fx = Math.round(target.fx);
-    if (fx < 1 || fx > 2) {
-      throw new Error("FX inválido para nome. Use 1 ou 2.");
+    if (fx < 1 || fx > fxCount) {
+      throw new Error(`FX inválido para nome. Use de 1 a ${fxCount}.`);
     }
+
+    if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+      return 33 + fx;
+    }
+
     return 25 + fx;
   }
 
   const aux = Math.round(target.aux);
-  if (aux < 1 || aux > 8) {
-    throw new Error("AUX inválido para nome. Use de 1 a 8.");
+  if (aux < 1 || aux > auxCount) {
+    throw new Error(`AUX inválido para nome. Use de 1 a ${auxCount}.`);
   }
+
+  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
+    return 37 + aux;
+  }
+
   return 27 + aux;
 }
 
@@ -684,16 +731,20 @@ function makeReadNameCommand(targetIndex: number) {
   return buildRawDuonnPacket(46, [targetIndex & 255]);
 }
 
-export function toMixerSafeName(name: string) {
+export function toMixerSafeName(name: string, maxLength = 12) {
   return name
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-zA-Z0-9 _-]/g, "")
-    .slice(0, 12);
+    .slice(0, Math.max(1, maxLength));
 }
 
-function makeWriteNameCommand(targetIndex: number, displayName: string) {
-  const safe = toMixerSafeName(displayName);
+function makeWriteNameCommand(
+  targetIndex: number,
+  displayName: string,
+  capabilities: ProfileCapabilities
+) {
+  const safe = toMixerSafeName(displayName, capabilities.nameMaxLength);
   const nameBytes = Array.from(new TextEncoder().encode(safe));
   return buildRawDuonnPacket(47, [targetIndex & 255, ...nameBytes]);
 }
@@ -1063,14 +1114,18 @@ export class Axios16Client {
   private readQueue: Promise<void> = Promise.resolve();
   private onDisconnectCallback: (() => void) | null = null;
   private localParamWriteListeners = new Set<(write: LocalParamWrite) => void>();
+  private capabilities: ProfileCapabilities;
 
   constructor(
     private ip: string,
     private port = 8088,
-    private profile: AxiosProtocolProfile = "ax16_24"
+    private profile: AxiosProtocolProfile = "ax16_24",
+    capabilitiesOverrides?: Partial<Pick<ProfileCapabilities, "channelCount">>
   ) {
     this.profile = normalizeProtocolProfile(this.profile);
+    this.capabilities = resolveProfileCapabilities(this.profile, capabilitiesOverrides);
     ACTIVE_PROTOCOL_PROFILE = this.profile;
+    ACTIVE_PROFILE_CAPABILITIES = this.capabilities;
   }
 
   setOnDisconnect(callback: () => void) {
@@ -1352,7 +1407,7 @@ export class Axios16Client {
     }
 
     const targetIndex = getNameTargetIndex(target);
-    const packet = makeWriteNameCommand(targetIndex, displayName);
+    const packet = makeWriteNameCommand(targetIndex, displayName, this.capabilities);
     this.ws.send(packet);
   }
 
@@ -1366,7 +1421,7 @@ export class Axios16Client {
     }
 
     const normalizedTargetIndex = Math.round(targetIndex);
-    const packet = makeWriteNameCommand(normalizedTargetIndex, displayName);
+    const packet = makeWriteNameCommand(normalizedTargetIndex, displayName, this.capabilities);
     this.ws.send(packet);
   }
 
@@ -1394,21 +1449,44 @@ export class Axios16Client {
     this.setName({ type: "fx", fx }, displayName);
   }
 
-  async readChannelNames(channelCount = 16, timeoutMs = 1200) {
+  async readChannelNames(channelCount = this.capabilities.channelCount, timeoutMs = 1200) {
     const result: Record<number, string> = {};
-    const safeChannelCount = Math.max(1, Math.min(32, Math.round(channelCount)));
+    const safeChannelCount = Math.max(
+      1,
+      Math.min(this.capabilities.channelCount, Math.round(channelCount))
+    );
 
     for (let channel = 1; channel <= safeChannelCount; channel++) {
-      result[channel] = await this.readChannelName(channel, timeoutMs);
+      try {
+        result[channel] = await this.readChannelName(channel, timeoutMs);
+      } catch (error) {
+        // AX16/24 share profile. If probing CH17+ times out, stop extra reads
+        // to avoid delaying initial mixer entry.
+        if (
+          this.profile !== "ax32_experimental" &&
+          channel > 16 &&
+          error instanceof Error &&
+          error.message.includes("Timeout ao ler nome da mesa")
+        ) {
+          break;
+        }
+
+        throw error;
+      }
     }
 
     return result;
   }
 
-  async readAuxNames(timeoutMs = 1200) {
+  async readAuxNames(timeoutMs = 1200, auxCount?: number) {
     const result: Record<number, string> = {};
 
-    for (let aux = 1; aux <= 8; aux++) {
+    const safeAuxCount = Math.max(
+      1,
+      Math.min(this.capabilities.auxCount, Math.round(auxCount ?? this.capabilities.auxCount))
+    );
+
+    for (let aux = 1; aux <= safeAuxCount; aux++) {
       result[aux] = await this.readAuxName(aux, timeoutMs);
     }
 
@@ -1418,10 +1496,9 @@ export class Axios16Client {
   async readFxNames(timeoutMs = 1200, fxCount?: number) {
     const result: Record<number, string> = {};
 
-    const maxFx = this.profile === "ax32_experimental" ? 4 : 2;
     const safeFxCount = Math.max(
       1,
-      Math.min(maxFx, Math.round(fxCount ?? maxFx))
+      Math.min(this.capabilities.fxCount, Math.round(fxCount ?? this.capabilities.fxCount))
     );
 
     for (let fx = 1; fx <= safeFxCount; fx++) {
@@ -1530,7 +1607,7 @@ export class Axios16Client {
   }
 
   setInputSource(channel: number, source: "input" | "usb") {
-    const maxChannel = this.profile === "ax32_experimental" ? 32 : 16;
+    const maxChannel = this.capabilities.channelCount;
     if (channel < 1 || channel > maxChannel) {
       throw new Error(`Canal inválido. Use de 1 a ${maxChannel}.`);
     }

@@ -1767,8 +1767,13 @@ function isDefaultMixerName(target: NameTarget, mixerName: string) {
   }
 
   if (target.type === "aux") {
+    const ax32CompactAlias = isAx32ProfileActive() && target.aux >= 10
+      ? `AX${target.aux}`
+      : null;
+
     return (
       normalized === `AUX${target.aux}` ||
+      (ax32CompactAlias !== null && normalized === ax32CompactAlias) ||
       normalized === `AUXILIAR${target.aux}`
     );
   }
@@ -1788,7 +1793,13 @@ function getDefaultDisplayName(target: NameTarget) {
 
 function getDefaultMixerAlias(target: NameTarget) {
   if (target.type === "channel") return `CH${target.channel}`;
-  if (target.type === "aux") return `AUX${target.aux}`;
+  if (target.type === "aux") {
+    if (isAx32ProfileActive() && target.aux >= 10) {
+      return `AX${target.aux}`;
+    }
+
+    return `AUX${target.aux}`;
+  }
   return `FX${target.fx}`;
 }
 
@@ -2469,7 +2480,7 @@ function App() {
   const [licenseSignInEmail, setLicenseSignInEmail] = useState("");
   const [licenseSignInPassword, setLicenseSignInPassword] = useState("");
   const [licenseSignInBusy, setLicenseSignInBusy] = useState(false);
-  const [hasLicenseActivatedOnce, setHasLicenseActivatedOnce] = useState(false);
+  const [, setHasLicenseActivatedOnce] = useState(false);
   const [licenseRevalidationHint, setLicenseRevalidationHint] = useState("");
   const [pendingDiscoveryMixer, setPendingDiscoveryMixer] = useState<DiscoveredMixer | null>(null);
   const [isOnline, setIsOnline] = useState(() =>
@@ -5240,18 +5251,24 @@ function App() {
     });
   }
 
-  async function syncAllStripNames(options?: { forceFromMixer?: boolean; channelTotal?: number; writeBackDefaults?: boolean }) {
+  async function syncAllStripNames(options?: {
+    forceFromMixer?: boolean;
+    channelTotal?: number;
+    writeBackDefaults?: boolean;
+    readTimeoutMs?: number;
+  }) {
     const client = clientRef.current;
     if (!client) return;
     const forceFromMixer = options?.forceFromMixer === true;
     const channelTotal = options?.channelTotal ?? channelCount;
     const writeBackDefaults = options?.writeBackDefaults === true;
+    const readTimeoutMs = options?.readTimeoutMs ?? 1200;
     const pendingNameWrites: Array<{ target: NameTarget; mixerName: string }> = [];
 
     const [channelNames, auxNames, fxNames] = await Promise.all([
-      client.readChannelNames(channelTotal, 600),
-      client.readAuxNames(600),
-      client.readFxNames(600, getFxBusCount()),
+      client.readChannelNames(channelTotal, readTimeoutMs),
+      client.readAuxNames(readTimeoutMs, getAuxBusCount()),
+      client.readFxNames(readTimeoutMs, getFxBusCount()),
     ]);
 
     setChannels((current) =>
@@ -5270,7 +5287,7 @@ function App() {
           });
         }
         const displayName =
-          !forceFromMixer && hasUserLocalName
+          !forceFromMixer && hasUserLocalName && (mixerName.length === 0 || mixerIsDefault)
             ? channelState.channelName
             : mixerName.length > 0 && !mixerIsDefault
               ? mixerName
@@ -5300,7 +5317,7 @@ function App() {
           });
         }
         const displayName =
-          !forceFromMixer && hasUserLocalName
+          !forceFromMixer && hasUserLocalName && (mixerName.length === 0 || mixerIsDefault)
             ? strip.channelName
             : mixerName.length > 0 && !mixerIsDefault
               ? mixerName
@@ -5330,7 +5347,7 @@ function App() {
           });
         }
         const displayName =
-          !forceFromMixer && hasUserLocalName
+          !forceFromMixer && hasUserLocalName && (mixerName.length === 0 || mixerIsDefault)
             ? strip.channelName
             : mixerName.length > 0 && !mixerIsDefault
               ? mixerName
@@ -7506,7 +7523,9 @@ function App() {
         targetChannelCount,
         discoveredMixers
       );
-      const client = new Axios16Client(normalizedIp, 8088, selectedProfile);
+      const client = new Axios16Client(normalizedIp, 8088, selectedProfile, {
+        channelCount: targetChannelCount,
+      });
       await client.connect();
       clearLocalParamWriteTracking();
       localParamWriteUnsubscribeRef.current = client.onLocalParamWrite(handleLocalParamWrite);
@@ -7542,11 +7561,14 @@ function App() {
         window.setTimeout(resolve, 0);
       });
 
-      if (!hasLicenseActivatedOnce && !LICENSE_STRICT_SERVER_VALIDATION) {
+      if (licenseFormalState === "TRIAL_ACTIVE") {
+        setPendingDiscoveryMixer(null);
+        setLicenseValidationMessage({ kind: "idle", text: "" });
         setLicenseModalMandatory(true);
-        setLicenseModalMode("onboarding");
+        setLicenseModalMode("upgrade");
         setLicenseModalOpen(true);
       }
+
       mixerChannelsScrollLeftRef.current = 0;
       if (mixerChannelsScrollerRef.current) {
         mixerChannelsScrollerRef.current.scrollLeft = 0;
@@ -7573,12 +7595,11 @@ function App() {
       });
 
       await runConnectSyncStep("nomes", async () => {
-        // Always prioritize names read from the currently connected mixer.
-        // This avoids carrying local names from a different desk/model.
         await syncAllStripNames({
           forceFromMixer: true,
           channelTotal: targetChannelCount,
           writeBackDefaults: true,
+          readTimeoutMs: 1400,
         });
       });
 
@@ -7628,6 +7649,9 @@ function App() {
 
       // Libera a interface somente quando a sincronizacao inicial completa terminar.
       setIsConnected(true);
+      if (licenseFormalState === "TRIAL_ACTIVE") {
+        setLicenseModalMandatory(false);
+      }
 
       if (syncFailures.length > 0) {
         setStatus(`${connectedStatus} (sync parcial: ${syncFailures.join(", ")})`);
@@ -8765,11 +8789,6 @@ function App() {
         text: "Valide a licença antes de conectar ao mixer.",
       });
       openLicenseModal(true, "onboarding");
-      return;
-    }
-
-    if (licenseFormalState === "TRIAL_ACTIVE") {
-      openUpgradeOfferForMixer(mixer, false);
       return;
     }
 
@@ -12191,18 +12210,27 @@ function App() {
   const trialDaysRemainingLabel = trialDaysRemaining !== null ? `${Math.max(0, trialDaysRemaining)} dia(s)` : "trial ativo";
   const isTrialLicense = trialIsActive || trialIsExpired;
   const associatedLicenseDevices = licenseDevices.filter((device) => device.active !== false);
+  const normalizedInstallationId = installationId.trim();
+  const hasCurrentDeviceInList = associatedLicenseDevices.some((device) => device.deviceId === normalizedInstallationId);
+  const shouldInjectCurrentDevice =
+    Boolean(normalizedInstallationId) &&
+    !isLicenseStateBlocked(licenseFormalState) &&
+    !hasCurrentDeviceInList;
+  const visibleAssociatedDevices = shouldInjectCurrentDevice
+    ? [
+        {
+          deviceId: normalizedInstallationId,
+          deviceName: getDeviceNameLabel(),
+          devicePlatform: getPlatformLabel(),
+          active: true,
+        },
+        ...associatedLicenseDevices,
+      ]
+    : associatedLicenseDevices;
   const associatedDeviceLimit = isTrialLicense ? 1 : 2;
-  const settingsPlanLabel = trialIsActive
-    ? `Teste grátis ativo • ${trialDaysRemainingLabel} restantes`
-    : trialIsExpired
-      ? "Teste grátis expirado"
-      : licenseFormalState === "LICENSE_NOT_FOUND"
-        ? "Nenhuma licença vinculada"
-        : "Licença adquirida";
-  const settingsPlanHint = isTrialLicense
-    ? "No teste grátis, a licença funciona em 1 dispositivo por vez."
-    : "Com a licença adquirida, você pode usar até 2 dispositivos ao mesmo tempo.";
-  const settingsUsageLabel = `${associatedLicenseDevices.length} de ${associatedDeviceLimit} dispositivo(s) associado(s)`;
+  const settingsUsageLabel = `${visibleAssociatedDevices.length} de ${associatedDeviceLimit} dispositivo(s) associado(s)`;
+  const isFullLicenseView = !isTrialLicense && licenseFormalState !== "LICENSE_NOT_FOUND";
+  const settingsVariantClass = isFullLicenseView ? "settings-modal--settings-full" : "settings-modal--settings-trial";
   const settingsStatusChipLabel = trialIsActive
     ? "Trial ativo"
     : trialIsExpired
@@ -12237,7 +12265,7 @@ function App() {
       }}
     >
       <section
-        className={`settings-modal ${licenseModalMode === "onboarding" ? "settings-modal--onboarding" : ""} ${licenseModalMode === "upgrade" ? "settings-modal--upgrade" : ""} ${licenseModalMode === "settings" ? "settings-modal--settings" : ""}`}
+        className={`settings-modal ${licenseModalMode === "onboarding" ? "settings-modal--onboarding" : ""} ${licenseModalMode === "upgrade" ? "settings-modal--upgrade" : ""} ${licenseModalMode === "settings" ? `settings-modal--settings ${settingsVariantClass}` : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label="License Validation"
@@ -12255,14 +12283,14 @@ function App() {
                     ? licenseOnboardingView === "register"
                       ? "Comece seu teste grátis"
                       : "Entre na sua conta"
-                    : "Licença e dispositivos"}
+                    : "Licença e acesso"}
                 </h2>
                 <p>
                   {licenseModalMode === "onboarding"
                     ? licenseOnboardingView === "register"
                       ? "Use o AX Control por 7 dias e controle sua Mesa Axios com uma experiência mais moderna, visual e precisa."
                       : "Acesse sua conta para recuperar sua licença e continuar usando o AX Control."
-                    : "Gerencie a licença deste dispositivo e veja onde ela está ativa."}
+                    : "Veja o status do seu teste grátis e gerencie seu acesso."}
                 </p>
               </>
             )}
@@ -12276,11 +12304,6 @@ function App() {
               <p>Seu trial expirou. Para conectar à mesa, finalize a compra da licença.</p>
             )}
             {licenseModalMode === "settings" && !isOnline && <p>Sem internet no momento. Alguns recursos exigem conexão.</p>}
-            {licenseModalMode === "settings" && (
-              <p className="settings-modal__settings-summary">
-                {settingsPlanLabel}. {settingsUsageLabel}.
-              </p>
-            )}
           </div>
         </div>
 
@@ -12349,11 +12372,18 @@ function App() {
               <span className="settings-modal__upgrade-button-hint">Atendimento direto para pagamento e ativação</span>
             </button>
 
-            {trialIsActive && (
+            {trialIsActive && (pendingDiscoveryMixer || isConnected) && (
               <button
                 type="button"
                 className="startup-button startup-button--secondary settings-modal__upgrade-trial"
-                onClick={handleContinueTrialConnection}
+                onClick={() => {
+                  if (pendingDiscoveryMixer) {
+                    handleContinueTrialConnection();
+                    return;
+                  }
+
+                  closeLicenseModal();
+                }}
               >
                 CONTINUAR COM TESTE GRÁTIS
               </button>
@@ -12374,7 +12404,7 @@ function App() {
               </div>
               <div className="settings-modal__license-overview-capacity">
                 <strong>{associatedDeviceLimit}</strong>
-                <span>limite de dispositivos</span>
+                <span>{settingsUsageLabel}</span>
               </div>
             </div>
 
@@ -12383,7 +12413,7 @@ function App() {
                 <div className="settings-modal__settings-card-header">
                   <div>
                     <h3>Este dispositivo</h3>
-                    <p>O identificador deste aparelho nao pode ser alterado. A licença pode ser trocada quando necessário.</p>
+                    <p>O identificador deste aparelho é fixo. Você pode inserir ou trocar a licença a qualquer momento.</p>
                   </div>
                 </div>
 
@@ -12427,7 +12457,9 @@ function App() {
                       void handleValidateLicense();
                     }}
                   >
-                    {licenseValidationBusy ? "Validando..." : "Atualizar licença"}
+                    {licenseValidationBusy
+                      ? "Validando..."
+                      : "Trocar licença"}
                   </button>
                   {isTrialLicense && (
                     <button
@@ -12447,7 +12479,7 @@ function App() {
                 <div className="settings-modal__settings-card-header settings-modal__settings-card-header--split">
                   <div>
                     <h3>Dispositivos associados</h3>
-                    <p>{settingsPlanHint}</p>
+                    <p>{isTrialLicense ? "Limite de 1 dispositivo no teste grátis." : "Limite de até 2 dispositivos na licença completa."}</p>
                   </div>
                   <button
                     type="button"
@@ -12457,18 +12489,13 @@ function App() {
                       void handleRefreshLicenseStatus();
                     }}
                   >
-                    {licenseDevicesLoading ? "Atualizando..." : "Atualizar"}
+                    {licenseDevicesLoading ? "Atualizando..." : "Atualizar status"}
                   </button>
                 </div>
 
-                <div className="settings-modal__license-usage">
-                  <strong>{settingsPlanLabel}</strong>
-                  <span>{settingsUsageLabel}</span>
-                </div>
-
-                {associatedLicenseDevices.length > 0 ? (
+                {visibleAssociatedDevices.length > 0 ? (
                   <div className="settings-modal__device-list">
-                    {associatedLicenseDevices.map((device) => {
+                    {visibleAssociatedDevices.map((device) => {
                       const isCurrentDevice = device.deviceId === installationId;
 
                       return (
@@ -12478,7 +12505,10 @@ function App() {
                               {device.deviceName}
                               {isCurrentDevice ? " • Este dispositivo" : ""}
                             </strong>
-                            <span>{device.devicePlatform}</span>
+                            <span>
+                              {device.devicePlatform}
+                              {isCurrentDevice ? " • Ativo agora" : ""}
+                            </span>
                           </div>
                           <button
                             type="button"
@@ -12663,7 +12693,7 @@ function App() {
           </div>
         )}
 
-        {licenseValidationMessage.kind !== "idle" && (
+        {licenseValidationMessage.kind !== "idle" && !(licenseModalMode === "settings" && licenseValidationMessage.kind === "success") && (
           <div
             className={`settings-modal__result ${licenseValidationMessage.kind === "success" ? "settings-modal__result--success" : "settings-modal__result--error"}`}
           >
