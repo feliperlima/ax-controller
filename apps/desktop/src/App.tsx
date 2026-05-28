@@ -8620,6 +8620,24 @@ function App() {
     connectToSelectedMixer(mixer);
   }
 
+  function handleLicenseOnboardingSuccess(successMessage: string) {
+    setLicenseModalMandatory(false);
+    setLicenseModalMode("settings");
+    setLicenseModalOpen(false);
+    setLicenseValidationMessage({
+      kind: "success",
+      text: successMessage,
+    });
+
+    if (!pendingDiscoveryMixer) {
+      return;
+    }
+
+    const mixer = pendingDiscoveryMixer;
+    setPendingDiscoveryMixer(null);
+    connectToSelectedMixer(mixer);
+  }
+
   function buildLicenseRegistrationDraft() {
     return [
       "Solicitação de cadastro/licença - AX Controller",
@@ -8754,19 +8772,13 @@ function App() {
           setHasLicenseActivatedOnce(true);
           localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
           setIsLicenseValidated(true);
-          setLicenseModalMandatory(false);
-          setLicenseModalMode("settings");
-          setLicenseModalOpen(false);
           setLicenseOnboardingView("register");
           setLicenseRegisterName("");
           setLicenseRegisterEmail("");
           setLicenseRegisterPhone("");
           setLicenseRegisterPassword("");
           setLicenseRegisterConfirmPassword("");
-          setLicenseValidationMessage({
-            kind: "success",
-            text: snapshotToApply.message || "Cadastro concluído com sucesso.",
-          });
+          handleLicenseOnboardingSuccess(snapshotToApply.message || "Cadastro concluído com sucesso.");
           return;
         }
 
@@ -8901,10 +8913,7 @@ function App() {
       localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
       setHasLicenseActivatedOnce(true);
       setLicenseSignInPassword("");
-      setLicenseValidationMessage({
-        kind: "success",
-        text: "Dados de licença recuperados com sucesso.",
-      });
+      handleLicenseOnboardingSuccess("Dados de licença recuperados com sucesso.");
     } catch {
       setLicenseValidationMessage({
         kind: "error",
@@ -9238,6 +9247,7 @@ function App() {
     }
 
     if (!isLicenseValidated || isLicenseStateBlocked(licenseFormalState)) {
+      setPendingDiscoveryMixer(mixer);
       setLicenseValidationMessage({
         kind: "error",
         text: "Valide a licença antes de conectar ao mixer.",
