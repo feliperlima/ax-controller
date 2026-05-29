@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Axios16Client } from "../lib/axios16Client";
 import type { SceneItem, SceneSlot } from "../protocol/duonn/scenes";
 import {
@@ -86,6 +86,55 @@ export function ScenesView({ client, isConnected, cacheScopeKey, onCallScene, on
     if (!client) throw new Error("Not connected.");
     client.sendRaw(packet);
   }
+
+  useEffect(() => {
+    if (!client || !isConnected) return;
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const sceneNames = await client.readSceneNames(1200, 12);
+        if (cancelled) return;
+
+        setScenes((prev) => {
+          let changed = false;
+
+          const next = prev.map((scene) => {
+            const rawName = sceneNames[scene.slot];
+            const normalized = typeof rawName === "string" ? rawName.trim() : "";
+
+            if (!normalized) {
+              return scene;
+            }
+
+            if (scene.name === normalized && scene.isNameLoaded) {
+              return scene;
+            }
+
+            changed = true;
+            return {
+              ...scene,
+              name: normalized,
+              isNameLoaded: true,
+            };
+          });
+
+          if (changed) {
+            persistStoredScenes(next);
+          }
+
+          return next;
+        });
+      } catch (error) {
+        console.warn("[Scenes] scene-name sync failed:", error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client, isConnected]);
 
   async function handleCall(slot: SceneSlot) {
     if (!client || !isConnected) return;

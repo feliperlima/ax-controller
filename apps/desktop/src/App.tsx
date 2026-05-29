@@ -844,19 +844,19 @@ const LICENSE_API_BASE_URL = (
   import.meta.env.VITE_LICENSE_API_BASE_URL ?? "https://www.axcontrol.com.br/api"
 ).trim();
 const REGISTER_ENDPOINT_URL = (
-  import.meta.env.VITE_LICENSE_REGISTER_URL ?? "https://www.axcontrol.com.br/api/register.php"
+  import.meta.env.VITE_LICENSE_REGISTER_URL ?? ""
 ).trim();
 const LOGIN_ENDPOINT_URL = (
-  import.meta.env.VITE_LICENSE_LOGIN_URL ?? "https://www.axcontrol.com.br/api/login.php"
+  import.meta.env.VITE_LICENSE_LOGIN_URL ?? ""
 ).trim();
 const ME_ENDPOINT_URL = (
-  import.meta.env.VITE_LICENSE_ME_URL ?? "https://www.axcontrol.com.br/api/me.php"
+  import.meta.env.VITE_LICENSE_ME_URL ?? ""
 ).trim();
 const VALIDATE_ENDPOINT_URL = (
-  import.meta.env.VITE_LICENSE_VALIDATE_URL ?? "https://www.axcontrol.com.br/api/validate.php"
+  import.meta.env.VITE_LICENSE_VALIDATE_URL ?? ""
 ).trim();
 const STATUS_ENDPOINT_URL = (
-  import.meta.env.VITE_LICENSE_STATUS_URL ?? "https://www.axcontrol.com.br/api/status.php"
+  import.meta.env.VITE_LICENSE_STATUS_URL ?? ""
 ).trim();
 const REGISTER_ENDPOINT_PATH = (import.meta.env.VITE_LICENSE_REGISTER_PATH ?? "register.php").trim();
 const LOGIN_ENDPOINT_PATH = (import.meta.env.VITE_LICENSE_LOGIN_PATH ?? "login.php").trim();
@@ -2496,6 +2496,10 @@ function App() {
   const [licenseFormalState, setLicenseFormalState] = useState<LicenseFormalState>("LICENSE_NOT_FOUND");
   const [licenseNextRevalidationAt, setLicenseNextRevalidationAt] = useState<string | null>(null);
   const [licenseTrialExpiryAt, setLicenseTrialExpiryAt] = useState<string | null>(null);
+  const [licenseUnlimitedActivations, setLicenseUnlimitedActivations] = useState(false);
+  const [licenseLinkedUserType, setLicenseLinkedUserType] = useState<LicenseSnapshot["linkedUserType"]>(null);
+  const [licenseActiveDevicesCount, setLicenseActiveDevicesCount] = useState<number | null>(null);
+  const [licenseRemainingActivations, setLicenseRemainingActivations] = useState<number | null>(null);
   const [licenseDevices, setLicenseDevices] = useState<LicenseDevice[]>([]);
   const [licenseDevicesLoading, setLicenseDevicesLoading] = useState(false);
   const [licenseDeviceActionBusy, setLicenseDeviceActionBusy] = useState<string | null>(null);
@@ -8093,7 +8097,7 @@ function App() {
     const resolvedTrialExpiryAt =
       snapshot.licenseType === "trial"
         ? snapshot.trialExpiryAt ?? new Date(Date.parse(validatedAtIso) + 7 * 24 * 60 * 60 * 1000).toISOString()
-        : snapshot.trialExpiryAt;
+        : null;
     const resolvedNextRevalidationAt =
       snapshot.licenseType === "purchased"
         ? snapshot.nextRevalidationAt ?? computeNextRevalidationAt(validatedAtIso, LICENSE_REVALIDATE_INTERVAL_DAYS)
@@ -8113,6 +8117,10 @@ function App() {
     setLicenseFormalState(formalState);
     setLicenseTrialExpiryAt(resolvedTrialExpiryAt);
     setLicenseNextRevalidationAt(resolvedNextRevalidationAt);
+    setLicenseUnlimitedActivations(snapshot.unlimitedActivations);
+    setLicenseLinkedUserType(snapshot.linkedUserType);
+    setLicenseActiveDevicesCount(snapshot.activeDevices);
+    setLicenseRemainingActivations(snapshot.remainingActivations);
     setLicenseDevices(snapshot.devices);
 
     const blocked = isLicenseStateBlocked(formalState);
@@ -8187,6 +8195,9 @@ function App() {
       phone: normalizePhoneDigits(licenseRegisterPhone),
       password: licenseRegisterPassword,
       installation_uuid: installationId,
+      device_id: installationId,
+      device_name: getDeviceNameLabel(),
+      device_platform: getPlatformLabel(),
       wants_upgrade: wantsUpgrade,
     };
 
@@ -8396,6 +8407,7 @@ function App() {
       series: installationId,
       device_id: installationId,
       device_name: getDeviceNameLabel(),
+      device_platform: getPlatformLabel(),
       platform: getPlatformLabel(),
       app_version: APP_VERSION,
     });
@@ -8432,6 +8444,10 @@ function App() {
     const query = new URLSearchParams({
       license_key: effectiveLicenseKey,
       series: installationId,
+      installation_uuid: installationId,
+      device_id: installationId,
+      device_name: getDeviceNameLabel(),
+      device_platform: getPlatformLabel(),
       include_devices: includeDevices ? "1" : "0",
     });
 
@@ -8441,6 +8457,10 @@ function App() {
       response = await requestLicenseApiViaNative("POST", endpoint, {
         license_key: effectiveLicenseKey,
         series: installationId,
+        installation_uuid: installationId,
+        device_id: installationId,
+        device_name: getDeviceNameLabel(),
+        device_platform: getPlatformLabel(),
         include_devices: includeDevices ? "1" : "0",
       });
     }
@@ -8449,16 +8469,49 @@ function App() {
     const parsed = response.body;
     const payload = normalizeLicenseApiPayload(parsed);
 
-    const hasFormalContract =
-      (typeof payload.code === "string" || typeof parsed.code === "string") &&
-      (typeof payload.status === "string" || typeof parsed.status === "string") &&
-      (typeof payload.valid === "boolean" || typeof parsed.valid === "boolean") &&
-      (typeof payload.active === "boolean" || typeof parsed.active === "boolean");
-    if (!hasFormalContract) {
+    const hasAnyLicenseSignal =
+      typeof payload.code === "string" ||
+      typeof parsed.code === "string" ||
+      typeof payload.status === "string" ||
+      typeof parsed.status === "string" ||
+      typeof payload.license_type === "string" ||
+      typeof parsed.license_type === "string" ||
+      (payload.license !== null && typeof payload.license === "object") ||
+      (parsed.license !== null && typeof parsed.license === "object");
+    if (!hasAnyLicenseSignal) {
       return null;
     }
 
-    return parseLicenseSnapshot(payload);
+    const normalizedPayload = buildAuthSnapshotPayload(payload, installationId);
+    return parseLicenseSnapshot(normalizedPayload);
+  }
+
+  function scoreRecoveredLicenseSnapshot(snapshot: LicenseSnapshot) {
+    const code = snapshot.code.toUpperCase();
+    let score = 0;
+
+    if (code !== "LICENSE_NOT_FOUND") score += 120;
+    if (snapshot.licenseType === "purchased") score += 80;
+    if (snapshot.valid) score += 30;
+    if (snapshot.active) score += 30;
+    if (code === "LICENSE_VALID") score += 40;
+
+    if (code === "LICENSE_NOT_FOUND") score -= 120;
+    if (code === "LICENSE_BLOCKED" || code === "LICENSE_REVOKED" || code === "LICENSE_SUSPENDED") {
+      score -= 80;
+    }
+
+    return score;
+  }
+
+  function pickBestRecoveredLicenseSnapshot(candidates: Array<LicenseSnapshot | null | undefined>) {
+    const validCandidates = candidates.filter((item): item is LicenseSnapshot => item !== null && item !== undefined);
+    if (validCandidates.length === 0) return null;
+
+    return validCandidates.reduce((best, current) => {
+      if (!best) return current;
+      return scoreRecoveredLicenseSnapshot(current) > scoreRecoveredLicenseSnapshot(best) ? current : best;
+    }, validCandidates[0]);
   }
 
   async function handleRefreshLicenseStatus() {
@@ -8885,8 +8938,25 @@ function App() {
         setLicenseKeyInput(returnedKey);
       }
 
+      const meSnapshot = meResult?.httpStatus && meResult.httpStatus < 400 && meResult.success
+        ? meResult.snapshot
+        : null;
       const statusSnapshot = returnedKey ? await requestLicenseStatus(true, returnedKey) : null;
-      const snapshotToApply = statusSnapshot ?? (meResult?.httpStatus && meResult.httpStatus < 400 && meResult.success ? meResult.snapshot : loginResult.snapshot);
+      const validateSnapshot = returnedKey ? await requestLicenseValidateApi(returnedKey) : null;
+      const snapshotToApply = pickBestRecoveredLicenseSnapshot([
+        statusSnapshot,
+        validateSnapshot,
+        meSnapshot,
+        loginResult.snapshot,
+      ]);
+
+      if (!snapshotToApply) {
+        setLicenseValidationMessage({
+          kind: "error",
+          text: "Não foi possível determinar o estado atualizado da licença. Tente novamente.",
+        });
+        return;
+      }
 
       applyLicenseSnapshot(
         snapshotToApply,
@@ -8981,6 +9051,10 @@ function App() {
     setLicenseFormalState("LICENSE_NOT_FOUND");
     setLicenseNextRevalidationAt(null);
     setLicenseTrialExpiryAt(null);
+    setLicenseUnlimitedActivations(false);
+    setLicenseLinkedUserType(null);
+    setLicenseActiveDevicesCount(null);
+    setLicenseRemainingActivations(null);
     setLicenseDevices([]);
     setLicenseRevalidationHint("");
     setLicenseValidationMessage({ kind: "idle", text: "" });
@@ -12997,8 +13071,20 @@ function App() {
         ...associatedLicenseDevices,
       ]
     : associatedLicenseDevices;
-  const associatedDeviceLimit = isTrialLicense ? 1 : 2;
-  const settingsUsageLabel = `${visibleAssociatedDevices.length} de ${associatedDeviceLimit} dispositivo(s) associado(s)`;
+  const hasUnlimitedActivations = licenseUnlimitedActivations || licenseLinkedUserType === "admin";
+  const defaultDeviceLimit = isTrialLicense ? 1 : 2;
+  const apiDeviceLimit =
+    !hasUnlimitedActivations && licenseRemainingActivations !== null
+      ? Math.max(
+          visibleAssociatedDevices.length,
+          (licenseActiveDevicesCount ?? visibleAssociatedDevices.length) + licenseRemainingActivations
+        )
+      : null;
+  const associatedDeviceLimit = hasUnlimitedActivations ? null : (apiDeviceLimit ?? defaultDeviceLimit);
+  const settingsUsageLabel = hasUnlimitedActivations
+    ? `${visibleAssociatedDevices.length} dispositivo(s) associado(s) • Limite ilimitado`
+    : `${visibleAssociatedDevices.length} de ${associatedDeviceLimit} dispositivo(s) associado(s)`;
+  const associatedDeviceCapacityLabel = hasUnlimitedActivations ? "Ilimitado" : String(associatedDeviceLimit);
   const isFullLicenseView = !isTrialLicense && licenseFormalState !== "LICENSE_NOT_FOUND";
   const settingsVariantClass = isFullLicenseView ? "settings-modal--settings-full" : "settings-modal--settings-trial";
   const settingsStatusChipLabel = trialIsActive
@@ -13012,7 +13098,11 @@ function App() {
     ? `${trialDaysRemainingLabel} restantes`
     : isTrialLicense
       ? "Faça upgrade para liberar 2 dispositivos"
-      : "Até 2 dispositivos disponíveis";
+      : hasUnlimitedActivations
+        ? "Ativações ilimitadas para usuário admin"
+        : licenseRemainingActivations !== null
+          ? `${licenseRemainingActivations} ativação(ões) restante(s)`
+          : "Limite de ativações definido pela licença";
   const upgradeBadgeLabel = trialIsActive
     ? trialDaysRemaining !== null && trialDaysRemaining >= 0
       ? `TESTE ATIVO • ${trialDaysRemaining} DIAS RESTANTES`
@@ -13173,13 +13263,13 @@ function App() {
                 <span>{settingsStatusChipDetail}</span>
               </div>
               <div className="settings-modal__license-overview-capacity">
-                <strong>{associatedDeviceLimit}</strong>
+                <strong>{associatedDeviceCapacityLabel}</strong>
                 <span>{settingsUsageLabel}</span>
               </div>
             </div>
 
             <div className="settings-modal__settings-layout">
-              <section className="settings-modal__settings-card">
+              <section className="settings-modal__settings-card settings-modal__settings-card--devices">
                 <div className="settings-modal__settings-card-header">
                   <div>
                     <h3>Este dispositivo</h3>
@@ -13249,7 +13339,13 @@ function App() {
                 <div className="settings-modal__settings-card-header settings-modal__settings-card-header--split">
                   <div>
                     <h3>Dispositivos associados</h3>
-                    <p>{isTrialLicense ? "Limite de 1 dispositivo no teste grátis." : "Limite de até 2 dispositivos na licença completa."}</p>
+                    <p>{hasUnlimitedActivations
+                      ? "Conta com ativações ilimitadas (admin)."
+                      : isTrialLicense
+                        ? "Limite de 1 dispositivo no teste grátis."
+                        : associatedDeviceLimit !== null
+                          ? `Limite atual de ${associatedDeviceLimit} dispositivo(s) para esta licença.`
+                          : "Limite definido pelo servidor de licenças."}</p>
                   </div>
                   <button
                     type="button"

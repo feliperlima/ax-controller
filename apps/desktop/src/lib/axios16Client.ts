@@ -731,6 +731,35 @@ function makeReadNameCommand(targetIndex: number) {
   return buildRawDuonnPacket(46, [targetIndex & 255]);
 }
 
+function makeReadSceneNameCommand(slot: number) {
+  return buildRawDuonnPacket(4, [slot & 255]);
+}
+
+function decodeSceneNameResponse(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+
+  if (bytes.length < 6) return null;
+  if (bytes[0] !== 128) return null;
+
+  const length = bytes[1];
+  const opcode = bytes[2];
+
+  if (opcode !== 4) return null;
+  if (length + 2 !== bytes.length) return null;
+
+  const payload = bytes.slice(3, bytes.length - 2);
+  if (payload.length === 0) return null;
+
+  const decoded = new TextDecoder("utf-8")
+    .decode(payload)
+    .replace(/\u0000/g, "")
+    .trim();
+
+  if (!decoded) return null;
+
+  return { name: decoded };
+}
+
 export function toMixerSafeName(name: string, maxLength = 12) {
   return name
     .normalize("NFD")
@@ -1334,9 +1363,83 @@ export class Axios16Client {
     return request;
   }
 
+  readSceneName(slot: number, timeoutMs = 1200) {
+    const request = this.readQueue.then(() =>
+      this.executeReadSceneName(slot, timeoutMs)
+    );
+
+    this.readQueue = request.then(
+      () => undefined,
+      () => undefined
+    );
+
+    return request;
+  }
+
   private executeReadName(target: NameTarget, timeoutMs: number) {
     const targetIndex = getNameTargetIndex(target);
     return this.executeReadNameByIndex(targetIndex, timeoutMs);
+  }
+
+  private executeReadSceneName(slot: number, timeoutMs: number) {
+    const ws = this.ws;
+
+    if (!ws || ws.readyState !== SOCKET_OPEN) {
+      throw new Error("Cliente não conectado.");
+    }
+
+    const normalizedSlot = Math.round(slot);
+    if (!Number.isFinite(normalizedSlot) || normalizedSlot < 1 || normalizedSlot > 16) {
+      throw new Error("Slot de cena invalido. Use 1..16.");
+    }
+
+    return new Promise<string>((resolve, reject) => {
+      let settled = false;
+      let timeout = 0;
+
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        ws.removeEventListener("message", onMessage);
+        ws.removeEventListener("close", onClose);
+        ws.removeEventListener("error", onError);
+      };
+
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+
+      timeout = window.setTimeout(() => {
+        fail(new Error("Timeout ao ler nome de cena da mesa."));
+      }, timeoutMs);
+
+      const onMessage = (event: MixerMessageEvent) => {
+        if (!(event.data instanceof ArrayBuffer)) return;
+
+        const decoded = decodeSceneNameResponse(event.data);
+        if (!decoded) return;
+
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(decoded.name);
+      };
+
+      const onClose = () => {
+        fail(new Error("Conexão com a mesa foi encerrada durante a leitura do nome de cena."));
+      };
+
+      const onError = () => {
+        fail(new Error("Erro no WebSocket durante a leitura do nome de cena."));
+      };
+
+      ws.addEventListener("message", onMessage);
+      ws.addEventListener("close", onClose);
+      ws.addEventListener("error", onError);
+      ws.send(makeReadSceneNameCommand(normalizedSlot));
+    });
   }
 
   private executeReadNameByIndex(targetIndex: number, timeoutMs: number) {
@@ -1503,6 +1606,18 @@ export class Axios16Client {
 
     for (let fx = 1; fx <= safeFxCount; fx++) {
       result[fx] = await this.readFxName(fx, timeoutMs);
+    }
+
+    return result;
+  }
+
+  async readSceneNames(timeoutMs = 1200, sceneCount = 12) {
+    const result: Record<number, string> = {};
+    const safeSceneCount = Math.max(1, Math.min(16, Math.round(sceneCount)));
+
+    for (let slot = 1; slot <= safeSceneCount; slot++) {
+      const name = await this.readSceneName(slot, timeoutMs);
+      result[slot] = name;
     }
 
     return result;

@@ -330,9 +330,15 @@ body {
 
 .patching-view {
   width: 100%;
+  height: 100%;
+  min-height: 0;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 14px;
   padding: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .patching-view--unavailable {
@@ -376,6 +382,7 @@ body {
 .patching-matrix-card {
   min-height: 0;
   height: 100%;
+  min-width: 980px;
 }
 
 .patching-matrix-col {
@@ -399,7 +406,7 @@ body {
 
 .patching-structured-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(108px, 132px);
+  grid-template-columns: auto minmax(0, 1fr) 98px;
   align-items: center;
   gap: 8px;
   min-height: 34px;
@@ -415,10 +422,11 @@ body {
 .patching-row__select--matrix {
   min-height: 30px;
   height: 30px;
-  padding: 0 8px;
+  padding: 0 6px;
   justify-self: end;
-  width: 100%;
-  min-width: 0;
+  width: 98px;
+  min-width: 98px;
+  max-width: 98px;
 }
 
 .patching-matrix-split--secondary {
@@ -506,17 +514,14 @@ body {
     min-width: 0;
   }
 
-  .patching-structured-row {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .patching-row__select--matrix {
-    grid-column: 1 / -1;
-    justify-self: stretch;
-  }
-
   .patching-matrix-split--secondary {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .patching-matrix-card {
+    min-width: 760px;
   }
 }
 
@@ -1759,6 +1764,7 @@ body {
 
 .settings-modal {
   width: min(600px, 100%);
+  max-height: min(92dvh, 920px);
   background: linear-gradient(
     180deg,
     color-mix(in srgb, var(--surface-panel-raised) 90%, var(--surface-app) 10%) 0%,
@@ -1772,6 +1778,8 @@ body {
   display: grid;
   gap: 16px;
   padding: 20px;
+  overflow-x: hidden;
+  overflow-y: auto;
   font-family: var(--font-family-base), Inter, sans-serif;
 }
 
@@ -1994,6 +2002,7 @@ body {
 .settings-modal__settings-layout {
   display: grid;
   gap: 12px;
+  min-height: 0;
 }
 
 .settings-modal__settings-card {
@@ -2003,6 +2012,11 @@ body {
   border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--border-default) 90%, transparent);
   background: color-mix(in srgb, #13243e 70%, transparent);
+}
+
+.settings-modal__settings-card--devices {
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .settings-modal__settings-card-header {
@@ -2044,6 +2058,12 @@ body {
 .settings-modal__device-list {
   display: grid;
   gap: 8px;
+  max-height: clamp(180px, 34vh, 340px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .settings-modal__device-card {
@@ -2609,6 +2629,7 @@ body {
   .settings-modal {
     padding: 16px;
     gap: 14px;
+    max-height: calc(100dvh - 20px);
   }
 
   .settings-modal--onboarding {
@@ -2700,6 +2721,10 @@ body {
 
   .settings-modal__actions {
     justify-content: stretch;
+  }
+
+  .settings-modal__device-list {
+    max-height: clamp(160px, 40dvh, 300px);
   }
 
   .channel-customizer-modal__name-row {

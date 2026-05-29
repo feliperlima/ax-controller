@@ -11,6 +11,8 @@ export type LicenseFormalState =
 
 export type LicenseType = "trial" | "purchased" | "unknown";
 
+export type LinkedUserType = "admin" | "user" | "support" | null;
+
 export type LicenseDevice = {
   deviceId: string;
   deviceName: string;
@@ -31,6 +33,8 @@ export type LicenseSnapshot = {
   nextRevalidationAt: string | null;
   activeDevices: number | null;
   remainingActivations: number | null;
+  unlimitedActivations: boolean;
+  linkedUserType: LinkedUserType;
   devices: LicenseDevice[];
 };
 
@@ -142,6 +146,9 @@ export function parseLicenseSnapshot(payload: Record<string, unknown>): LicenseS
   const revalidation = toRecord(
     scoped.revalidation && typeof scoped.revalidation === "object" ? scoped.revalidation : body.revalidation
   );
+  const linkedUser = toRecord(
+    scoped.linked_user && typeof scoped.linked_user === "object" ? scoped.linked_user : body.linked_user
+  );
 
   const status = toStringValue(scoped.status) || toStringValue(body.status);
   const code = (toStringValue(scoped.code) || toStringValue(body.code)).toUpperCase();
@@ -162,6 +169,22 @@ export function parseLicenseSnapshot(payload: Record<string, unknown>): LicenseS
     toBooleanValue(body.active) ??
     toBooleanValue(body.is_active) ??
     toBooleanValue(body.license_active);
+
+  const linkedUserTypeRaw = toStringValue(linkedUser.type).toLowerCase();
+  const linkedUserType: LinkedUserType =
+    linkedUserTypeRaw === "admin" || linkedUserTypeRaw === "user" || linkedUserTypeRaw === "support"
+      ? linkedUserTypeRaw
+      : null;
+  const linkedUnlimited =
+    toBooleanValue(linkedUser.unlimited_activations) ??
+    toBooleanValue(scoped.unlimited_activations) ??
+    toBooleanValue(body.unlimited_activations);
+  const activationUnlimited =
+    toBooleanValue(activation.unlimited_activations) ??
+    toBooleanValue(scoped.unlimited_activations) ??
+    toBooleanValue(body.unlimited_activations);
+  const unlimitedActivations =
+    linkedUserType === "admin" || linkedUnlimited === true || activationUnlimited === true;
 
   return {
     code,
@@ -185,9 +208,13 @@ export function parseLicenseSnapshot(payload: Record<string, unknown>): LicenseS
     activeDevices:
       toNumberValue(activation.active_devices) ?? toNumberValue(scoped.active_devices) ?? toNumberValue(body.active_devices),
     remainingActivations:
-      toNumberValue(activation.remaining_activations) ??
-      toNumberValue(scoped.remaining_activations) ??
-      toNumberValue(body.remaining_activations),
+      unlimitedActivations
+        ? null
+        : (toNumberValue(activation.remaining_activations) ??
+          toNumberValue(scoped.remaining_activations) ??
+          toNumberValue(body.remaining_activations)),
+    unlimitedActivations,
+    linkedUserType,
     devices: normalizeDevices(activation.devices ?? scoped.devices ?? body.devices),
   };
 }
