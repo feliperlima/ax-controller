@@ -3174,6 +3174,15 @@ function App() {
     dragScrollStateRef.current.suppressClick = false;
   }
 
+  // Keep handlers defined for upcoming drag-scroll reattachment in mixer tabs layout.
+  void attachMixerChannelsScroller;
+  void handleMixerChannelsScroll;
+  void handleChannelsPointerDown;
+  void handleChannelsPointerMove;
+  void handleChannelsPointerUp;
+  void handleChannelsPointerCancel;
+  void handleChannelsClickCapture;
+
   function updateChannelState(
     channelNumber: number,
     patch: Partial<ChannelState>
@@ -13034,7 +13043,7 @@ function App() {
     );
   }
 
-  function renderDcaStripNode(id: number, index: number): ReactNode {
+  function renderDcaStripNode(id: DcaGroupId, index: number): ReactNode {
     const group = dcaGroups[index] ?? {
       enabled: true,
       faderPosition: dcaValueToPosition(1200),
