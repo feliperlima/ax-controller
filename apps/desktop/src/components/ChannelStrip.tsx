@@ -50,7 +50,7 @@ function formatPan(value: number) {
 }
 
 const EQ_PREVIEW_WIDTH = 78;
-const EQ_PREVIEW_HEIGHT = 48;
+const EQ_PREVIEW_HEIGHT = 44;
 
 const FADER_DB_POINTS = [
   { pos: 0, db: -120 },
@@ -196,8 +196,8 @@ export function ChannelStrip({
           minHeight: 0,
           display: "flex",
           flexDirection: "column",
-          gap: "24px",
-          padding: "8px 4px 8px",
+          gap: "12px",
+          padding: "6px 4px 6px",
           boxSizing: "border-box",
         }}
       >
@@ -320,7 +320,7 @@ export function ChannelStrip({
               onToggleInputSource?.();
             }}
             style={{
-              height: 32,
+              height: 28,
               width: "100%",
               borderRadius: 8,
               border: usbInputOn ? "1px solid #22d3ee" : "1px solid #facc15",
@@ -331,8 +331,8 @@ export function ChannelStrip({
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
-              gap: 8,
-              fontSize: 11,
+              gap: 6,
+              fontSize: 10,
               fontWeight: 700,
               letterSpacing: "0.09em",
               cursor: disabled ? "not-allowed" : "pointer",
@@ -354,7 +354,7 @@ export function ChannelStrip({
                 flexShrink: 0,
               }}
             />
-            <span style={{ fontSize: 11, lineHeight: "11px" }}>
+            <span style={{ fontSize: 10, lineHeight: "10px" }}>
               {usbInputOn ? "USB" : "INPUT"}
             </span>
           </button>
@@ -381,13 +381,13 @@ export function ChannelStrip({
             }}
             style={{
               width: "100%",
-              height: "30px",
+              height: "28px",
               borderRadius: "8px",
               border: isPairLinked ? "1px solid #67e8f9" : "1px solid #334155",
               background: isPairLinked ? "#164e63" : "#0f172a",
               color: isPairLinked ? "#f0fdff" : "#64748b",
               fontWeight: 900,
-              fontSize: "10px",
+              fontSize: "9px",
               letterSpacing: "0.06em",
               cursor: disabled ? "not-allowed" : "pointer",
               opacity: disabled ? 0.5 : 1,
@@ -408,12 +408,12 @@ export function ChannelStrip({
         onPointerDown={(event) => event.stopPropagation()}
         style={{
           display: "flex",
-          gap: "6px",
-          alignItems: "flex-start",
-          justifyContent: "space-between",
+          gap: "8px",
+          alignItems: "center",
+          justifyContent: "center",
           width: "100%",
-          paddingLeft: "4px",
-          paddingRight: "4px",
+          paddingLeft: "0px",
+          paddingRight: "0px",
           boxSizing: "border-box",
         }}
       >
@@ -424,7 +424,7 @@ export function ChannelStrip({
           min={0}
           max={63}
           displayValue={`${gain}`}
-          size={48}
+          size={44}
           disabled={disabled}
           onChange={onGainChange}
         />
@@ -437,7 +437,7 @@ export function ChannelStrip({
           max={200}
           pixelsPerStep={2.5}
           displayValue={formatPan(pan)}
-          size={48}
+          size={44}
           disabled={disabled}
           onChange={onPanChange}
         />
@@ -450,7 +450,7 @@ export function ChannelStrip({
         style={{
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
-          gap: "8px",
+          gap: "6px",
           width: "100%",
           paddingLeft: 0,
           paddingRight: 0,
@@ -465,7 +465,7 @@ export function ChannelStrip({
           }}
           style={{
             width: "100%",
-            height: "32px",
+            height: "28px",
             borderRadius: "8px",
             border: muted
               ? "2px solid var(--button-mute-border)"
@@ -492,7 +492,7 @@ export function ChannelStrip({
           }}
           style={{
             width: "100%",
-            height: "32px",
+            height: "28px",
             borderRadius: "8px",
             border: soloOn
               ? "2px solid var(--button-solo-border)"
@@ -521,7 +521,7 @@ export function ChannelStrip({
               }}
               style={{
                 width: "100%",
-                height: "32px",
+                height: "28px",
                 borderRadius: "8px",
                 border: phantomOn
                   ? "2px solid var(--button-phantom-border)"
@@ -549,7 +549,7 @@ export function ChannelStrip({
               }}
               style={{
                 width: "100%",
-                height: "32px",
+                height: "28px",
                 borderRadius: "8px",
                 border: phaseInverted
                   ? "2px solid var(--button-phase-border)"
@@ -584,15 +584,15 @@ export function ChannelStrip({
         onPointerDown={(event) => event.stopPropagation()}
         style={{
           display: "flex",
-          gap: "clamp(12px, 3vw, 24px)",
+          gap: "clamp(8px, 2vw, 14px)",
           alignItems: "center",
           justifyContent: "center",
           flex: "1 1 0",
           minHeight: 0,
           width: "100%",
           alignSelf: "stretch",
-          paddingLeft: 4,
-          paddingRight: 4,
+          paddingLeft: 2,
+          paddingRight: 2,
           boxSizing: "border-box",
           marginLeft: "auto",
           marginRight: "auto",
@@ -629,7 +629,7 @@ export function ChannelStrip({
           <VerticalFader
             value={faderPosition}
             height="100%"
-            width={23}
+            width={21}
             disabled={disabled}
             dragFromThumbOnly
             snapPoints={FADER_SNAP_POINTS}
@@ -649,18 +649,18 @@ export function ChannelStrip({
           marginBottom: 0,
           width: "100%",
           alignSelf: "center",
-          height: "36px",
+          height: "32px",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
           textAlign: "center",
-          fontSize: "16px",
+          fontSize: "14px",
           fontWeight: 400,
           color: "var(--text-primary)",
           backgroundColor: "var(--surface-overlay-strong)",
           borderRadius: "4px",
           overflow: "hidden",
-          padding: "11px 29px",
+          padding: "8px 8px",
           boxSizing: "border-box",
           fontFamily: "Inter, system-ui, sans-serif",
           fontStyle: "normal",
@@ -713,21 +713,21 @@ export function ChannelStrip({
           }}
           style={{
             width: "100%",
-            height: "40px",
+            height: "36px",
             marginTop: 0,
-            padding: "4px",
+            padding: "3px 4px",
             display: "flex",
             flexDirection: "column",
             alignItems: "flex-start",
             justifyContent: "center",
-            gap: "3px",
+            gap: "2px",
             textAlign: "left",
             color: "var(--text-inverse)",
             backgroundColor: channelColor,
             border: "none",
             borderRadius: "0 0 4px 4px",
             cursor: disabled ? "not-allowed" : canOpenDetail ? "pointer" : "default",
-            minHeight: "40px",
+            minHeight: "36px",
             fontFamily: "Inter, system-ui, sans-serif",
             fontStyle: "normal",
             opacity: disabled ? 0.58 : 1,
@@ -739,7 +739,7 @@ export function ChannelStrip({
             style={{
               width: "100%",
               fontSize: "10px",
-              lineHeight: "12px",
+              lineHeight: "11px",
               fontWeight: 600,
               letterSpacing: "0.5px",
               overflow: "hidden",
@@ -752,8 +752,8 @@ export function ChannelStrip({
           <span
             style={{
               width: "100%",
-              fontSize: "16px",
-              lineHeight: "20px",
+              fontSize: "14px",
+              lineHeight: "16px",
               fontWeight: 700,
               overflow: "hidden",
               textOverflow: "ellipsis",

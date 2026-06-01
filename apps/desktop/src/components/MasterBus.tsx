@@ -359,7 +359,7 @@ export function MasterBus({
       </div>
       </div>
 
-      {/* Footer: height=40, L/R label + name */}
+      {/* Footer aligned with strip footer height */}
       <button
         onClick={(e) => { e.stopPropagation(); }}
         onDoubleClick={(e) => {
@@ -370,15 +370,15 @@ export function MasterBus({
         disabled={disabled}
         style={{
           width: "100%",
-          height: 40,
+          height: 36,
           flexShrink: 0,
-          padding: 4,
+          padding: "3px 4px",
           display: "flex",
           flexDirection: "column",
           justifyContent: "center",
           alignItems: "flex-start",
           textAlign: "left",
-          gap: 3,
+          gap: 2,
           background: footerBackground,
           border: "none",
           cursor: disabled ? "not-allowed" : canOpenDetail ? "pointer" : "default",
@@ -391,7 +391,7 @@ export function MasterBus({
         <div
           style={{
             fontSize: 10,
-            lineHeight: "12px",
+            lineHeight: "11px",
             color: "var(--text-inverse)",
             fontWeight: 600,
             letterSpacing: "0.5px",
@@ -405,8 +405,8 @@ export function MasterBus({
         </div>
         <div
           style={{
-            fontSize: 16,
-            lineHeight: "20px",
+            fontSize: 14,
+            lineHeight: "16px",
             fontWeight: 700,
             color: "var(--text-inverse)",
             overflow: "hidden",

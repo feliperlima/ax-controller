@@ -21,14 +21,14 @@ export const MUTE_IDS: MuteGroupId[] = [1, 2, 3, 4, 5, 6];
 export const DCA_COLOR_IDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as const;
 
 export const DCA_DEFAULT_COLOR_IDS: Readonly<Record<DcaGroupId, number>> = {
-  1: 7,
-  2: 10,
-  3: 0,
-  4: 8,
-  5: 6,
-  6: 9,
-  7: 11,
-  8: 12,
+  1: 5,
+  2: 5,
+  3: 5,
+  4: 5,
+  5: 5,
+  6: 5,
+  7: 5,
+  8: 5,
 };
 
 export const CHANNEL_IDS_MAX = [

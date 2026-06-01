@@ -22,6 +22,8 @@
   <string>0.1.0</string>
   <key>LSMinimumSystemVersion</key>
   <string>11.0</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>AX Control precisa acessar a rede local para localizar e conectar mesas Axios na mesma rede.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
 </dict>

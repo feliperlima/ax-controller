@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -53,6 +53,7 @@ import { PatchingView } from "./components/PatchingView";
 import { FxPresetGrid, FxPresetControlPanel } from "./components/FxPresetPanel";
 import { SplashScreen } from "./components/SplashScreen";
 import { DeviceSelectionScreen } from "./components/DeviceSelectionScreen";
+import { MixerTabs, type MixerTabDefinition } from "./components/MixerTabs";
 import axControlBrand from "./assets/AX-control-Brand-vert.svg";
 import productAxios24 from "./assets/product-axios24.webp";
 import { useMixerDiscovery } from "./hooks/useMixerDiscovery";
@@ -2537,6 +2538,10 @@ function App() {
     typeof navigator !== "undefined" ? navigator.onLine : true
   );
   const [mainView, setMainView] = useState<MainView>("mixer");
+  const [activeMixerTabId, setActiveMixerTabId] = useState("ch-1-8");
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth : 1280
+  );
   const [patchingResetBusy, setPatchingResetBusy] = useState(false);
   const [settingsDropdownOpen, setSettingsDropdownOpen] = useState(false);
   const [inputPatchRoutes, setInputPatchRoutes] = useState<number[]>(() =>
@@ -2583,6 +2588,19 @@ function App() {
   const [processorStates, setProcessorStates] = useState<ProcessorState[]>(
     createInitialProcessorStates
   );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleResize = () => {
+      setViewportWidth(window.innerWidth);
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
   const [channelLinks, setChannelLinks] = useState<PairLinkState>({});
   const [auxLinks, setAuxLinks] = useState<PairLinkState>({});
   const [masterLinked, setMasterLinked] = useState(true);
@@ -2618,7 +2636,7 @@ function App() {
   const meterTimerRef = useRef<number | null>(null);
   const activeDcaIds = getDcaIdsForChannelCount(channelCount);
   const [dcaColorIds, setDcaColorIds] = useState<number[]>(() =>
-    getDcaIdsForChannelCount(DEFAULT_CHANNEL_COUNT).map(() => 6)
+    initialDcaIds.map((id) => DCA_DEFAULT_COLOR_IDS[id])
   );
   const [activeMixerCacheIdentity, setActiveMixerCacheIdentity] = useState<string | null>(null);
   const meterBusyRef = useRef(false);
@@ -12458,7 +12476,6 @@ function App() {
 
   function renderMasterDetail() {
     if (!detailView || detailView.type !== "master") return null;
-
     const sendsView = buildChannelInputSendsView(undefined, undefined, "TO MASTER");
     const masterDetailSide = detailView.side;
     const masterDetailTargets: ("left" | "right")[] = masterLinked
@@ -12828,6 +12845,355 @@ function App() {
       </div>
     );
   }
+
+  function renderInputStrip(stripNumber: number): ReactNode {
+    const channelState = channels[stripNumber - 1];
+    const pair = getChannelPair(stripNumber);
+    const pairKeyValue = pairKey(pair[0], pair[1]);
+    const pairLinked = Boolean(channelLinks[pairKeyValue]);
+    const displayChannelName =
+      pairLinked && channelState.channelName.trim().length > 0
+        ? `${stripLinkedNameSuffix(channelState.channelName)} ${stripNumber === pair[0] ? "L" : "R"}`
+        : channelState.channelName;
+
+    return (
+      <div
+        key={`channel-${stripNumber}`}
+        style={{
+          marginLeft: 0,
+          marginRight: 0,
+          flex: "0 0 auto",
+          position: "relative",
+          overflow: "visible",
+          zIndex: pairLinked && stripNumber === pair[0] ? 3 : 1,
+        }}
+      >
+        {pairLinked && stripNumber === pair[0] && (
+          <div
+            style={{
+              position: "absolute",
+              left: 0,
+              bottom: 36,
+              width: "calc(200% + 4px)",
+              height: 4,
+              borderRadius: "1px",
+              background: "#fb923c",
+              boxShadow: "0 0 8px rgba(251,146,60,0.5)",
+              pointerEvents: "none",
+              zIndex: 8,
+            }}
+          />
+        )}
+
+        <ChannelStrip
+          channel={stripNumber}
+          channelName={displayChannelName}
+          section="inputs"
+          isPairLinked={pairLinked}
+          muted={channelState.muted}
+          soloOn={channelState.soloOn}
+          phantomOn={channelState.phantomOn}
+          phasePositive={channelState.phasePositive}
+          colorId={channelState.colorId}
+          eqState={processorStates[stripNumber - 1].eq}
+          faderDb={channelState.faderDb}
+          faderPosition={channelState.faderPosition}
+          pan={channelState.pan}
+          gain={channelState.gain}
+          meterDb={channelState.meterDb}
+          peakDb={channelState.peakDb}
+          clipped={channelState.clipUntil > Date.now()}
+          disabled={!isConnected}
+          onToggleMute={() => toggleStripMute("inputs", stripNumber)}
+          onToggleSolo={() => toggleStripSolo("inputs", stripNumber)}
+          onTogglePhantom={() => toggleStripPhantom("inputs", stripNumber)}
+          onTogglePhase={() => togglePhase(stripNumber)}
+          onFaderChange={(position) =>
+            handleStripFaderChange("inputs", stripNumber, position)
+          }
+          onPanChange={(value) =>
+            handleStripPanChange("inputs", stripNumber, value)
+          }
+          onGainChange={(value) =>
+            handleStripGainChange("inputs", stripNumber, value)
+          }
+          onOpenDetail={goToDetailChannel}
+          onOpenEditMenu={(channelNumber) =>
+            setCustomizationView({ section: "inputs", index: channelNumber })
+          }
+        />
+      </div>
+    );
+  }
+
+  function renderFxStripNode(fxNumber: number): ReactNode {
+    const fxState = fxStrips[fxNumber - 1];
+
+    return (
+      <div
+        key={`fx-${fxNumber}`}
+        style={{
+          marginLeft: 0,
+          marginRight: 0,
+          flex: "0 0 auto",
+          position: "relative",
+          overflow: "visible",
+        }}
+      >
+        <FxStrip
+          fxNumber={fxNumber}
+          colorId={fxState.colorId}
+          channelName={fxState.channelName}
+          eqState={fxProcessorStates[fxNumber - 1].eq}
+          muted={fxState.muted}
+          soloOn={fxState.soloOn}
+          faderDb={fxState.faderDb}
+          faderPosition={fxState.faderPosition}
+          meterDb={fxState.meterDb}
+          peakDb={fxState.peakDb}
+          clipped={fxState.clipUntil > Date.now()}
+          disabled={!isConnected}
+          onToggleMute={() => toggleStripMute("fx", fxNumber)}
+          onToggleSolo={() => toggleStripSolo("fx", fxNumber)}
+          onFaderChange={(position) =>
+            handleStripFaderChange("fx", fxNumber, position)
+          }
+          onOpenDetail={goToDetailFx}
+          onOpenEditMenu={(targetFxNumber) =>
+            setCustomizationView({ section: "fx", index: targetFxNumber })
+          }
+        />
+      </div>
+    );
+  }
+
+  function renderAuxStripNode(auxNumber: number): ReactNode {
+    const auxState = auxStrips[auxNumber - 1];
+    const [odd, even] = getAuxPair(auxNumber);
+    const key = pairKey(odd, even);
+    const isLinked = Boolean(auxLinks[key]);
+    const displayAuxName =
+      isLinked && auxState.channelName.trim().length > 0
+        ? `${stripLinkedNameSuffix(auxState.channelName)} ${auxNumber === odd ? "L" : "R"}`
+        : auxState.channelName;
+
+    return (
+      <div
+        key={`aux-${auxNumber}`}
+        style={{
+          marginLeft: 0,
+          marginRight: 0,
+          flex: "0 0 auto",
+          position: "relative",
+          overflow: "visible",
+          zIndex: isLinked && auxNumber === odd ? 3 : 1,
+        }}
+      >
+        {isLinked && auxNumber === odd && (
+          <div
+            style={{
+              position: "absolute",
+              left: 0,
+              bottom: 36,
+              width: "calc(200% + 4px)",
+              height: 4,
+              borderRadius: "1px",
+              background: "#fb923c",
+              boxShadow: "0 0 8px rgba(251,146,60,0.5)",
+              pointerEvents: "none",
+              zIndex: 8,
+            }}
+          />
+        )}
+
+        <AuxStrip
+          auxNumber={auxNumber}
+          colorId={auxState.colorId}
+          channelName={displayAuxName}
+          muted={auxState.muted}
+          soloOn={auxState.soloOn}
+          faderDb={auxState.faderDb}
+          faderPosition={auxState.faderPosition}
+          meterDb={auxState.meterDb}
+          peakDb={auxState.peakDb}
+          clipped={auxState.clipUntil > Date.now()}
+          isLinked={isLinked}
+          disabled={!isConnected}
+          eqState={auxProcessorStates[auxNumber - 1].eq}
+          onToggleMute={() => toggleStripMute("aux", auxNumber)}
+          onToggleSolo={() => toggleStripSolo("aux", auxNumber)}
+          onFaderChange={(position) =>
+            handleStripFaderChange("aux", auxNumber, position)
+          }
+          onOpenDetail={goToDetailAux}
+          onOpenEditMenu={(targetAuxNumber) =>
+            setCustomizationView({ section: "aux", index: targetAuxNumber })
+          }
+        />
+      </div>
+    );
+  }
+
+  function renderDcaStripNode(id: number, index: number): ReactNode {
+    const group = dcaGroups[index] ?? {
+      enabled: true,
+      faderPosition: dcaValueToPosition(1200),
+      members: [] as GroupMember[],
+    };
+
+    return (
+      <div
+        key={`dca-group-${id}`}
+        style={{
+          marginLeft: 0,
+          marginRight: 0,
+          flex: "0 0 auto",
+          position: "relative",
+          overflow: "visible",
+        }}
+      >
+        <GroupStrip
+          kind="dca"
+          groupId={id}
+          groupName={dcaNames[id - 1]}
+          memberCount={group.members.length}
+          active={group.enabled}
+          faderPosition={group.faderPosition}
+          accentColor={dcaAccentColorFromId(dcaColorIds[id - 1], DCA_DEFAULT_COLOR_IDS[id])}
+          disabled={!isConnected}
+          onToggleActive={() => handleDcaGroupToggleEnabled(id)}
+          onFaderChange={(value) => handleDcaGroupFaderChange(id, value)}
+          onOpenDetail={() => {
+            setMainView("dcaGroups");
+            setDetailView(null);
+            setSettingsDropdownOpen(false);
+          }}
+          onOpenEditMenu={() => {
+            setCustomizationView({ section: "dca", index: id });
+            setDetailView(null);
+            setSettingsDropdownOpen(false);
+          }}
+        />
+      </div>
+    );
+  }
+
+  function renderFixedMasterBus(): ReactNode {
+    const now = Date.now();
+    const lFader = master.leftFaderDb;
+    const rFader = master.rightFaderDb;
+    const applyFader = (db: number, faderDb: number) =>
+      faderDb <= -120 ? -75 : Math.max(-75, db + faderDb);
+    const masterMeterDbL = applyFader(mainMasterMeter.leftDb, lFader);
+    const masterMeterDbR = applyFader(mainMasterMeter.rightDb, rFader);
+    const masterPeakDbL = applyFader(mainMasterMeter.leftPeakDb, lFader);
+    const masterPeakDbR = applyFader(mainMasterMeter.rightPeakDb, rFader);
+    const masterClipL = lFader > -6 && mainMasterMeter.leftClipUntil > now;
+    const masterClipR = rFader > -6 && mainMasterMeter.rightClipUntil > now;
+
+    return (
+      <MasterBus
+        leftColorId={master.leftColorId}
+        rightColorId={master.rightColorId}
+        leftMuted={master.leftMuted}
+        rightMuted={master.rightMuted}
+        leftSoloOn={master.leftSoloOn}
+        rightSoloOn={master.rightSoloOn}
+        soloOn={master.soloOn}
+        linked={masterLinked}
+        leftFaderDb={master.leftFaderDb}
+        rightFaderDb={master.rightFaderDb}
+        leftFaderPosition={master.leftFaderPosition}
+        rightFaderPosition={master.rightFaderPosition}
+        meterDbL={masterMeterDbL}
+        meterDbR={masterMeterDbR}
+        peakDbL={masterPeakDbL}
+        peakDbR={masterPeakDbR}
+        clippedL={masterClipL}
+        clippedR={masterClipR}
+        disabled={!isConnected}
+        onToggleMainMute={toggleMainMasterMute}
+        onToggleMainSolo={toggleMainMasterSolo}
+        onToggleLeftMute={toggleMasterLeftMute}
+        onToggleLeftSolo={toggleMasterLeftSolo}
+        onToggleRightMute={toggleMasterRightMute}
+        onToggleRightSolo={toggleMasterRightSolo}
+        onToggleLink={() => {
+          toggleMasterLink().catch((error) => {
+            setStatus(
+              error instanceof Error
+                ? error.message
+                : "Erro ao alternar link de master"
+            );
+          });
+        }}
+        onMainFaderChange={handleMainMasterFaderChange}
+        onLeftFaderChange={handleMasterLeftFaderChange}
+        onRightFaderChange={handleMasterRightFaderChange}
+        onOpenDetail={goToDetailMaster}
+      />
+    );
+  }
+
+  function buildMixerTabs(): MixerTabDefinition[] {
+    const tabs: MixerTabDefinition[] = [];
+    const slotsPerTab = viewportWidth >= 1920 ? 16 : viewportWidth >= 1200 ? 12 : 8;
+    const inputSlotsPerTab = slotsPerTab;
+    const mixBusSlotsPerTab = slotsPerTab;
+
+    for (let start = 1; start <= channelCount; start += inputSlotsPerTab) {
+      const end = Math.min(start + inputSlotsPerTab - 1, channelCount);
+      tabs.push({
+        id: `ch-${start}-${end}`,
+        label: `CH ${start}-${end}`,
+        itemCount: end - start + 1,
+        visibleSlots: inputSlotsPerTab,
+        items: Array.from({ length: end - start + 1 }, (_, index) =>
+          renderInputStrip(start + index)
+        ),
+      });
+    }
+
+    for (let start = 1; start <= auxStrips.length; start += mixBusSlotsPerTab) {
+      const end = Math.min(start + mixBusSlotsPerTab - 1, auxStrips.length);
+      tabs.push({
+        id: `aux-${start}-${end}`,
+        label: `AUX ${start}-${end}`,
+        itemCount: end - start + 1,
+        visibleSlots: mixBusSlotsPerTab,
+        items: Array.from({ length: end - start + 1 }, (_, index) =>
+          renderAuxStripNode(start + index)
+        ),
+      });
+    }
+
+    if (fxStrips.length > 0) {
+      tabs.push({
+        id: `fx-1-${fxStrips.length}`,
+        label: `FX 1-${fxStrips.length}`,
+        itemCount: fxStrips.length,
+        visibleSlots: mixBusSlotsPerTab,
+        items: fxStrips.map((_, index) => renderFxStripNode(index + 1)),
+      });
+    }
+
+    if (activeDcaIds.length > 0) {
+      tabs.push({
+        id: `dca-1-${activeDcaIds.length}`,
+        label: `DCA 1-${activeDcaIds.length}`,
+        itemCount: activeDcaIds.length,
+        visibleSlots: mixBusSlotsPerTab,
+        items: activeDcaIds.map((id, index) => renderDcaStripNode(id, index)),
+      });
+    }
+
+    return tabs;
+  }
+
+  const mixerTabs = buildMixerTabs();
+  const resolvedMixerTabId = mixerTabs.some((tab) => tab.id === activeMixerTabId)
+    ? activeMixerTabId
+    : mixerTabs[0]?.id ?? "ch-1-8";
 
   function renderGlobalSendsView(kind: "aux" | "fx") {
     const isAux = kind === "aux";
@@ -13893,351 +14259,12 @@ function App() {
               ? <div className="global-view-shell"><PatchingView isConnected={isConnected} isAx32ProfileActive={isAx32ProfileActive()} channelCount={channelCount} usbInputToUsbRoutes={usbInputToUsbRoutes} usbReturnRoutes={usbReturnRoutes} inputRoutes={inputPatchRoutes} outputRoutes={outputPatchRoutes} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} onUsbInputToUsbRouteChange={handleUsbInputToUsbRouteChange} onUsbReturnRouteChange={handleUsbReturnRouteChange} onInputRouteChange={handleInputPatchRouteChange} onOutputRouteChange={handleOutputPatchRouteChange} onResetRecordPatchingDefaults={handleResetRecordPatchingDefaults} onResetPlayPatchingDefaults={handleResetPlayPatchingDefaults} resetBusy={patchingResetBusy} /></div>
             : mainView === "scenes"
               ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} cacheScopeKey={activeMixerCacheIdentity} onCallScene={handleSceneCall} onSaveScene={handleSceneSave} /></div>
-        : <section className="mixer-layout">
-          <section
-            ref={attachMixerChannelsScroller}
-            className={`channels-scroller mixer-channels ${isChannelsDragging ? "channels-scroller--dragging" : ""}`}
-            onScroll={handleMixerChannelsScroll}
-            onPointerDownCapture={handleChannelsPointerDown}
-            onPointerMoveCapture={handleChannelsPointerMove}
-            onPointerUpCapture={handleChannelsPointerUp}
-            onPointerCancelCapture={handleChannelsPointerCancel}
-            onClickCapture={handleChannelsClickCapture}
-            style={{
-              alignItems: "stretch",
-              gap: 0,
-            }}
-          >
-            {channels.map((channelState, index) => {
-              const stripNumber = index + 1;
-              const pair = getChannelPair(stripNumber);
-              const pairKeyValue = pairKey(pair[0], pair[1]);
-              const pairLinked = Boolean(channelLinks[pairKeyValue]);
-              const displayChannelName =
-                pairLinked && channelState.channelName.trim().length > 0
-                  ? `${stripLinkedNameSuffix(channelState.channelName)} ${stripNumber === pair[0] ? "L" : "R"}`
-                  : channelState.channelName;
-              const wrapperMarginRight = index === channels.length - 1 ? 0 : 4;
-
-              return (
-                <div
-                  key={`channel-${stripNumber}`}
-                  style={{
-                    marginLeft: 0,
-                    marginRight: wrapperMarginRight,
-                    flex: "0 0 auto",
-                    position: "relative",
-                    overflow: "visible",
-                    zIndex: pairLinked && stripNumber === pair[0] ? 3 : 1,
-                  }}
-                >
-                  {pairLinked && stripNumber === pair[0] && (
-                    <div
-                      style={{
-                        position: "absolute",
-                        left: 0,
-                        bottom: 40,
-                        transform: "translateY(2px)",
-                        width: 224,
-                        height: 4,
-                        borderRadius: "1px",
-                        background: "#fb923c",
-                        boxShadow: "0 0 8px rgba(251,146,60,0.5)",
-                        pointerEvents: "none",
-                        zIndex: 8,
-                      }}
-                    />
-                  )}
-
-                  <ChannelStrip
-                    channel={stripNumber}
-                    channelName={displayChannelName}
-                    section="inputs"
-                    isPairLinked={pairLinked}
-                    muted={channelState.muted}
-                    soloOn={channelState.soloOn}
-                    phantomOn={channelState.phantomOn}
-                    phasePositive={channelState.phasePositive}
-                    colorId={channelState.colorId}
-                    eqState={processorStates[stripNumber - 1].eq}
-                    faderDb={channelState.faderDb}
-                    faderPosition={channelState.faderPosition}
-                    pan={channelState.pan}
-                    gain={channelState.gain}
-                    meterDb={channelState.meterDb}
-                    peakDb={channelState.peakDb}
-                    clipped={channelState.clipUntil > Date.now()}
-                    disabled={!isConnected}
-                    onToggleMute={() => toggleStripMute("inputs", stripNumber)}
-                    onToggleSolo={() => toggleStripSolo("inputs", stripNumber)}
-                    onTogglePhantom={() => toggleStripPhantom("inputs", stripNumber)}
-                    onTogglePhase={() => togglePhase(stripNumber)}
-                    onFaderChange={(position) =>
-                      handleStripFaderChange("inputs", stripNumber, position)
-                    }
-                    onPanChange={(value) =>
-                      handleStripPanChange("inputs", stripNumber, value)
-                    }
-                    onGainChange={(value) =>
-                      handleStripGainChange("inputs", stripNumber, value)
-                    }
-                    onOpenDetail={goToDetailChannel}
-                    onOpenEditMenu={(channelNumber) =>
-                      setCustomizationView({ section: "inputs", index: channelNumber })
-                    }
-                  />
-                </div>
-              );
-            })}
-
-            {/* FX Strips separator */}
-            <div
-              style={{
-                flex: "0 0 auto",
-                width: 1,
-                alignSelf: "stretch",
-                background: "var(--border-default)",
-                margin: "0 6px",
-                borderRadius: 1,
-              }}
-            />
-
-            {/* FX 1-2 */}
-            {fxStrips.map((fxState, index) => {
-              const fxNumber = index + 1;
-              return (
-                <div
-                  key={`fx-${fxNumber}`}
-                  style={{
-                    marginLeft: 0,
-                    marginRight: index === fxStrips.length - 1 ? 0 : 4,
-                    flex: "0 0 auto",
-                    position: "relative",
-                    overflow: "visible",
-                  }}
-                >
-                  <FxStrip
-                    fxNumber={fxNumber}
-                    colorId={fxState.colorId}
-                    channelName={fxState.channelName}
-                    eqState={fxProcessorStates[index].eq}
-                    muted={fxState.muted}
-                    soloOn={fxState.soloOn}
-                    faderDb={fxState.faderDb}
-                    faderPosition={fxState.faderPosition}
-                    meterDb={fxState.meterDb}
-                    peakDb={fxState.peakDb}
-                    clipped={fxState.clipUntil > Date.now()}
-                    disabled={!isConnected}
-                    onToggleMute={() => toggleStripMute("fx", fxNumber)}
-                    onToggleSolo={() => toggleStripSolo("fx", fxNumber)}
-                    onFaderChange={(position) =>
-                      handleStripFaderChange("fx", fxNumber, position)
-                    }
-                    onOpenDetail={goToDetailFx}
-                    onOpenEditMenu={(targetFxNumber) =>
-                      setCustomizationView({ section: "fx", index: targetFxNumber })
-                    }
-                  />
-                </div>
-              );
-            })}
-
-            {/* AUX Strips separator */}
-            <div
-              style={{
-                flex: "0 0 auto",
-                width: 1,
-                alignSelf: "stretch",
-                background: "var(--border-default)",
-                margin: "0 6px",
-                borderRadius: 1,
-              }}
-            />
-
-            {/* AUX 1-8 */}
-            {auxStrips.map((auxState, index) => {
-              const auxNumber = index + 1;
-              const [odd, even] = getAuxPair(auxNumber);
-              const key = pairKey(odd, even);
-              const isLinked = Boolean(auxLinks[key]);
-              const displayAuxName =
-                isLinked && auxState.channelName.trim().length > 0
-                  ? `${stripLinkedNameSuffix(auxState.channelName)} ${auxNumber === odd ? "L" : "R"}`
-                  : auxState.channelName;
-              return (
-                <div
-                  key={`aux-${auxNumber}`}
-                  style={{
-                    marginLeft: 0,
-                    marginRight: index === auxStrips.length - 1 ? 0 : 4,
-                    flex: "0 0 auto",
-                    position: "relative",
-                    overflow: "visible",
-                    zIndex: isLinked && auxNumber === odd ? 3 : 1,
-                  }}
-                >
-                  {isLinked && auxNumber === odd && (
-                    <div
-                      style={{
-                        position: "absolute",
-                        left: 0,
-                        bottom: 40,
-                        transform: "translateY(2px)",
-                        width: 224,
-                        height: 4,
-                        borderRadius: "1px",
-                        background: "#fb923c",
-                        boxShadow: "0 0 8px rgba(251,146,60,0.5)",
-                        pointerEvents: "none",
-                        zIndex: 8,
-                      }}
-                    />
-                  )}
-
-                  <AuxStrip
-                    auxNumber={auxNumber}
-                    colorId={auxState.colorId}
-                    channelName={displayAuxName}
-                    muted={auxState.muted}
-                    soloOn={auxState.soloOn}
-                    faderDb={auxState.faderDb}
-                    faderPosition={auxState.faderPosition}
-                    meterDb={auxState.meterDb}
-                    peakDb={auxState.peakDb}
-                    clipped={auxState.clipUntil > Date.now()}
-                    isLinked={isLinked}
-                    disabled={!isConnected}
-                    eqState={auxProcessorStates[index].eq}
-                    onToggleMute={() => toggleStripMute("aux", auxNumber)}
-                    onToggleSolo={() => toggleStripSolo("aux", auxNumber)}
-                    onFaderChange={(position) =>
-                      handleStripFaderChange("aux", auxNumber, position)
-                    }
-                    onOpenDetail={goToDetailAux}
-                    onOpenEditMenu={(targetAuxNumber) =>
-                      setCustomizationView({ section: "aux", index: targetAuxNumber })
-                    }
-                  />
-                </div>
-              );
-            })}
-
-            <div
-              style={{
-                flex: "0 0 auto",
-                width: 1,
-                alignSelf: "stretch",
-                background: "var(--border-default)",
-                margin: "0 6px",
-                borderRadius: 1,
-              }}
-            />
-
-            {activeDcaIds.map((id, index) => {
-              const group = dcaGroups[index] ?? {
-                enabled: true,
-                faderPosition: dcaValueToPosition(1200),
-                members: [] as GroupMember[],
-              };
-              return (
-                <div
-                  key={`dca-group-${id}`}
-                  style={{
-                    marginLeft: 0,
-                    marginRight: index === activeDcaIds.length - 1 ? 0 : 4,
-                    flex: "0 0 auto",
-                    position: "relative",
-                    overflow: "visible",
-                  }}
-                >
-                  <GroupStrip
-                    kind="dca"
-                    groupId={id}
-                    groupName={dcaNames[id - 1]}
-                    memberCount={group.members.length}
-                    active={group.enabled}
-                    faderPosition={group.faderPosition}
-                    accentColor={dcaAccentColorFromId(dcaColorIds[id - 1], DCA_DEFAULT_COLOR_IDS[id])}
-                    disabled={!isConnected}
-                    onToggleActive={() => handleDcaGroupToggleEnabled(id)}
-                    onFaderChange={(value) => handleDcaGroupFaderChange(id, value)}
-                    onOpenDetail={() => {
-                      setMainView("dcaGroups");
-                      setDetailView(null);
-                      setSettingsDropdownOpen(false);
-                    }}
-                    onOpenEditMenu={() => {
-                      setCustomizationView({ section: "dca", index: id });
-                      setDetailView(null);
-                      setSettingsDropdownOpen(false);
-                    }}
-                  />
-                </div>
-              );
-            })}
-
-          </section>
-
-          <aside className="mixer-master">
-            {(() => {
-              // Mesa envia meters pré-fader: aplicamos a atenuação do fader no display.
-              const now = Date.now();
-              const lFader = master.leftFaderDb;
-              const rFader = master.rightFaderDb;
-              const applyFader = (db: number, faderDb: number) =>
-                faderDb <= -120 ? -75 : Math.max(-75, db + faderDb);
-              const masterMeterDbL = applyFader(mainMasterMeter.leftDb, lFader);
-              const masterMeterDbR = applyFader(mainMasterMeter.rightDb, rFader);
-              const masterPeakDbL = applyFader(mainMasterMeter.leftPeakDb, lFader);
-              const masterPeakDbR = applyFader(mainMasterMeter.rightPeakDb, rFader);
-              const masterClipL = lFader > -6 && mainMasterMeter.leftClipUntil > now;
-              const masterClipR = rFader > -6 && mainMasterMeter.rightClipUntil > now;
-              return (
-            <MasterBus
-              leftColorId={master.leftColorId}
-              rightColorId={master.rightColorId}
-              leftMuted={master.leftMuted}
-              rightMuted={master.rightMuted}
-              leftSoloOn={master.leftSoloOn}
-              rightSoloOn={master.rightSoloOn}
-              soloOn={master.soloOn}
-              linked={masterLinked}
-              leftFaderDb={master.leftFaderDb}
-              rightFaderDb={master.rightFaderDb}
-              leftFaderPosition={master.leftFaderPosition}
-              rightFaderPosition={master.rightFaderPosition}
-              meterDbL={masterMeterDbL}
-              meterDbR={masterMeterDbR}
-              peakDbL={masterPeakDbL}
-              peakDbR={masterPeakDbR}
-              clippedL={masterClipL}
-              clippedR={masterClipR}
-              disabled={!isConnected}
-              onToggleMainMute={toggleMainMasterMute}
-              onToggleMainSolo={toggleMainMasterSolo}
-              onToggleLeftMute={toggleMasterLeftMute}
-              onToggleLeftSolo={toggleMasterLeftSolo}
-              onToggleRightMute={toggleMasterRightMute}
-              onToggleRightSolo={toggleMasterRightSolo}
-              onToggleLink={() => {
-                toggleMasterLink().catch((error) => {
-                  setStatus(
-                    error instanceof Error
-                      ? error.message
-                      : "Erro ao alternar link de master"
-                  );
-                });
-              }}
-              onMainFaderChange={handleMainMasterFaderChange}
-              onLeftFaderChange={handleMasterLeftFaderChange}
-              onRightFaderChange={handleMasterRightFaderChange}
-              onOpenDetail={goToDetailMaster}
-            />
-              );
-            })()}
-          </aside>
-        </section>}
+        : <MixerTabs
+            tabs={mixerTabs}
+            activeTabId={resolvedMixerTabId}
+            onTabChange={setActiveMixerTabId}
+            master={renderFixedMasterBus()}
+          />}
       {customizationView && customizerItem && (
         <ChannelCustomizer
           channel={customizationView.index}

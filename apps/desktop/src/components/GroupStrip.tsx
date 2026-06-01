@@ -103,8 +103,8 @@ export function GroupStrip({
           minHeight: 0,
           display: "flex",
           flexDirection: "column",
-          gap: "16px",
-          padding: "8px 4px 8px",
+          gap: "12px",
+          padding: "6px 4px 6px",
           boxSizing: "border-box",
         }}
       >
@@ -198,16 +198,21 @@ export function GroupStrip({
             <div
               style={{
                 width: "100%",
-                height: 36,
+                height: 32,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 background: "var(--surface-overlay-strong)",
                 borderRadius: 4,
-                fontSize: 16,
+                fontSize: 14,
                 fontWeight: 400,
                 fontVariantNumeric: "tabular-nums",
                 color: "var(--text-primary)",
+                fontFamily: "Inter, system-ui, sans-serif",
+                lineHeight: 1,
+                whiteSpace: "nowrap",
+                boxSizing: "border-box",
+                padding: "8px 4px",
               }}
             >
               {dcaFaderLabel(dcaPositionToDb(faderPosition))}
@@ -288,26 +293,33 @@ export function GroupStrip({
         title={canOpenDetail && canOpenEditMenu ? "Double click to open DCA Groups. Long press to edit." : canOpenDetail ? "Double click to open DCA Groups." : canOpenEditMenu ? "Long press to edit." : undefined}
         style={{
           width: "100%",
-          height: 40,
-          background: accentColor,
-          padding: 4,
+          height: "36px",
+          background: resolvedAccentColor,
+          padding: "3px 4px",
           border: "none",
           margin: 0,
           boxSizing: "border-box",
           display: "flex",
           flexDirection: "column",
           justifyContent: "center",
-          gap: 3,
+          gap: "2px",
           textAlign: "left",
+          alignItems: "flex-start",
+          borderRadius: "0 0 4px 4px",
+          minHeight: "36px",
           cursor: disabled ? "not-allowed" : canOpenEditMenu ? "pointer" : "default",
+          fontFamily: "Inter, system-ui, sans-serif",
+          opacity: disabled ? 0.58 : 1,
+          filter: disabled ? "saturate(0.55) brightness(0.82)" : "none",
         }}
       >
         <span
           style={{
-            fontSize: 10,
-            lineHeight: "12px",
+            width: "100%",
+            fontSize: "10px",
+            lineHeight: "11px",
             fontWeight: 600,
-            letterSpacing: "0.05em",
+            letterSpacing: "0.5px",
             textTransform: "uppercase",
             color: "rgb(0 0 0 / 70%)",
             whiteSpace: "nowrap",
@@ -319,8 +331,9 @@ export function GroupStrip({
         </span>
         <span
           style={{
-            fontSize: 15,
-            lineHeight: "18px",
+            width: "100%",
+            fontSize: "14px",
+            lineHeight: "16px",
             fontWeight: 700,
             color: "rgb(0 0 0 / 85%)",
             whiteSpace: "nowrap",

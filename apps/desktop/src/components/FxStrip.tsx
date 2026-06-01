@@ -28,7 +28,7 @@ type FxStripProps = {
 const FOOTER_LONG_PRESS_MS = 450;
 
 const EQ_PREVIEW_WIDTH = 78;
-const EQ_PREVIEW_HEIGHT = 48;
+const EQ_PREVIEW_HEIGHT = 44;
 
 const FADER_DB_POINTS = [
   { pos: 0, db: -120 },
@@ -159,8 +159,8 @@ export function FxStrip({
           minHeight: 0,
           display: "flex",
           flexDirection: "column",
-          gap: "24px",
-          padding: "8px 4px 8px",
+          gap: "12px",
+          padding: "6px 4px 6px",
           boxSizing: "border-box",
         }}
       >
@@ -253,7 +253,7 @@ export function FxStrip({
         style={{
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
-          gap: "8px",
+          gap: "6px",
           width: "100%",
           paddingLeft: 0,
           paddingRight: 0,
@@ -268,7 +268,7 @@ export function FxStrip({
           }}
           style={{
             width: "100%",
-            height: "32px",
+            height: "28px",
             borderRadius: "8px",
             border: muted
               ? "2px solid var(--button-mute-border)"
@@ -295,7 +295,7 @@ export function FxStrip({
           }}
           style={{
             width: "100%",
-            height: "32px",
+            height: "28px",
             borderRadius: "8px",
             border: soloOn
               ? "2px solid var(--button-solo-border)"
@@ -321,15 +321,15 @@ export function FxStrip({
         onPointerDown={(e) => e.stopPropagation()}
         style={{
           display: "flex",
-          gap: "clamp(12px, 3vw, 24px)",
+          gap: "clamp(8px, 2vw, 14px)",
           alignItems: "center",
           justifyContent: "center",
           flex: "1 1 0",
           minHeight: 0,
           width: "100%",
           alignSelf: "stretch",
-          paddingLeft: 4,
-          paddingRight: 4,
+          paddingLeft: 2,
+          paddingRight: 2,
           boxSizing: "border-box",
           marginLeft: "auto",
           marginRight: "auto",
@@ -355,7 +355,7 @@ export function FxStrip({
           <VerticalFader
             value={faderPosition}
             height="100%"
-            width={23}
+            width={21}
             disabled={disabled}
             dragFromThumbOnly
             snapPoints={FADER_SNAP_POINTS}
@@ -374,18 +374,18 @@ export function FxStrip({
           marginBottom: 0,
           width: "100%",
           alignSelf: "center",
-          height: "36px",
+          height: "32px",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
           textAlign: "center",
-          fontSize: "16px",
+          fontSize: "14px",
           fontWeight: 400,
           color: "var(--text-primary)",
           backgroundColor: "var(--surface-overlay-strong)",
           borderRadius: "4px",
           overflow: "hidden",
-          padding: "11px 4px",
+          padding: "8px 4px",
           boxSizing: "border-box",
           fontFamily: "Inter, system-ui, sans-serif",
           lineHeight: 1,
@@ -430,18 +430,18 @@ export function FxStrip({
           }}
           style={{
             width: "100%",
-            height: "40px",
+            height: "36px",
             marginTop: 0,
-            padding: "4px",
+            padding: "3px 4px",
             display: "flex",
             flexDirection: "column",
             alignItems: "flex-start",
             justifyContent: "center",
-            gap: "3px",
+            gap: "2px",
             backgroundColor: stripColor,
             borderRadius: "0 0 4px 4px",
             boxSizing: "border-box",
-            minHeight: "40px",
+            minHeight: "36px",
             cursor: disabled ? "not-allowed" : canOpenDetail ? "pointer" : "default",
             opacity: disabled ? 0.58 : 1,
             filter: disabled ? "saturate(0.55) brightness(0.82)" : "none",
@@ -452,7 +452,7 @@ export function FxStrip({
             style={{
               width: "100%",
               fontSize: "10px",
-              lineHeight: "12px",
+              lineHeight: "11px",
               fontWeight: 600,
               letterSpacing: "0.5px",
               textTransform: "uppercase",
@@ -467,10 +467,10 @@ export function FxStrip({
           <span
             style={{
               width: "100%",
-              fontSize: "16px",
+              fontSize: "14px",
               fontWeight: 700,
               color: "rgba(0,0,0,0.85)",
-              lineHeight: "20px",
+              lineHeight: "16px",
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
