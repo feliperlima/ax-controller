@@ -28,6 +28,12 @@ import {
   buildRawDuonnPacket,
 } from "./lib/axios16Client";
 import {
+  SetChannelFaderPilotResolver,
+  SetChannelMutePilotResolver,
+  type SemanticCommand,
+  type SemanticCommandContext,
+} from "./semantic";
+import {
   type FxPresetId,
   validateFxPresetId,
   getFxPresetConfig,
@@ -205,6 +211,16 @@ const AX32_AUX_COUNT = 14;
 const AX16_24_FX_COUNT = 2;
 const AX32_FX_COUNT = 4;
 let ACTIVE_CHANNEL_PROFILE: AxiosProtocolProfile = "ax16_24";
+const ENABLE_SEMANTIC_SET_CHANNEL_FADER_PILOT = true;
+const ENABLE_SEMANTIC_SET_CHANNEL_MUTE_PILOT = true;
+
+const setChannelFaderPilotResolver = new SetChannelFaderPilotResolver({
+  resolveChannelFaderParam: (channel) => channelParam(channel, 76),
+});
+
+const setChannelMutePilotResolver = new SetChannelMutePilotResolver({
+  resolveChannelMuteParam: (channel) => channelParam(channel, 74),
+});
 
 function isAx32ProtocolProfile(profile: AxiosProtocolProfile) {
   return profile === "ax32" || profile === "ax32_experimental";
@@ -9339,7 +9355,43 @@ function App() {
     const nextValue = !current.muted;
 
     targets.forEach((target) => {
-      clientRef.current?.setMute(target, nextValue);
+      const client = clientRef.current;
+      if (!client) return;
+
+      if (!ENABLE_SEMANTIC_SET_CHANNEL_MUTE_PILOT) {
+        client.setMute(target, nextValue);
+        updateChannelState(target, { muted: nextValue });
+        return;
+      }
+
+      try {
+        const command: SemanticCommand<boolean> = {
+          name: "setChannelMute",
+          address: {
+            path: `/ax/ch/${target}/mute`,
+            segments: ["ax", "ch", target, "mute"],
+          },
+          value: nextValue,
+          meta: {
+            source: "ui",
+          },
+        };
+
+        const context: SemanticCommandContext = {
+          activeProfile: ACTIVE_CHANNEL_PROFILE,
+          profileReliable: isConnected,
+          issuedAt: Date.now(),
+        };
+
+        const resolved = setChannelMutePilotResolver.resolve(command, context);
+        resolved.writes.forEach((write) => {
+          client.sendParam(write.param, write.value);
+        });
+      } catch {
+        // Safe rollback path for pilot: keep current production behavior.
+        client.setMute(target, nextValue);
+      }
+
       updateChannelState(target, { muted: nextValue });
     });
   }
@@ -9646,7 +9698,43 @@ function App() {
 
     targets.forEach((target) => {
       scheduleFaderWrite(`ch:${target}`, () => {
-        clientRef.current?.setFader(target, dbForSend);
+        const client = clientRef.current;
+        if (!client) return;
+
+        if (!ENABLE_SEMANTIC_SET_CHANNEL_FADER_PILOT) {
+          client.setFader(target, dbForSend);
+          return;
+        }
+
+        try {
+          const semanticDbValue = dbForSend === "-inf" ? -120 : dbForSend;
+
+          const command: SemanticCommand<number> = {
+            name: "setChannelFader",
+            address: {
+              path: `/ax/ch/${target}/fader`,
+              segments: ["ax", "ch", target, "fader"],
+            },
+            value: semanticDbValue,
+            meta: {
+              source: "ui",
+            },
+          };
+
+          const context: SemanticCommandContext = {
+            activeProfile: ACTIVE_CHANNEL_PROFILE,
+            profileReliable: isConnected,
+            issuedAt: Date.now(),
+          };
+
+          const resolved = setChannelFaderPilotResolver.resolve(command, context);
+          resolved.writes.forEach((write) => {
+            client.sendParam(write.param, write.value);
+          });
+        } catch {
+          // Safe rollback path for pilot: keep current production behavior.
+          client.setFader(target, dbForSend);
+        }
       });
     });
 

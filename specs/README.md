@@ -10,6 +10,7 @@ Indice operacional da pasta `/specs` para classificar tarefas, ler specs correta
 - `10`: checklist de validacao manual
 - `11-20`: specs especificas de features, contratos e comportamentos criticos
 - `21-23`: governanca operacional, workflow, Git safety e definition of done
+- `24-31`: camada semantica interna, pilotos e plano de cobertura total
 
 ## Leitura obrigatoria antes de qualquer tarefa
 - [00-product-vision.md](specs/00-product-vision.md)
@@ -81,6 +82,16 @@ Indice operacional da pasta `/specs` para classificar tarefas, ler specs correta
 - [21-workflow-by-change-type.md](specs/21-workflow-by-change-type.md)
 - [22-branching-and-git-safety.md](specs/22-branching-and-git-safety.md)
 - [23-definition-of-done.md](specs/23-definition-of-done.md)
+
+### Semantic layer (evolucao)
+- [24-sync-performance-and-semantic-control-spec.md](specs/24-sync-performance-and-semantic-control-spec.md)
+- [25-phase-3-minimal-scope-investigation-task.md](specs/25-phase-3-minimal-scope-investigation-task.md)
+- [26-phase-3-semantic-contracts-blueprint.md](specs/26-phase-3-semantic-contracts-blueprint.md)
+- [27-phase-3-semantic-contracts-implementation-task.md](specs/27-phase-3-semantic-contracts-implementation-task.md)
+- [28-phase-4-pilot-set-channel-fader-task.md](specs/28-phase-4-pilot-set-channel-fader-task.md)
+- [29-semantic-command-expansion-matrix.md](specs/29-semantic-command-expansion-matrix.md)
+- [30-semantic-full-coverage-rollout-plan.md](specs/30-semantic-full-coverage-rollout-plan.md)
+- [31-phase-4b-pilot-set-channel-mute-task.md](specs/31-phase-4b-pilot-set-channel-mute-task.md)
 
 ## Fluxo recomendado
 1. Classificar tarefa.
