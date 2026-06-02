@@ -13,11 +13,13 @@
     "windows": [
       {
         "title": "AX Control",
-        "width": 1270,
-        "height": 1024,
-        "minWidth": 1024,
+        "width": 1600,
+        "height": 900,
+        "minWidth": 1366,
         "minHeight": 768,
         "resizable": true,
+        "fullscreen": false,
+        "maximized": false,
         "useHttpsScheme": false
       }
     ],

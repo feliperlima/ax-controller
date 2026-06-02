@@ -253,7 +253,7 @@ export function FxStrip({
         style={{
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
-          gap: "6px",
+          gap: "4px",
           width: "100%",
           paddingLeft: 0,
           paddingRight: 0,
@@ -275,13 +275,17 @@ export function FxStrip({
               : "1px solid var(--button-default-border)",
             background: muted ? "var(--button-mute-bg)" : "var(--button-default-bg)",
             color: muted ? "var(--button-mute-text)" : "var(--button-default-text)",
-            fontSize: "9px",
+            fontSize: "8px",
             fontWeight: 700,
-            letterSpacing: "0.8px",
-            padding: "0 4px",
+            letterSpacing: "0.4px",
+            padding: "0 2px",
+            minWidth: 0,
             cursor: disabled ? "not-allowed" : "pointer",
             opacity: disabled ? 0.5 : 1,
             boxShadow: muted ? "var(--button-mute-glow)" : "none",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
           }}
         >
           MUTE
@@ -302,13 +306,17 @@ export function FxStrip({
               : "1px solid var(--button-default-border)",
             background: soloOn ? "var(--button-solo-bg)" : "var(--button-default-bg)",
             color: soloOn ? "var(--button-solo-text)" : "var(--button-default-text)",
-            fontSize: "9px",
+            fontSize: "8px",
             fontWeight: 700,
-            letterSpacing: "0.8px",
-            padding: "0 4px",
+            letterSpacing: "0.4px",
+            padding: "0 2px",
+            minWidth: 0,
             cursor: disabled ? "not-allowed" : "pointer",
             opacity: disabled ? 0.5 : 1,
             boxShadow: soloOn ? "var(--button-solo-glow)" : "none",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
           }}
         >
           SOLO

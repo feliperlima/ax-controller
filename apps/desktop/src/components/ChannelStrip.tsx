@@ -387,8 +387,10 @@ export function ChannelStrip({
               background: isPairLinked ? "#164e63" : "#0f172a",
               color: isPairLinked ? "#f0fdff" : "#64748b",
               fontWeight: 900,
-              fontSize: "9px",
-              letterSpacing: "0.06em",
+              fontSize: "8px",
+              letterSpacing: "0.04em",
+              padding: "0 2px",
+              minWidth: 0,
               cursor: disabled ? "not-allowed" : "pointer",
               opacity: disabled ? 0.5 : 1,
               boxShadow: isPairLinked ? "0 0 8px rgba(103,232,249,0.35)" : "none",
@@ -408,7 +410,7 @@ export function ChannelStrip({
         onPointerDown={(event) => event.stopPropagation()}
         style={{
           display: "flex",
-          gap: "8px",
+          gap: "6px",
           alignItems: "center",
           justifyContent: "center",
           width: "100%",
@@ -424,7 +426,7 @@ export function ChannelStrip({
           min={0}
           max={63}
           displayValue={`${gain}`}
-          size={44}
+          size={40}
           disabled={disabled}
           onChange={onGainChange}
         />
@@ -437,7 +439,7 @@ export function ChannelStrip({
           max={200}
           pixelsPerStep={2.5}
           displayValue={formatPan(pan)}
-          size={44}
+          size={40}
           disabled={disabled}
           onChange={onPanChange}
         />
@@ -450,7 +452,7 @@ export function ChannelStrip({
         style={{
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
-          gap: "6px",
+          gap: "4px",
           width: "100%",
           paddingLeft: 0,
           paddingRight: 0,
@@ -472,13 +474,17 @@ export function ChannelStrip({
               : "1px solid var(--button-default-border)",
             background: muted ? "var(--button-mute-bg)" : "var(--button-default-bg)",
             color: muted ? "var(--button-mute-text)" : "var(--button-default-text)",
-            fontSize: "9px",
+            fontSize: "8px",
             fontWeight: 700,
-            letterSpacing: "0.8px",
-            padding: "0 4px",
+            letterSpacing: "0.4px",
+            padding: "0 2px",
+            minWidth: 0,
             cursor: disabled ? "not-allowed" : "pointer",
             opacity: disabled ? 0.5 : 1,
             boxShadow: muted ? "var(--button-mute-glow)" : "none",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
           }}
         >
           MUTE
@@ -499,13 +505,17 @@ export function ChannelStrip({
               : "1px solid var(--button-default-border)",
             background: soloOn ? "var(--button-solo-bg)" : "var(--button-default-bg)",
             color: soloOn ? "var(--button-solo-text)" : "var(--button-default-text)",
-            fontSize: "9px",
+            fontSize: "8px",
             fontWeight: 700,
-            letterSpacing: "0.8px",
-            padding: "0 4px",
+            letterSpacing: "0.4px",
+            padding: "0 2px",
+            minWidth: 0,
             cursor: disabled ? "not-allowed" : "pointer",
             opacity: disabled ? 0.5 : 1,
             boxShadow: soloOn ? "var(--button-solo-glow)" : "none",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
           }}
         >
           SOLO
@@ -528,13 +538,17 @@ export function ChannelStrip({
                   : "1px solid var(--button-default-border)",
                 background: phantomOn ? "var(--button-phantom-bg)" : "var(--button-default-bg)",
                 color: phantomOn ? "var(--button-phantom-text)" : "var(--button-default-text)",
-                fontSize: "9px",
+                fontSize: "8px",
                 fontWeight: 700,
-                letterSpacing: "0.8px",
-                padding: "0 4px",
+                letterSpacing: "0.4px",
+                padding: "0 2px",
+                minWidth: 0,
                 cursor: disabled ? "not-allowed" : "pointer",
                 opacity: disabled ? 0.5 : 1,
                 boxShadow: phantomOn ? "var(--button-phantom-glow)" : "none",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
               }}
             >
               +48V
