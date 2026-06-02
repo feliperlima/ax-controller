@@ -1649,6 +1649,7 @@ const GLOBAL_CONTROL_FAST_POLL_INTERVAL_OTHER_MS = 650;
 const GLOBAL_CONTROL_POLL_INTERVAL_MS = 2400;
 const USB_RETURN_PATCH_POLL_INTERVAL_MS = 6500;
 const LOCAL_WRITE_ECHO_SUPPRESSION_MS = 900;
+const CHANNEL_FADER_UI_COMMIT_INTERVAL_MS = 20;
 const AX16_24_READ_TIMEOUT_MS = 1400;
 const AX16_24_BATCH_CHANNEL_CHUNK = 30;
 const AX16_24_BATCH_AUX_CHUNK = 28;
@@ -2664,6 +2665,11 @@ function App() {
   const sendWritePendingRef = useRef<Map<number, number>>(new Map());
   const faderWriteRafRef = useRef<number | null>(null);
   const pendingFaderWritesRef = useRef<Map<string, () => void>>(new Map());
+  const channelFaderUiCommitTimerRef = useRef<number | null>(null);
+  const channelFaderUiPendingRef = useRef<Map<number, { position: number; db: number }>>(
+    new Map()
+  );
+  const channelFaderUiLastCommitAtRef = useRef(0);
   const recentLocalParamWritesRef = useRef<Map<number, LocalParamWrite>>(new Map());
   const localParamWriteUnsubscribeRef = useRef<(() => void) | null>(null);
   const fastControlSyncInFlightRef = useRef(false);
@@ -2959,6 +2965,7 @@ function App() {
       cancelPendingDragScrollFrame();
       cancelDragMomentumFrame();
       cancelScheduledFaderWrites();
+      clearScheduledChannelFaderUiUpdates();
       clearScheduledSendWrites();
       clearLocalParamWriteTracking();
     };
@@ -3272,6 +3279,72 @@ function App() {
 
       return changed ? next : current;
     });
+  }
+
+  function commitPendingChannelFaderUiUpdates() {
+    if (channelFaderUiPendingRef.current.size === 0) {
+      return;
+    }
+
+    const pending = new Map(channelFaderUiPendingRef.current);
+    channelFaderUiPendingRef.current.clear();
+    channelFaderUiLastCommitAtRef.current = Date.now();
+
+    setChannels((current) => {
+      let changed = false;
+      const next = [...current];
+
+      pending.forEach(({ position, db }, target) => {
+        const targetIndex = target - 1;
+        const currentChannel = current[targetIndex];
+        if (!currentChannel) return;
+        if (currentChannel.faderPosition === position && currentChannel.faderDb === db) return;
+
+        changed = true;
+        next[targetIndex] = {
+          ...currentChannel,
+          faderPosition: position,
+          faderDb: db,
+        };
+      });
+
+      return changed ? next : current;
+    });
+  }
+
+  function clearScheduledChannelFaderUiUpdates() {
+    if (channelFaderUiCommitTimerRef.current !== null) {
+      window.clearTimeout(channelFaderUiCommitTimerRef.current);
+      channelFaderUiCommitTimerRef.current = null;
+    }
+
+    channelFaderUiPendingRef.current.clear();
+  }
+
+  function scheduleChannelFaderUiUpdates(targets: number[], position: number, db: number) {
+    targets.forEach((target) => {
+      channelFaderUiPendingRef.current.set(target, { position, db });
+    });
+
+    const elapsed = Date.now() - channelFaderUiLastCommitAtRef.current;
+    if (elapsed >= CHANNEL_FADER_UI_COMMIT_INTERVAL_MS) {
+      if (channelFaderUiCommitTimerRef.current !== null) {
+        window.clearTimeout(channelFaderUiCommitTimerRef.current);
+        channelFaderUiCommitTimerRef.current = null;
+      }
+      commitPendingChannelFaderUiUpdates();
+      return;
+    }
+
+    if (channelFaderUiCommitTimerRef.current !== null) {
+      return;
+    }
+
+    const waitMs = Math.max(0, CHANNEL_FADER_UI_COMMIT_INTERVAL_MS - elapsed);
+    channelFaderUiCommitTimerRef.current = window.setTimeout(() => {
+      channelFaderUiCommitTimerRef.current = null;
+      commitPendingChannelFaderUiUpdates();
+    }, waitMs);
   }
 
   function updateAuxFaderStates(targets: number[], position: number, db: number) {
@@ -6174,9 +6247,9 @@ function App() {
       return false;
     }
 
-    // Divergencia entre escrita local e leitura remota deve prevalecer com valor da mesa.
-    recentLocalParamWritesRef.current.delete(param);
-    return false;
+    // Ignore short-lived remote divergence right after local writes to prevent
+    // UI rollback/flicker while the desk converges (common during fader drags).
+    return true;
   }
 
   function cleanupStaleLocalWriteTracking(now = Date.now()) {
@@ -9765,7 +9838,7 @@ function App() {
       });
     });
 
-    updateChannelFaderStates(targets, position, db);
+    scheduleChannelFaderUiUpdates(targets, position, db);
   }
 
   function handlePanChange(channelNumber: number, value: number) {

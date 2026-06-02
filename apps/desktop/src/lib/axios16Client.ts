@@ -750,8 +750,15 @@ function decodeSceneNameResponse(buffer: ArrayBuffer) {
   const payload = bytes.slice(3, bytes.length - 2);
   if (payload.length === 0) return null;
 
+  // Some firmware variants prepend slot index (1..16) before scene name text.
+  // Strip it to avoid rendering a bogus leading symbol in UI.
+  const textPayload =
+    payload.length > 1 && payload[0] >= 1 && payload[0] <= 16
+      ? payload.slice(1)
+      : payload;
+
   const decoded = new TextDecoder("utf-8")
-    .decode(payload)
+    .decode(textPayload)
     .replace(/\u0000/g, "")
     .trim();
 
@@ -1616,8 +1623,13 @@ export class Axios16Client {
     const safeSceneCount = Math.max(1, Math.min(16, Math.round(sceneCount)));
 
     for (let slot = 1; slot <= safeSceneCount; slot++) {
-      const name = await this.readSceneName(slot, timeoutMs);
-      result[slot] = name;
+      try {
+        const name = await this.readSceneName(slot, timeoutMs);
+        result[slot] = name;
+      } catch {
+        // Keep partial progress if one slot times out/interferes.
+        // The caller can still apply names that were read successfully.
+      }
     }
 
     return result;

@@ -22,7 +22,31 @@ type ConfirmAction =
 
 const SCENE_NAMES_STORAGE_KEY = "ax_scene_names";
 
-function loadStoredScenes(): SceneItem[] {
+function getDefaultSceneName(slot: number) {
+  return `Scene ${slot}`;
+}
+
+function sanitizeSceneNameOrNull(rawName: string) {
+  const cleaned = rawName
+    .replace(/\u0000/g, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\x20-\x7E]/g, "")
+    .trim();
+
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+function getSceneNamesStorageKey(cacheScopeKey?: string | null) {
+  const scope = cacheScopeKey?.trim();
+  if (!scope) {
+    return SCENE_NAMES_STORAGE_KEY;
+  }
+
+  return `${SCENE_NAMES_STORAGE_KEY}:${scope}`;
+}
+
+function loadStoredScenes(cacheScopeKey?: string | null): SceneItem[] {
   const defaults = createDefaultSceneList();
 
   if (typeof window === "undefined") {
@@ -30,7 +54,7 @@ function loadStoredScenes(): SceneItem[] {
   }
 
   try {
-    const raw = localStorage.getItem(SCENE_NAMES_STORAGE_KEY);
+    const raw = localStorage.getItem(getSceneNamesStorageKey(cacheScopeKey));
     if (!raw) {
       return defaults;
     }
@@ -55,32 +79,46 @@ function loadStoredScenes(): SceneItem[] {
 
     return defaults.map((scene) => {
       const storedName = storedNames.get(scene.slot);
-      return storedName
-        ? { ...scene, name: storedName, isNameLoaded: true }
-        : scene;
+      if (!storedName) {
+        return scene;
+      }
+
+      const safeName = sanitizeSceneNameOrNull(storedName);
+      if (!safeName) {
+        return {
+          ...scene,
+          name: getDefaultSceneName(scene.slot),
+          isNameLoaded: false,
+        };
+      }
+
+      return { ...scene, name: safeName, isNameLoaded: true };
     });
   } catch {
     return defaults;
   }
 }
 
-function persistStoredScenes(scenes: SceneItem[]) {
+function persistStoredScenes(scenes: SceneItem[], cacheScopeKey?: string | null) {
   if (typeof window === "undefined") {
     return;
   }
 
   const serialized = scenes.map((scene) => ({ slot: scene.slot, name: scene.name }));
-  localStorage.setItem(SCENE_NAMES_STORAGE_KEY, JSON.stringify(serialized));
+  localStorage.setItem(getSceneNamesStorageKey(cacheScopeKey), JSON.stringify(serialized));
 }
 
 export function ScenesView({ client, isConnected, cacheScopeKey, onCallScene, onSaveScene }: ScenesViewProps) {
-  void cacheScopeKey;
-  const [scenes, setScenes] = useState<SceneItem[]>(loadStoredScenes);
+  const [scenes, setScenes] = useState<SceneItem[]>(() => loadStoredScenes(cacheScopeKey));
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [renamingSlot, setRenamingSlot] = useState<SceneSlot | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setScenes(loadStoredScenes(cacheScopeKey));
+  }, [cacheScopeKey]);
 
   function sendRaw(packet: Uint8Array) {
     if (!client) throw new Error("Not connected.");
@@ -93,48 +131,73 @@ export function ScenesView({ client, isConnected, cacheScopeKey, onCallScene, on
     let cancelled = false;
 
     void (async () => {
-      try {
-        const sceneNames = await client.readSceneNames(1200, 12);
-        if (cancelled) return;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const sceneNames = await client.readSceneNames(1400, 12);
+          if (cancelled) return;
 
-        setScenes((prev) => {
-          let changed = false;
+          let loadedCount = 0;
 
-          const next = prev.map((scene) => {
-            const rawName = sceneNames[scene.slot];
-            const normalized = typeof rawName === "string" ? rawName.trim() : "";
+          setScenes((prev) => {
+            let changed = false;
 
-            if (!normalized) {
-              return scene;
+            const next = prev.map((scene) => {
+              const rawName = sceneNames[scene.slot];
+              const normalized =
+                typeof rawName === "string" ? sanitizeSceneNameOrNull(rawName) : null;
+
+              if (!normalized) {
+                const fallbackName = getDefaultSceneName(scene.slot);
+                if (scene.name === fallbackName && !scene.isNameLoaded) {
+                  return scene;
+                }
+
+                changed = true;
+                return {
+                  ...scene,
+                  name: fallbackName,
+                  isNameLoaded: false,
+                };
+              }
+
+              loadedCount += 1;
+
+              if (scene.name === normalized && scene.isNameLoaded) {
+                return scene;
+              }
+
+              changed = true;
+              return {
+                ...scene,
+                name: normalized,
+                isNameLoaded: true,
+              };
+            });
+
+            if (changed) {
+              persistStoredScenes(next, cacheScopeKey);
             }
 
-            if (scene.name === normalized && scene.isNameLoaded) {
-              return scene;
-            }
-
-            changed = true;
-            return {
-              ...scene,
-              name: normalized,
-              isNameLoaded: true,
-            };
+            return next;
           });
 
-          if (changed) {
-            persistStoredScenes(next);
+          if (loadedCount > 0 || attempt === 1) {
+            break;
           }
+        } catch (error) {
+          if (attempt === 1) {
+            console.warn("[Scenes] scene-name sync failed:", error);
+          }
+        }
 
-          return next;
-        });
-      } catch (error) {
-        console.warn("[Scenes] scene-name sync failed:", error);
+        await new Promise((resolve) => window.setTimeout(resolve, 160));
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [client, isConnected]);
+  }, [client, isConnected, cacheScopeKey]);
 
   async function handleCall(slot: SceneSlot) {
     if (!client || !isConnected) return;
@@ -165,7 +228,7 @@ export function ScenesView({ client, isConnected, cacheScopeKey, onCallScene, on
   function openRename(slot: SceneSlot) {
     const scene = scenes.find((s) => s.slot === slot);
     setRenamingSlot(slot);
-    setRenameValue(scene?.name ?? `Scene ${slot}`);
+    setRenameValue(scene?.name ?? getDefaultSceneName(slot));
     setTimeout(() => renameInputRef.current?.select(), 60);
   }
 
@@ -195,7 +258,7 @@ export function ScenesView({ client, isConnected, cacheScopeKey, onCallScene, on
       const next = prev.map((s) =>
         s.slot === slot ? { ...s, name: safeName, isNameLoaded: true } : s
       );
-      persistStoredScenes(next);
+      persistStoredScenes(next, cacheScopeKey);
       return next;
     });
     setRenamingSlot(null);
