@@ -5,7 +5,7 @@ import { MeterBar, MeterScale } from "./Meter";
 import { eqMagnitudeDb, type EqState } from "./ChannelProcessors";
 import { stripColorForScope, type StripColorScope } from "./stripColor";
 
-type ChannelStripProps = {
+export type ChannelStripProps = {
   channel?: number;
   channelName?: string;
   section?: "inputs" | "aux" | "fx";

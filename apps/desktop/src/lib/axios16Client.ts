@@ -5,6 +5,8 @@ export type AxiosCommand = {
 
 export type LocalParamWrite = AxiosCommand & { at: number };
 
+export type RemoteParamRead = AxiosCommand & { at: number };
+
 export type NameTarget =
   | { type: "channel"; channel: number }
   | { type: "fx"; fx: number }
@@ -1150,6 +1152,7 @@ export class Axios16Client {
   private readQueue: Promise<void> = Promise.resolve();
   private onDisconnectCallback: (() => void) | null = null;
   private localParamWriteListeners = new Set<(write: LocalParamWrite) => void>();
+  private remoteParamReadListeners = new Set<(read: RemoteParamRead) => void>();
   private capabilities: ProfileCapabilities;
 
   constructor(
@@ -1173,6 +1176,14 @@ export class Axios16Client {
 
     return () => {
       this.localParamWriteListeners.delete(listener);
+    };
+  }
+
+  onRemoteParamRead(listener: (read: RemoteParamRead) => void) {
+    this.remoteParamReadListeners.add(listener);
+
+    return () => {
+      this.remoteParamReadListeners.delete(listener);
     };
   }
 
@@ -1673,6 +1684,16 @@ export class Axios16Client {
         const decoded = decodeParamResponse(event.data);
 
         if (decoded.length === 0) return;
+
+        const at = Date.now();
+        decoded.forEach((item) => {
+          const read: RemoteParamRead = {
+            param: item.param,
+            value: item.value,
+            at,
+          };
+          this.remoteParamReadListeners.forEach((listener) => listener(read));
+        });
 
         for (const item of decoded) {
           if (requested.has(item.param)) {

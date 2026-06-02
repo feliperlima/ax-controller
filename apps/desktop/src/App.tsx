@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Axios16Client,
   type LocalParamWrite,
+  type RemoteParamRead,
   type AxiosProtocolProfile,
   type NameTarget,
   valueToCompGain,
@@ -130,6 +131,11 @@ import {
   writeRuntimeLicenseCacheToStorage,
 } from "./lib/licenseEngine";
 import { LockKeyhole, Mail, Monitor, Phone, ShieldCheck, User, Zap } from "lucide-react";
+import { UniversalRawParamStore, type RawParamProfileModel, type RawParamSource } from "./lib/universalRawParamStore";
+import {
+  ProfileAwareParameterRegistry,
+  type ProfileAwareParamDescriptor,
+} from "./lib/profileAwareParameterRegistry";
 
 type ChannelState = {
   muted: boolean;
@@ -2665,6 +2671,9 @@ function App() {
   const sendWritePendingRef = useRef<Map<number, number>>(new Map());
   const faderWriteRafRef = useRef<number | null>(null);
   const pendingFaderWritesRef = useRef<Map<string, () => void>>(new Map());
+  const rawParamStoreRef = useRef(new UniversalRawParamStore());
+  const profileAwareRegistryRef = useRef(new ProfileAwareParameterRegistry());
+  const rawParamDebugLastPublishAtRef = useRef(0);
   const channelFaderUiCommitTimerRef = useRef<number | null>(null);
   const channelFaderUiPendingRef = useRef<Map<number, { position: number; db: number }>>(
     new Map()
@@ -2672,6 +2681,7 @@ function App() {
   const channelFaderUiLastCommitAtRef = useRef(0);
   const recentLocalParamWritesRef = useRef<Map<number, LocalParamWrite>>(new Map());
   const localParamWriteUnsubscribeRef = useRef<(() => void) | null>(null);
+  const remoteParamReadUnsubscribeRef = useRef<(() => void) | null>(null);
   const fastControlSyncInFlightRef = useRef(false);
   const usbInputToUsbPatchMapRef = useRef<Map<number, number>>(new Map());
   const usbReturnPatchMapRef = useRef<Map<number, number>>(new Map());
@@ -2971,6 +2981,16 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const profileModel = resolveActiveRawProfileModel();
+    if (profileModel === "unknown") {
+      return;
+    }
+
+    const descriptors = buildKnownParamDescriptorsForActiveProfile();
+    profileAwareRegistryRef.current.registerProfileDescriptors(profileModel, descriptors);
+  }, [channelCount, isConnected]);
+
   function scheduleDragScrollLeft(scrollerElement: HTMLElement, scrollLeft: number) {
     pendingDragScrollLeftRef.current = scrollLeft;
 
@@ -3255,29 +3275,6 @@ function App() {
       const next = [...current];
       next[targetIndex] = { ...currentStrip, ...normalizedPatch };
       return next;
-    });
-  }
-
-  function updateChannelFaderStates(targets: number[], position: number, db: number) {
-    setChannels((current) => {
-      let changed = false;
-      const next = [...current];
-
-      targets.forEach((target) => {
-        const targetIndex = target - 1;
-        const currentChannel = current[targetIndex];
-        if (!currentChannel) return;
-        if (currentChannel.faderPosition === position && currentChannel.faderDb === db) return;
-
-        changed = true;
-        next[targetIndex] = {
-          ...currentChannel,
-          faderPosition: position,
-          faderDb: db,
-        };
-      });
-
-      return changed ? next : current;
     });
   }
 
@@ -6214,6 +6211,184 @@ function App() {
     applyLinkStateFrom3056(value);
   }
 
+  function resolveActiveRawProfileModel(): RawParamProfileModel {
+    if (!isConnected) {
+      return "unknown";
+    }
+
+    if (isAx32ProfileActive()) {
+      return "AX32";
+    }
+
+    return channelCount <= 16 ? "AX16" : "AX24";
+  }
+
+  function resolveRawParamSource(): RawParamSource {
+    if (!isConnected) {
+      return "unknown";
+    }
+
+    if (initialConnectSyncBusy || isSyncing) {
+      return "bootSync";
+    }
+
+    if (status.toLowerCase().includes("reconect")) {
+      return "reconnect";
+    }
+
+    return "runtime";
+  }
+
+  function buildKnownParamDescriptorsForActiveProfile() {
+    const descriptorByParam = new Map<number, ProfileAwareParamDescriptor>();
+
+    const addDescriptor = (
+      paramId: number,
+      decodedEntity?: string,
+      decodedProperty?: string,
+      knownStatus: ProfileAwareParamDescriptor["knownStatus"] = "known"
+    ) => {
+      const current = descriptorByParam.get(paramId);
+      if (current) {
+        descriptorByParam.set(paramId, {
+          ...current,
+          knownStatus,
+          decodedEntity: current.decodedEntity ?? decodedEntity,
+          decodedProperty: current.decodedProperty ?? decodedProperty,
+        });
+        return;
+      }
+
+      descriptorByParam.set(paramId, {
+        paramId,
+        knownStatus,
+        decodedEntity,
+        decodedProperty,
+      });
+    };
+
+    for (let channel = 1; channel <= channelCount; channel += 1) {
+      getChannelSyncParams(channel).forEach((paramId) => {
+        addDescriptor(paramId);
+      });
+
+      getActiveSendIds().forEach((sendId) => {
+        addDescriptor(sendIdToParam(channel, sendId), `channel:${channel}`, `send:${sendId}`);
+      });
+
+      addDescriptor(channelParam(channel, 76), `channel:${channel}`, "fader");
+      addDescriptor(channelParam(channel, 74), `channel:${channel}`, "mute");
+      addDescriptor(channelParam(channel, 87), `channel:${channel}`, "soloLeft");
+      addDescriptor(channelParam(channel, 88), `channel:${channel}`, "soloRight");
+      addDescriptor(channelParam(channel, 75), `channel:${channel}`, "pan");
+    }
+
+    const auxCount = getAuxBusCount();
+    for (let aux = 1; aux <= auxCount; aux += 1) {
+      getAuxSyncParams(aux).forEach((paramId) => {
+        addDescriptor(paramId);
+      });
+    }
+
+    const fxCount = getFxBusCount();
+    for (let fx = 1; fx <= fxCount; fx += 1) {
+      const fxStateParams = getFxStateParams(fx);
+      addDescriptor(fxStateParams.fader, `fx:${fx}`, "fader");
+      addDescriptor(fxStateParams.mute, `fx:${fx}`, "mute");
+      const fxProcessorParams = getFxProcessorParams(fx);
+      if (fxProcessorParams) {
+        Object.values(fxProcessorParams).forEach((paramId) => {
+          addDescriptor(paramId);
+        });
+      }
+    }
+
+    const masterParams = getMasterParams();
+    addDescriptor(getChannelLinkParam(), "global", "channelLink");
+    addDescriptor(getLinkMaskParam(), "global", "auxMasterLinkMask");
+    addDescriptor(masterParams.leftFader, "master:left", "fader");
+    addDescriptor(masterParams.rightFader, "master:right", "fader");
+    addDescriptor(masterParams.leftMute, "master:left", "mute");
+    addDescriptor(masterParams.rightMute, "master:right", "mute");
+    addDescriptor(masterParams.leftColor, "master:left", "color");
+    addDescriptor(masterParams.rightColor, "master:right", "color");
+    addDescriptor(masterSoloLeftParam(), "master:left", "solo");
+    addDescriptor(masterSoloAuxLeftParam(), "master:left", "soloAux");
+    addDescriptor(masterSoloRightParam(), "master:right", "solo");
+    addDescriptor(masterSoloAuxRightParam(), "master:right", "soloAux");
+    addDescriptor(getLinkMaskParam(), "global", "linkMask");
+
+    (["left", "right"] as const).forEach((side) => {
+      const processor = masterProcessorParams(side);
+      Object.entries(processor).forEach(([property, paramId]) => {
+        addDescriptor(paramId, `master:${side}`, property);
+      });
+      Array.from({ length: 7 }, (_, index) => processor.eqBandBase + index * 4).forEach(
+        (paramId, index) => addDescriptor(paramId, `master:${side}`, `eqBand${index + 1}`)
+      );
+    });
+
+    for (let fx = 1; fx <= fxCount; fx += 1) {
+      Object.entries(getFxPresetParams(fx)).forEach(([property, paramId]) => {
+        addDescriptor(paramId, `fx:${fx}`, `preset:${property}`);
+      });
+    }
+
+    activeDcaIds.forEach((id) => {
+      addDescriptor(getDcaOnOffParam(id), `dca:${id}`, "enabled");
+      addDescriptor(getDcaFaderParam(id), `dca:${id}`, "fader");
+      getDcaMemberParams(id).forEach((paramId) => addDescriptor(paramId));
+    });
+
+    getMuteIdsForActiveProfile().forEach((id) => {
+      addDescriptor(getMuteGroupActiveParam(id), `muteGroup:${id}`, "active");
+      getMuteGroupMemberParams(id).forEach((paramId) => addDescriptor(paramId));
+    });
+
+    return Array.from(descriptorByParam.values());
+  }
+
+  function publishRawParamDebugSnapshot(now = Date.now()) {
+    if (now - rawParamDebugLastPublishAtRef.current < 250) {
+      return;
+    }
+
+    rawParamDebugLastPublishAtRef.current = now;
+
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const target = window as unknown as {
+      __AX_RAW_PARAM_DEBUG__?: unknown;
+    };
+
+    target.__AX_RAW_PARAM_DEBUG__ = rawParamStoreRef.current.getRawParamStoreSnapshot();
+  }
+
+  function upsertRawParamFromTransport(
+    paramId: number,
+    value: number,
+    timestamp: number,
+    source: RawParamSource
+  ) {
+    const profileModel = resolveActiveRawProfileModel();
+    const classification = profileAwareRegistryRef.current.classifyParam(paramId, profileModel);
+
+    rawParamStoreRef.current.upsertRawParam({
+      paramId,
+      value,
+      activeProfile: profileModel,
+      timestamp,
+      source,
+      knownStatus: classification.knownStatus,
+      decodedEntity: classification.decodedEntity,
+      decodedProperty: classification.decodedProperty,
+    });
+
+    publishRawParamDebugSnapshot(timestamp);
+  }
+
   function clearScheduledSendWrites() {
     sendWriteTimersRef.current.forEach((timer) => {
       window.clearTimeout(timer);
@@ -6226,11 +6401,22 @@ function App() {
   function clearLocalParamWriteTracking() {
     localParamWriteUnsubscribeRef.current?.();
     localParamWriteUnsubscribeRef.current = null;
+    remoteParamReadUnsubscribeRef.current?.();
+    remoteParamReadUnsubscribeRef.current = null;
     recentLocalParamWritesRef.current.clear();
   }
 
   function handleLocalParamWrite(write: LocalParamWrite) {
     recentLocalParamWritesRef.current.set(write.param, write);
+    upsertRawParamFromTransport(write.param, write.value, write.at, "userTxEcho");
+  }
+
+  function handleRemoteParamRead(read: RemoteParamRead) {
+    if (shouldSuppressRemoteParam(read.param, read.value, read.at)) {
+      return;
+    }
+
+    upsertRawParamFromTransport(read.param, read.value, read.at, resolveRawParamSource());
   }
 
   function shouldSuppressRemoteParam(param: number, value: number, now = Date.now()) {
@@ -6883,6 +7069,21 @@ function App() {
             next[ch - 1] = { ...next[ch - 1], soloOn };
           }
         }
+
+        for (let odd = 1; odd <= channelCount - 1; odd += 2) {
+          const even = odd + 1;
+          const key = pairKey(odd, even);
+          if (!channelLinks[key]) continue;
+
+          const pairSoloOn = next[odd - 1].soloOn || next[even - 1].soloOn;
+          if (next[odd - 1].soloOn !== pairSoloOn) {
+            next[odd - 1] = { ...next[odd - 1], soloOn: pairSoloOn };
+          }
+          if (next[even - 1].soloOn !== pairSoloOn) {
+            next[even - 1] = { ...next[even - 1], soloOn: pairSoloOn };
+          }
+        }
+
         return next;
       });
 
@@ -6901,6 +7102,21 @@ function App() {
             next[aux - 1] = { ...next[aux - 1], soloOn };
           }
         }
+
+        for (let odd = 1; odd <= auxCount - 1; odd += 2) {
+          const even = odd + 1;
+          const key = pairKey(odd, even);
+          if (!auxLinks[key]) continue;
+
+          const pairSoloOn = next[odd - 1].soloOn || next[even - 1].soloOn;
+          if (next[odd - 1].soloOn !== pairSoloOn) {
+            next[odd - 1] = { ...next[odd - 1], soloOn: pairSoloOn };
+          }
+          if (next[even - 1].soloOn !== pairSoloOn) {
+            next[even - 1] = { ...next[even - 1], soloOn: pairSoloOn };
+          }
+        }
+
         return next;
       });
 
@@ -7742,8 +7958,9 @@ function App() {
       const CHANNEL_IDLE_DB = -75;
       const CHANNEL_ACTIVE_MIN_DB = -40;
       const CHANNEL_STALE_TIMEOUT_MS = 420;
+      const maxChannelMeterParam = channelCount / 2 + 1;
       const channelMeterItems = response.filter(
-        (item) => item.param >= 2 && item.param <= 9
+        (item) => item.param >= 2 && item.param <= maxChannelMeterParam
       );
       const seenChannels = new Set<number>();
       const hasAnyChannelMeterData = channelMeterItems.length > 0;
@@ -7910,11 +8127,13 @@ function App() {
           meterPollCycle += 1;
           const includeExtendedAx32Meters =
             !isConstrainedDevice || meterPollCycle % 3 === 0;
+          const maxChannelMeterParam = channelCount / 2 + 1;
+          const chMeterParams = Array.from({ length: maxChannelMeterParam - 1 }, (_, i) => i + 2);
           const meterParams = isAx32ProfileActive()
             ? includeExtendedAx32Meters
-              ? [2, 3, 4, 5, 6, 7, 8, 9, 47, 48, 2862, 1947, 1948, 4644, 4645, 4753, 4754]
-              : [2, 3, 4, 5, 6, 7, 8, 9, 47, 48, 2862]
-            : [2, 3, 4, 5, 6, 7, 8, 9, 47, 48];
+              ? [...chMeterParams, 47, 48, 2862, 1947, 1948, 4644, 4645, 4753, 4754]
+              : [...chMeterParams, 47, 48, 2862]
+            : [...chMeterParams, 47, 48];
           const meterResponse = await client.readParams(
             meterParams,
             METER_READ_TIMEOUT_MS
@@ -7971,6 +8190,8 @@ function App() {
     forcedProfile?: AxiosProtocolProfile,
     forcedChannelCount?: number
   ) {
+    rawParamStoreRef.current.clear();
+
     setConnectingSource(source);
     setConnectionError(null);
     setStatus("Conectando...");
@@ -8039,6 +8260,7 @@ function App() {
       await client.connect();
       clearLocalParamWriteTracking();
       localParamWriteUnsubscribeRef.current = client.onLocalParamWrite(handleLocalParamWrite);
+      remoteParamReadUnsubscribeRef.current = client.onRemoteParamRead(handleRemoteParamRead);
 
       client.setOnDisconnect(() => {
         // Keep UI/client state consistent when the socket drops unexpectedly.
@@ -8046,6 +8268,7 @@ function App() {
         stopMeterPolling();
         clearScheduledSendWrites();
         clearLocalParamWriteTracking();
+        rawParamStoreRef.current.clear();
         clientRef.current = null;
         setIsConnected(false);
         setStatus("Conexao com a mesa foi encerrada.");
@@ -9505,7 +9728,8 @@ function App() {
     const linked = Boolean(channelLinks[key]);
 
     if (linked) {
-      const nextValue = !(channels[odd - 1].soloOn && channels[even - 1].soloOn);
+      const pairSoloOn = channels[odd - 1].soloOn || channels[even - 1].soloOn;
+      const nextValue = !pairSoloOn;
       client.setChannelSoloPair(odd, nextValue, { db: 0, tapPoint: "post" });
       updateChannelState(odd, { soloOn: nextValue });
       updateChannelState(even, { soloOn: nextValue });
@@ -10474,7 +10698,8 @@ function App() {
       const linked = Boolean(auxLinks[key]);
 
       if (linked) {
-        const nextValue = !(auxStrips[odd - 1].soloOn && auxStrips[even - 1].soloOn);
+        const pairSoloOn = auxStrips[odd - 1].soloOn || auxStrips[even - 1].soloOn;
+        const nextValue = !pairSoloOn;
         client.setAuxSoloPair(odd, nextValue, { db: 0, tapPoint: "post" });
         updateAuxStripState(odd, { soloOn: nextValue });
         updateAuxStripState(even, { soloOn: nextValue });

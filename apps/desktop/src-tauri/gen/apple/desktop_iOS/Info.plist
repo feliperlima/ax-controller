@@ -45,5 +45,7 @@
 	<string>11.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>AX Control precisa acessar a rede local para localizar e conectar mesas Axios na mesma rede.</string>
 </dict>
 </plist>
