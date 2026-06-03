@@ -148,15 +148,24 @@ fn infer_model_and_channels(name: &str) -> (Option<String>, Option<u16>) {
     let axios_regex = Regex::new(r"AXIOS\s*(\d+)([A-Z0-9_-]*)").expect("valid axios model regex");
 
     if let Some(captures) = axios_regex.captures(&normalized) {
-        let channels = captures
+        let mut channels = captures
             .get(1)
             .and_then(|value| value.as_str().parse::<u16>().ok());
+
+        // Normalize detected channels: remove DIGI (2 stereo channels)
+        if let Some(ch) = channels {
+            channels = Some(normalize_detected_channels(ch));
+        }
 
         return (Some(normalized), channels);
     }
 
     if normalized.contains("AXIOS32") {
         return (Some("Axios 32".to_string()), Some(32));
+    }
+
+    if normalized.contains("AXIOS24") {
+        return (Some("Axios 24".to_string()), Some(24));
     }
 
     if normalized.contains("AXIOS16E") {
@@ -168,6 +177,17 @@ fn infer_model_and_channels(name: &str) -> (Option<String>, Option<u16>) {
     }
 
     (None, None)
+}
+
+fn normalize_detected_channels(channels: u16) -> u16 {
+    // Mesa reporta: 18 (AX16+DIGI), 26 (AX24+DIGI), 34 (AX32+DIGI)
+    // App usa apenas os canais sem DIGI
+    match channels {
+        18 => 16,  // AX16 + 2 DIGI stereo
+        26 => 24,  // AX24 + 2 DIGI stereo
+        34 => 32,  // AX32 + 2 DIGI stereo
+        _ => channels,  // Passa como está se não reconhecer
+    }
 }
 
 fn parse_finder_html(html: &str) -> Vec<DiscoveredMixer> {
@@ -492,11 +512,21 @@ fn build_read_params_packet(params: &[u16]) -> Vec<u8> {
 
 fn decode_read_params_response(buffer: &[u8]) -> Vec<u16> {
     if buffer.len() < 9 || buffer[0] != 128 {
+        if buffer.len() < 9 {
+            eprintln!("[DECODE] Buffer too short: {} bytes", buffer.len());
+        } else {
+            eprintln!("[DECODE] Invalid frame marker: {} (expected 128)", buffer[0]);
+        }
         return Vec::new();
     }
 
     let expected_len = buffer[1] as usize + 2;
     if expected_len > buffer.len() || buffer[2] != 6 {
+        if expected_len > buffer.len() {
+            eprintln!("[DECODE] Frame length mismatch: expected {}, have {}", expected_len, buffer.len());
+        } else {
+            eprintln!("[DECODE] Invalid opcode: {} (expected 6)", buffer[2]);
+        }
         return Vec::new();
     }
 
@@ -510,21 +540,26 @@ fn decode_read_params_response(buffer: &[u8]) -> Vec<u16> {
         index += 4;
     }
 
+    eprintln!("[DECODE] Extracted {} params: {:?}", params.len(), params);
     params
 }
 
 fn probe_channel_capacity_via_ws(ip: &str, timeout_ms: u64) -> Option<u16> {
     let request = format!("ws://{ip}:8088/");
+    eprintln!("[PROBE] Connecting to {}", request);
     let (mut socket, _) = connect(request.as_str()).ok()?;
+    eprintln!("[PROBE] Connected! Sending sentinel params...");
 
     // Sentinelas por modelo:
     // - AX16/24: 74 (CH1), 1066 (faixa CH17), 1500 (faixa CH24)
     // - AX32: 4634/4743 (master faders), 4649/4758 (master EQ enable L/R)
     let packet = build_read_params_packet(&[74, 1066, 1500, 4634, 4743, 4649, 4758]);
     socket.send(Message::Binary(packet.into())).ok()?;
+    eprintln!("[PROBE] Packet sent, waiting for responses (timeout={}ms)...", timeout_ms);
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut observed_params = HashSet::<u16>::new();
+    let mut read_count = 0u32;
 
     let classify = |hits: &HashSet<u16>| -> Option<u16> {
         let ax32_sentinels = [4634u16, 4743u16, 4649u16, 4758u16];
@@ -545,22 +580,22 @@ fn probe_channel_capacity_via_ws(ip: &str, timeout_ms: u64) -> Option<u16> {
         let has_ax32 = ax32_hits >= 2;
         let has_ax24 = ax24_hits >= 1;
 
-        // Marcadores de AX32 + AX24 juntos no mesmo probe indicam resposta ambígua
-        // (ex.: eco de params solicitados), então não classifica.
-        if has_ax32 && has_ax24 {
-            return None;
-        }
-
+        // Se múltiplos modelos responderam, usa o MAIOR (hierarquia: AX32 > AX24 > AX16)
+        // para resolver ambiguidade. Isso é válido porque a mesa AXIOS apenas tem
+        // os parâmetros do seu próprio modelo.
         if has_ax32 {
-            return Some(32);
+            eprintln!("[PROBE] AX32 detected (34 channels with DIGI) - {} sentinels matched", ax32_hits);
+            return Some(34); // 32 + 2 DIGI stereo
         }
 
         if has_ax24 {
-            return Some(24);
+            eprintln!("[PROBE] AX24 detected (26 channels with DIGI) - {} sentinels matched", ax24_hits);
+            return Some(26); // 24 + 2 DIGI stereo
         }
 
         if has_ax16 {
-            return Some(16);
+            eprintln!("[PROBE] AX16 detected (18 channels with DIGI)");
+            return Some(18); // 16 + 2 DIGI stereo
         }
 
         None
@@ -569,32 +604,55 @@ fn probe_channel_capacity_via_ws(ip: &str, timeout_ms: u64) -> Option<u16> {
     while Instant::now() < deadline {
         let message = match socket.read() {
             Ok(message) => message,
-            Err(_) => break,
+            Err(e) => {
+                eprintln!("[PROBE] Socket read error: {:?}", e);
+                break;
+            }
         };
 
+        read_count += 1;
         let payload = match message {
-            Message::Binary(data) => data,
-            Message::Close(_) => break,
-            _ => continue,
+            Message::Binary(data) => {
+                eprintln!("[PROBE] Read #{}: Got binary payload ({} bytes)", read_count, data.len());
+                data
+            },
+            Message::Close(_) => {
+                eprintln!("[PROBE] Socket closed by remote");
+                break;
+            },
+            _ => {
+                eprintln!("[PROBE] Read #{}: Got non-binary message (ignoring)", read_count);
+                continue;
+            }
         };
 
         let decoded = decode_read_params_response(&payload);
+        eprintln!("[PROBE] Decoded {} params from payload", decoded.len());
+        
         if decoded.is_empty() {
+            eprintln!("[PROBE] Decode returned empty (payload may be invalid)");
             continue;
         }
 
         for param in decoded {
+            eprintln!("[PROBE]   - Observed param: {}", param);
             observed_params.insert(param);
         }
+        
+        eprintln!("[PROBE] Total observed params so far: {:?}", observed_params);
 
         if let Some(channels) = classify(&observed_params) {
             let _ = socket.close(None);
+            eprintln!("[PROBE] returning {}", channels);
             return Some(channels);
         }
     }
 
+    eprintln!("[PROBE] Timeout! Total reads: {}, observed params: {:?}", read_count, observed_params);
+
     let result = classify(&observed_params);
     let _ = socket.close(None);
+    eprintln!("[PROBE] final result: {:?}", result);
     result
 }
 
@@ -615,51 +673,20 @@ fn resolve_channels_from_identity_or_probe(
     let (_, inferred_channels) = infer_model_and_channels(identity_name);
     let identity_channels = current_channels.or(inferred_channels);
 
-    // Decisão ponderada: probe tem peso maior, nome/channels do device adicionam contexto.
-    // Em empate, prioriza identidade para evitar promoção indevida para AX32.
-    let mut score_by_channels = HashMap::<u16, i32>::new();
+    eprintln!("[RESOLVE_CHANNELS] name={} identity={:?} probed={:?}", identity_name, identity_channels, probed_channels);
 
+    // Probe WebSocket é a FONTE DE VERDADE (autoridade obrigatória)
+    // Se probe tem resultado, usa diretamente sem scoring ou ambiguidade
     if let Some(probed) = probed_channels {
-        *score_by_channels.entry(probed).or_insert(0) += 2;
+        eprintln!("[RESOLVE_CHANNELS] USING PROBE (authoritative): {}", probed);
+        return Some(normalize_detected_channels(probed));
     }
 
-    if let Some(identity) = identity_channels {
-        *score_by_channels.entry(identity).or_insert(0) += 1;
-    }
+    // Se probe falhou, fallback para identidade (nome do device)
+    let result = identity_channels.map(normalize_detected_channels);
+    eprintln!("[RESOLVE_CHANNELS] probe failed, using identity fallback");
 
-    if let Some(current) = current_channels {
-        *score_by_channels.entry(current).or_insert(0) += 1;
-    }
-
-    if score_by_channels.is_empty() {
-        return None;
-    }
-
-    let mut best_channels: Option<u16> = None;
-    let mut best_score = i32::MIN;
-    let mut has_tie = false;
-
-    for (&channels, &score) in score_by_channels.iter() {
-        if score > best_score {
-            best_score = score;
-            best_channels = Some(channels);
-            has_tie = false;
-            continue;
-        }
-
-        if score == best_score {
-            has_tie = true;
-            if Some(channels) == identity_channels {
-                best_channels = Some(channels);
-            }
-        }
-    }
-
-    if has_tie {
-        return identity_channels.or(best_channels).or(probed_channels);
-    }
-
-    best_channels
+    result
 }
 
 fn build_local_probe_ips(preferred_ips: &[String]) -> Vec<String> {

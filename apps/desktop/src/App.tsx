@@ -356,6 +356,8 @@ function resolveConnectionTargetProfile(
       ? AX32_CHANNEL_COUNT
       : resolvedChannelCount;
 
+  console.log(`[DEBUG_PROFILE] discoveredMixer=${discoveredMixer?.name} discoveredChannelCount=${discoveredChannelCount} forced=${forcedChannelCount} resolvedChannelCount=${resolvedChannelCount} resolvedProfile=${resolvedProfile} targetChannelCount=${targetChannelCount}`);
+
   return {
     profile: normalizeProtocolProfile(resolvedProfile),
     channelCount: targetChannelCount,
@@ -2658,6 +2660,10 @@ function App() {
     ax32_2862: 0,
   });
   const masterMeterDebugLastAtRef = useRef(0);
+  const remoteWsCaptureLastStatusAtRef = useRef(0);
+  const remoteWsCaptureRef = useRef<
+    Map<number, { value: number; at: number; changes: number }>
+  >(new Map());
   const auxLinkBusyRef = useRef(false);
   const meterUpdateLastAtRef = useRef(0);
   const isChannelsDraggingRef = useRef(false);
@@ -6417,6 +6423,57 @@ function App() {
     }
 
     upsertRawParamFromTransport(read.param, read.value, read.at, resolveRawParamSource());
+
+    if (
+      isAx32ProfileActive() &&
+      ((read.param >= 2 && read.param <= 255) ||
+        read.param === 2862 ||
+        read.param === 1947 ||
+        read.param === 1948 ||
+        read.param === 4644 ||
+        read.param === 4645 ||
+        read.param === 4753 ||
+        read.param === 4754)
+    ) {
+      const current = remoteWsCaptureRef.current.get(read.param);
+      remoteWsCaptureRef.current.set(read.param, {
+        value: read.value,
+        at: read.at,
+        changes: current ? current.changes + 1 : 1,
+      });
+
+      if (read.at - remoteWsCaptureLastStatusAtRef.current >= 900) {
+        remoteWsCaptureLastStatusAtRef.current = read.at;
+        const active = Array.from(remoteWsCaptureRef.current.entries())
+          .filter(([, sample]) => sample.value !== 0 && read.at - sample.at <= 2500)
+          .sort((a, b) => {
+            if (b[1].changes !== a[1].changes) {
+              return b[1].changes - a[1].changes;
+            }
+            return b[1].at - a[1].at;
+          })
+          .slice(0, 8)
+          .map(([param, sample]) => `${param}:${sample.value}`);
+
+        if (typeof window !== "undefined") {
+          const target = window as unknown as {
+            __AX_WS_CAPTURE__?: unknown;
+          };
+          target.__AX_WS_CAPTURE__ = Array.from(remoteWsCaptureRef.current.entries()).map(
+            ([param, sample]) => ({
+              param,
+              value: sample.value,
+              at: sample.at,
+              changes: sample.changes,
+            })
+          );
+        }
+
+        if (active.length > 0) {
+          setStatus(`WS ativos: ${active.join(" ")}`);
+        }
+      }
+    }
   }
 
   function shouldSuppressRemoteParam(param: number, value: number, now = Date.now()) {
@@ -7760,6 +7817,13 @@ function App() {
     }
     meterUpdateLastAtRef.current = now;
 
+    // DEBUG: Log response para CH31-32
+    const has16 = response.find(item => item.param === 16);
+    const has17 = response.find(item => item.param === 17);
+    if (has16 || has17) {
+      console.log(`[METER_RESPONSE] param16=${has16?.value ?? 'N/A'} param17=${has17?.value ?? 'N/A'}`);
+    }
+
     const CLIP_HOLD_MS = 2500;
     const mainMaster = response.find((item) => item.param === 47);
     const ax32MasterL = response.find((item) => item.param === 1947);
@@ -7959,9 +8023,12 @@ function App() {
       const CHANNEL_ACTIVE_MIN_DB = -40;
       const CHANNEL_STALE_TIMEOUT_MS = 420;
       const maxChannelMeterParam = channelCount / 2 + 1;
-      const channelMeterItems = response.filter(
-        (item) => item.param >= 2 && item.param <= maxChannelMeterParam
-      );
+      const channelMeterItems = response.filter((item) => {
+        return item.param >= 2 && item.param <= maxChannelMeterParam;
+      });
+      if (channelMeterItems.length > 0 && (channelMeterItems[0].param >= 14 || channelMeterItems.some(i => i.param >= 14))) {
+        console.log(`[SETCHANNNELS] channelCount=${channelCount} maxChannelMeterParam=${maxChannelMeterParam} filtered_items=${channelMeterItems.length} sample=${channelMeterItems.slice(-2).map(i => `${i.param}`).join(',')}`);
+      }
       const seenChannels = new Set<number>();
       const hasAnyChannelMeterData = channelMeterItems.length > 0;
 
@@ -8006,6 +8073,9 @@ function App() {
       }
 
       function updateOneChannel(channelNumber: number, channelDb: number) {
+        if (channelNumber >= 31 && channelNumber <= 32) {
+          console.log(`[CH${channelNumber}] updateOneChannel called: channelCount=${channelCount}, valid=${channelNumber >= 1 && channelNumber <= channelCount}, db=${channelDb.toFixed(1)}`);
+        }
         if (channelNumber < 1 || channelNumber > channelCount) return;
 
         seenChannels.add(channelNumber);
@@ -8059,8 +8129,8 @@ function App() {
       }
 
       for (const { param, value } of channelMeterItems) {
-        const firstChannel = (param - 2) * 2 + 1;
-        const secondChannel = firstChannel + 1;
+        let firstChannel = (param - 2) * 2 + 1;
+        let secondChannel = firstChannel + 1;
 
         const hiByte = (value >> 8) & 255;
         const loByte = value & 255;
@@ -8070,6 +8140,10 @@ function App() {
         // loByte = canal ímpar
         const oddChannelDb = meterByteToDb(loByte);
         const evenChannelDb = meterByteToDb(hiByte);
+
+        if (param >= 16) {
+          console.log(`[METER_PROCESSING] param=${param} value=${value} firstCh=${firstChannel} secondCh=${secondChannel} oddDb=${oddChannelDb.toFixed(1)} evenDb=${evenChannelDb.toFixed(1)}`);
+        }
 
         updateOneChannel(firstChannel, oddChannelDb);
         updateOneChannel(secondChannel, evenChannelDb);
@@ -8099,11 +8173,12 @@ function App() {
     });
   }
 
-  function startMeterPolling() {
+  function startMeterPolling(explicitChannelCount?: number) {
     stopMeterPolling();
     missingChannelMeterFramesRef.current = 0;
+    const effectiveChannelCount = explicitChannelCount ?? channelCount;
     channelMeterLastUpdateAtRef.current = Array.from(
-      { length: channelCount },
+      { length: effectiveChannelCount },
       () => Date.now()
     );
 
@@ -8121,19 +8196,20 @@ function App() {
       const client = clientRef.current;
 
       if (client) {
-        // Poll dos meters: canais (2-9) + main master (47) + monitor/solo (48).
+        // Poll dos meters: canais (2-maxChannelMeterParam) + main master (47) + monitor/solo (48) + master alts
+        // AX16: params 2-9 (CH1-16)
+        // AX24: params 2-13 (CH1-24)
+        // AX32: params 2-17 (CH1-32)
         try {
           meterBusyRef.current = true;
           meterPollCycle += 1;
-          const includeExtendedAx32Meters =
-            !isConstrainedDevice || meterPollCycle % 3 === 0;
-          const maxChannelMeterParam = channelCount / 2 + 1;
+          const maxChannelMeterParam = effectiveChannelCount / 2 + 1;
           const chMeterParams = Array.from({ length: maxChannelMeterParam - 1 }, (_, i) => i + 2);
-          const meterParams = isAx32ProfileActive()
-            ? includeExtendedAx32Meters
-              ? [...chMeterParams, 47, 48, 2862, 1947, 1948, 4644, 4645, 4753, 4754]
-              : [...chMeterParams, 47, 48, 2862]
-            : [...chMeterParams, 47, 48];
+          const masterMeterParams = [47, 48, 2862, 1947, 1948, 4644, 4645, 4753, 4754];
+          const meterParams = [...chMeterParams, ...masterMeterParams];
+          if (meterPollCycle === 1 || meterPollCycle % 20 === 0) {
+            console.log(`[METER_POLL] cycle=${meterPollCycle} channelCount=${effectiveChannelCount} max=${maxChannelMeterParam} requesting_params=${meterParams.length}`);
+          }
           const meterResponse = await client.readParams(
             meterParams,
             METER_READ_TIMEOUT_MS
@@ -8312,7 +8388,7 @@ function App() {
       }
 
       rememberConnectedMixerIp(normalizedIp);
-      startMeterPolling();
+      startMeterPolling(targetChannelCount);
       setConnectingSource(null);
 
       setStatus(`${connectedStatus} (sincronizando em segundo plano...)`);

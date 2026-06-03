@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AX Capture Launcher</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Courier New', monospace;
+      background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
+      color: #0f0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .container {
+      background: rgba(0, 0, 0, 0.8);
+      border: 2px solid #0f0;
+      border-radius: 8px;
+      padding: 40px;
+      max-width: 600px;
+      box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 30px;
+      font-size: 2em;
+      text-shadow: 0 0 10px #0f0;
+    }
+    .method {
+      margin: 30px 0;
+      padding: 20px;
+      background: rgba(15, 240, 15, 0.05);
+      border-left: 3px solid #0f0;
+      border-radius: 4px;
+    }
+    .method h2 {
+      color: #0f0;
+      font-size: 1.3em;
+      margin-bottom: 15px;
+    }
+    .method p {
+      margin: 10px 0;
+      font-size: 0.95em;
+      line-height: 1.6;
+    }
+    .method ol, .method ul {
+      margin: 15px 0 15px 20px;
+    }
+    .method li {
+      margin: 8px 0;
+    }
+    button {
+      background: #0f0;
+      color: #000;
+      border: none;
+      padding: 15px 30px;
+      margin: 20px auto;
+      display: block;
+      font-size: 1em;
+      font-weight: bold;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: all 0.2s;
+      font-family: 'Courier New', monospace;
+    }
+    button:hover {
+      background: #0f0;
+      transform: scale(1.05);
+      box-shadow: 0 0 15px rgba(0, 255, 0, 0.5);
+    }
+    button:active {
+      transform: scale(0.95);
+    }
+    .code {
+      background: #000;
+      border: 1px solid #0f0;
+      padding: 15px;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 0.85em;
+      margin: 10px 0;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .status {
+      text-align: center;
+      margin-top: 40px;
+      padding: 20px;
+      background: rgba(15, 240, 15, 0.1);
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+    .success { color: #0f0; }
+    .error { color: #f00; }
+    .warning { color: #ff0; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>AX WebSocket Capture Launcher</h1>
+
+  <div class="method">
+    <h2>Método 1: Criar Bookmarklet (Recomendado)</h2>
+    <p>Crie um bookmark que ativa a captura com um clique:</p>
+    <ol>
+      <li>Abra <a href="http://192.168.1.75/" target="_blank">http://192.168.1.75/</a></li>
+      <li>Crie um novo bookmark (Ctrl+Shift+B → Bookmark Manager)</li>
+      <li>Cole este URL no campo "URL":</li>
+    </ol>
+    <div class="code">javascript:(function(){const s=document.createElement('script');s.src='http://192.168.1.75:8000/ax-capture-inject.js';document.head.appendChild(s);})();</div>
+    <ol start="4">
+      <li>Salve com nome "AX Capture"</li>
+      <li>Quando quiser capturar: clique no bookmark</li>
+    </ol>
+  </div>
+
+  <div class="method">
+    <h2>Método 2: Console Manual</h2>
+    <p>Cole o script diretamente no console do DevTools:</p>
+    <ol>
+      <li>Abra <a href="http://192.168.1.75/" target="_blank">http://192.168.1.75/</a></li>
+      <li>Pressione <strong>F12</strong> para abrir DevTools</li>
+      <li>Vá para aba "Console"</li>
+      <li>Copie o código abaixo e cole no console:</li>
+    </ol>
+    <button onclick="copyConsoleCode()">📋 Copiar Script para Clipboard</button>
+  </div>
+
+  <div class="method">
+    <h2>Depois de Injetar - Teste</h2>
+    <p><strong>Teste A: CH1 com Microfone</strong></p>
+    <div class="code">AX_CAPTURE.clear()
+// Fale no microfone por 5 segundos
+AX_CAPTURE.summary()
+AX_CAPTURE.export()</div>
+    
+    <p><strong>Teste B: CH31/32 com Spotify</strong></p>
+    <div class="code">AX_CAPTURE.clear()
+// Roteie Spotify para CH31/32 e deixe tocar 5 segundos
+AX_CAPTURE.summary()
+AX_CAPTURE.export()</div>
+
+    <p>Cada comando mostra logs em verde (TX →) e magenta (← RX) no console.</p>
+  </div>
+
+  <div class="method">
+    <h2>Controles Disponíveis</h2>
+    <div class="code">AX_CAPTURE.clear()       // Limpa logs
+AX_CAPTURE.toggle()      // Ativar/desativar
+AX_CAPTURE.summary()     // Resumo de TX/RX
+AX_CAPTURE.export()      // Salva JSON para arquivo
+AX_CAPTURE.sequence()    // Sequência de eventos
+AX_CAPTURE.logs          // Array bruto de logs</div>
+  </div>
+
+  <button onclick="openMesa()">🌐 Abrir Mesa (192.168.1.75)</button>
+  <button onclick="copyConsoleCode()">📋 Copiar Script de Injeção</button>
+  <button onclick="openInstruções()">📖 Ver Instruções Completas</button>
+
+  <div class="status">
+    <p><strong>Próximo Passo:</strong></p>
+    <p>1. Clique em "Abrir Mesa"</p>
+    <p>2. Quando carregar, clique no bookmark "AX Capture" OU paste o script no console</p>
+    <p>3. Você verá mensagem de sucesso em verde</p>
+    <p>4. Use os comandos de teste acima</p>
+  </div>
+</div>
+
+<script>
+  function openMesa() {
+    window.open('http://192.168.1.75/', 'mesa');
+  }
+
+  function openInstruções() {
+    window.open('CAPTURA-INSTRUCOES.md', 'instructions');
+  }
+
+  function copyConsoleCode() {
+    const code = `(function(){console.log('Loading AX Capture injector...');const s=document.createElement('script');s.onload=function(){console.log('%c✓ AX Capture loaded!','color:#0f0;font-weight:bold;');};s.onerror=function(){console.error('Failed to load injector');};s.src='http://192.168.1.75:8000/ax-capture-inject.js';document.head.appendChild(s);})();`;
+    navigator.clipboard.writeText(code).then(() => {
+      alert('Script copiado para clipboard!\n\n1. Abra DevTools (F12)\n2. Vá para Console\n3. Paste (Ctrl+V)\n4. Pressione Enter');
+    }).catch(() => {
+      alert('Erro ao copiar. Copie manualmente este código:\n\n' + code);
+    });
+  }
+</script>
+
+</body>
+</html>
