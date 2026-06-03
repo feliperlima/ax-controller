@@ -356,8 +356,6 @@ function resolveConnectionTargetProfile(
       ? AX32_CHANNEL_COUNT
       : resolvedChannelCount;
 
-  console.log(`[DEBUG_PROFILE] discoveredMixer=${discoveredMixer?.name} discoveredChannelCount=${discoveredChannelCount} forced=${forcedChannelCount} resolvedChannelCount=${resolvedChannelCount} resolvedProfile=${resolvedProfile} targetChannelCount=${targetChannelCount}`);
-
   return {
     profile: normalizeProtocolProfile(resolvedProfile),
     channelCount: targetChannelCount,
