@@ -219,8 +219,11 @@ const AX16_24_FX_COUNT = 2;
 const AX32_FX_COUNT = 4;
 
 // Meter parameter ranges for AUX/FX
-const AUX_METER_PARAM_START = 2854;  // AUX1-14 meters start at 2854
-const FX_METER_PARAM_START = 2868;   // FX1-4 meters start at 2868
+// AUX1-14 meters: sequential from 2854 (AUX1=2854, AUX2=2855, ...)
+const AUX_METER_PARAM_START = 2854;
+const FX_METER_PARAM_START = 2868;
+const AX32_AUX_METER_PARAMS = [2854, 2855, 2856, 2857, 2858, 2859, 2860];
+const AX32_FX_METER_PARAMS = [2864, 2865, 2866, 2867];
 
 let ACTIVE_CHANNEL_PROFILE: AxiosProtocolProfile = "ax16_24";
 const ENABLE_SEMANTIC_SET_CHANNEL_FADER_PILOT = true;
@@ -381,6 +384,29 @@ function getAuxBusCount() {
 
 function getFxBusCount() {
   return isAx32ProfileActive() ? AX32_FX_COUNT : AX16_24_FX_COUNT;
+}
+
+type AuxFxMeterConfig = {
+  auxMeterParams: number[];
+  fxMeterParams: number[];
+  auxPairCount: number;
+};
+
+const AUX_FX_METER_CONFIGS: Record<"ax16_24" | "ax32", AuxFxMeterConfig> = {
+  ax16_24: {
+    auxMeterParams: Array.from({ length: AX16_24_AUX_COUNT }, (_, index) => AUX_METER_PARAM_START + index),
+    fxMeterParams: Array.from({ length: AX16_24_FX_COUNT }, (_, index) => FX_METER_PARAM_START + index),
+    auxPairCount: AX16_24_AUX_COUNT,
+  },
+  ax32: {
+    auxMeterParams: AX32_AUX_METER_PARAMS,
+    fxMeterParams: AX32_FX_METER_PARAMS,
+    auxPairCount: Math.ceil(AX32_AUX_COUNT / 2),
+  },
+};
+
+function getAuxFxMeterConfig(): AuxFxMeterConfig {
+  return isAx32ProfileActive() ? AUX_FX_METER_CONFIGS.ax32 : AUX_FX_METER_CONFIGS.ax16_24;
 }
 
 function getDcaIdsForActiveProfile(): DcaGroupId[] {
@@ -2662,7 +2688,6 @@ function App() {
     ax32_4645_4754: 0,
     ax32_2862: 0,
   });
-  const masterMeterDebugLastAtRef = useRef(0);
   const remoteWsCaptureLastStatusAtRef = useRef(0);
   const remoteWsCaptureRef = useRef<
     Map<number, { value: number; at: number; changes: number }>
@@ -7821,13 +7846,6 @@ function App() {
     }
     meterUpdateLastAtRef.current = now;
 
-    // DEBUG: Log response para CH31-32
-    const has16 = response.find(item => item.param === 16);
-    const has17 = response.find(item => item.param === 17);
-    if (has16 || has17) {
-      console.log(`[METER_RESPONSE] param16=${has16?.value ?? 'N/A'} param17=${has17?.value ?? 'N/A'}`);
-    }
-
     const CLIP_HOLD_MS = 2500;
     const mainMaster = response.find((item) => item.param === 47);
     const ax32MasterL = response.find((item) => item.param === 1947);
@@ -7947,25 +7965,6 @@ function App() {
           meterCandidates[0];
       }
 
-      if (isAx32ProfileActive() && now - masterMeterDebugLastAtRef.current >= 550) {
-        masterMeterDebugLastAtRef.current = now;
-        const candidatesText = meterCandidates
-          .map((candidate) => {
-            const score = scores[candidate.id] ?? 0;
-            return `${candidate.id}:L=${candidate.leftDb.toFixed(1)} R=${candidate.rightDb.toFixed(1)} S=${score.toFixed(2)}`;
-          })
-          .join(" | ");
-        console.info(
-          `[MMDBG] selected=${selected.id} :: ${candidatesText}`
-        );
-        if (ax32MasterProcessed) {
-          const processed = decodePackedStereoMeterWord(ax32MasterProcessed.value);
-          console.info(
-            `[MMDBG2862] raw=${ax32MasterProcessed.value} hi=${processed.hiDb.toFixed(1)} lo=${processed.loDb.toFixed(1)} mappedL=${processed.leftDb.toFixed(1)} mappedR=${processed.rightDb.toFixed(1)}`
-          );
-        }
-      }
-
       const masterLDb = clampMasterMeterForDisplay(selected.leftDb);
       const masterRDb = clampMasterMeterForDisplay(selected.rightDb);
 
@@ -8031,9 +8030,7 @@ function App() {
       const channelMeterItems = response.filter((item) => {
         return item.param >= 2 && item.param <= maxChannelMeterParam;
       });
-      if (channelMeterItems.length > 0 && (channelMeterItems[0].param >= 14 || channelMeterItems.some(i => i.param >= 14))) {
-        console.log(`[SETCHANNNELS] channelCount=${channelCount} maxChannelMeterParam=${maxChannelMeterParam} filtered_items=${channelMeterItems.length} sample=${channelMeterItems.slice(-2).map(i => `${i.param}`).join(',')}`);
-      }
+
       const seenChannels = new Set<number>();
       const hasAnyChannelMeterData = channelMeterItems.length > 0;
 
@@ -8078,9 +8075,6 @@ function App() {
       }
 
       function updateOneChannel(channelNumber: number, channelDb: number) {
-        if (channelNumber >= 31 && channelNumber <= 32) {
-          console.log(`[CH${channelNumber}] updateOneChannel called: resolvedChannelCount=${resolvedChannelCount}, valid=${channelNumber >= 1 && channelNumber <= resolvedChannelCount}, db=${channelDb.toFixed(1)}`);
-        }
         if (channelNumber < 1 || channelNumber > resolvedChannelCount) return;
 
         seenChannels.add(channelNumber);
@@ -8147,7 +8141,7 @@ function App() {
         const evenChannelDb = meterByteToDb(hiByte);
 
         if (param >= 16) {
-          console.log(`[METER_PROCESSING] param=${param} value=${value} firstCh=${firstChannel} secondCh=${secondChannel} oddDb=${oddChannelDb.toFixed(1)} evenDb=${evenChannelDb.toFixed(1)}`);
+          // (debug removed)
         }
 
         updateOneChannel(firstChannel, oddChannelDb);
@@ -8177,10 +8171,9 @@ function App() {
       return next ?? current;
     });
 
-    // Process AUX meters
-    const auxMeterItems = response.filter((item) => {
-      return item.param >= AUX_METER_PARAM_START && item.param < FX_METER_PARAM_START;
-    });
+    // Process AUX meters using the profile-resolved meter param map.
+    const { auxMeterParams: validAuxParams } = getAuxFxMeterConfig();
+    const auxMeterItems = response.filter((item) => validAuxParams.includes(item.param));
 
     if (auxMeterItems.length > 0) {
       setAuxStrips((current) => {
@@ -8188,33 +8181,68 @@ function App() {
         const CLIP_HOLD_MS = 2500;
 
         for (const { param, value } of auxMeterItems) {
-          const auxIndex = param - AUX_METER_PARAM_START;
-          if (auxIndex < 0 || auxIndex >= current.length) continue;
+          const pairIndex = validAuxParams.indexOf(param);
+          if (pairIndex < 0) continue;
 
-          const loByte = value & 255;
-          const meterDb = meterByteToDb(loByte);
-          const meterLevel = meterDbToLevel(meterDb);
-          const clipUntil =
-            meterDb > 12
-              ? now + CLIP_HOLD_MS
-              : current[auxIndex].clipUntil > now
-                ? current[auxIndex].clipUntil
-                : 0;
+          const loByte = value & 255; // Odd AUX (1,3,5,7,9,11,13)
+          const hiByte = (value >> 8) & 255; // Even AUX (2,4,6,8,10,12,14)
 
-          const previous = (next ?? current)[auxIndex];
-          const unchanged =
-            previous.meterDb === meterDb &&
-            previous.meterLevel === meterLevel &&
-            previous.clipUntil === clipUntil;
+          // Process odd-numbered AUX (lo byte)
+          const auxIndex1 = pairIndex * 2;
+          if (auxIndex1 < current.length) {
+            const meterDb1 = meterByteToDb(loByte);
+            const meterLevel1 = meterDbToLevel(meterDb1);
+            const clipUntil1 =
+              meterDb1 > 12
+                ? now + CLIP_HOLD_MS
+                : current[auxIndex1].clipUntil > now
+                  ? current[auxIndex1].clipUntil
+                  : 0;
 
-          if (!unchanged) {
-            if (!next) next = [...current];
-            next[auxIndex] = {
-              ...previous,
-              meterDb,
-              meterLevel,
-              clipUntil,
-            };
+            const previous1 = (next ?? current)[auxIndex1];
+            const unchanged1 =
+              previous1.meterDb === meterDb1 &&
+              previous1.meterLevel === meterLevel1 &&
+              previous1.clipUntil === clipUntil1;
+
+            if (!unchanged1) {
+              if (!next) next = [...current];
+              next[auxIndex1] = {
+                ...previous1,
+                meterDb: meterDb1,
+                meterLevel: meterLevel1,
+                clipUntil: clipUntil1,
+              };
+            }
+          }
+
+          // Process even-numbered AUX (hi byte)
+          const auxIndex2 = pairIndex * 2 + 1;
+          if (auxIndex2 < current.length) {
+            const meterDb2 = meterByteToDb(hiByte);
+            const meterLevel2 = meterDbToLevel(meterDb2);
+            const clipUntil2 =
+              meterDb2 > 12
+                ? now + CLIP_HOLD_MS
+                : current[auxIndex2].clipUntil > now
+                  ? current[auxIndex2].clipUntil
+                  : 0;
+
+            const previous2 = (next ?? current)[auxIndex2];
+            const unchanged2 =
+              previous2.meterDb === meterDb2 &&
+              previous2.meterLevel === meterLevel2 &&
+              previous2.clipUntil === clipUntil2;
+
+            if (!unchanged2) {
+              if (!next) next = [...current];
+              next[auxIndex2] = {
+                ...previous2,
+                meterDb: meterDb2,
+                meterLevel: meterLevel2,
+                clipUntil: clipUntil2,
+              };
+            }
           }
         }
 
@@ -8223,9 +8251,8 @@ function App() {
     }
 
     // Process FX meters
-    const fxMeterItems = response.filter((item) => {
-      return item.param >= FX_METER_PARAM_START && item.param < FX_METER_PARAM_START + getFxBusCount();
-    });
+    const { fxMeterParams } = getAuxFxMeterConfig();
+    const fxMeterItems = response.filter((item) => fxMeterParams.includes(item.param));
 
     if (fxMeterItems.length > 0) {
       setFxStrips((current) => {
@@ -8233,7 +8260,7 @@ function App() {
         const CLIP_HOLD_MS = 2500;
 
         for (const { param, value } of fxMeterItems) {
-          const fxIndex = param - FX_METER_PARAM_START;
+          const fxIndex = fxMeterParams.indexOf(param);
           if (fxIndex < 0 || fxIndex >= current.length) continue;
 
           const loByte = value & 255;
@@ -8302,16 +8329,10 @@ function App() {
           const chMeterParams = Array.from({ length: maxChannelMeterParam - 1 }, (_, i) => i + 2);
           
           // AUX/FX meter params
-          const auxCount = getAuxBusCount();
-          const fxCount = getFxBusCount();
-          const auxMeterParams = Array.from({ length: auxCount }, (_, i) => AUX_METER_PARAM_START + i);
-          const fxMeterParams = Array.from({ length: fxCount }, (_, i) => FX_METER_PARAM_START + i);
+          const { auxMeterParams, fxMeterParams } = getAuxFxMeterConfig();
           
           const masterMeterParams = [47, 48, 2862, 1947, 1948, 4644, 4645, 4753, 4754];
           const meterParams = [...chMeterParams, ...auxMeterParams, ...fxMeterParams, ...masterMeterParams];
-          if (meterPollCycle === 1 || meterPollCycle % 20 === 0) {
-            console.log(`[METER_POLL] cycle=${meterPollCycle} channelCount=${effectiveChannelCount} max=${maxChannelMeterParam} auxCount=${auxCount} fxCount=${fxCount} requesting_params=${meterParams.length}`);
-          }
           const meterResponse = await client.readParams(
             meterParams,
             METER_READ_TIMEOUT_MS
