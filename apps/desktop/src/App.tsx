@@ -217,6 +217,11 @@ const AX16_24_AUX_COUNT = 8;
 const AX32_AUX_COUNT = 14;
 const AX16_24_FX_COUNT = 2;
 const AX32_FX_COUNT = 4;
+
+// Meter parameter ranges for AUX/FX
+const AUX_METER_PARAM_START = 2854;  // AUX1-14 meters start at 2854
+const FX_METER_PARAM_START = 2868;   // FX1-4 meters start at 2868
+
 let ACTIVE_CHANNEL_PROFILE: AxiosProtocolProfile = "ax16_24";
 const ENABLE_SEMANTIC_SET_CHANNEL_FADER_PILOT = true;
 const ENABLE_SEMANTIC_SET_CHANNEL_MUTE_PILOT = true;
@@ -7803,7 +7808,8 @@ function App() {
     response: {
       param: number;
       value: number;
-    }[]
+    }[],
+    effectiveChannelCount?: number
   ) {
     const now = Date.now();
     const minDragMeterUpdateIntervalMs = isConstrainedDevice ? 170 : 140;
@@ -8020,7 +8026,8 @@ function App() {
       const CHANNEL_IDLE_DB = -75;
       const CHANNEL_ACTIVE_MIN_DB = -40;
       const CHANNEL_STALE_TIMEOUT_MS = 420;
-      const maxChannelMeterParam = channelCount / 2 + 1;
+      const resolvedChannelCount = effectiveChannelCount ?? channelCount;
+      const maxChannelMeterParam = resolvedChannelCount / 2 + 1;
       const channelMeterItems = response.filter((item) => {
         return item.param >= 2 && item.param <= maxChannelMeterParam;
       });
@@ -8072,9 +8079,9 @@ function App() {
 
       function updateOneChannel(channelNumber: number, channelDb: number) {
         if (channelNumber >= 31 && channelNumber <= 32) {
-          console.log(`[CH${channelNumber}] updateOneChannel called: channelCount=${channelCount}, valid=${channelNumber >= 1 && channelNumber <= channelCount}, db=${channelDb.toFixed(1)}`);
+          console.log(`[CH${channelNumber}] updateOneChannel called: resolvedChannelCount=${resolvedChannelCount}, valid=${channelNumber >= 1 && channelNumber <= resolvedChannelCount}, db=${channelDb.toFixed(1)}`);
         }
-        if (channelNumber < 1 || channelNumber > channelCount) return;
+        if (channelNumber < 1 || channelNumber > resolvedChannelCount) return;
 
         seenChannels.add(channelNumber);
         const index = channelNumber - 1;
@@ -8169,6 +8176,96 @@ function App() {
 
       return next ?? current;
     });
+
+    // Process AUX meters
+    const auxMeterItems = response.filter((item) => {
+      return item.param >= AUX_METER_PARAM_START && item.param < FX_METER_PARAM_START;
+    });
+
+    if (auxMeterItems.length > 0) {
+      setAuxStrips((current) => {
+        let next: ChannelState[] | null = null;
+        const CLIP_HOLD_MS = 2500;
+
+        for (const { param, value } of auxMeterItems) {
+          const auxIndex = param - AUX_METER_PARAM_START;
+          if (auxIndex < 0 || auxIndex >= current.length) continue;
+
+          const loByte = value & 255;
+          const meterDb = meterByteToDb(loByte);
+          const meterLevel = meterDbToLevel(meterDb);
+          const clipUntil =
+            meterDb > 12
+              ? now + CLIP_HOLD_MS
+              : current[auxIndex].clipUntil > now
+                ? current[auxIndex].clipUntil
+                : 0;
+
+          const previous = (next ?? current)[auxIndex];
+          const unchanged =
+            previous.meterDb === meterDb &&
+            previous.meterLevel === meterLevel &&
+            previous.clipUntil === clipUntil;
+
+          if (!unchanged) {
+            if (!next) next = [...current];
+            next[auxIndex] = {
+              ...previous,
+              meterDb,
+              meterLevel,
+              clipUntil,
+            };
+          }
+        }
+
+        return next ?? current;
+      });
+    }
+
+    // Process FX meters
+    const fxMeterItems = response.filter((item) => {
+      return item.param >= FX_METER_PARAM_START && item.param < FX_METER_PARAM_START + getFxBusCount();
+    });
+
+    if (fxMeterItems.length > 0) {
+      setFxStrips((current) => {
+        let next: ChannelState[] | null = null;
+        const CLIP_HOLD_MS = 2500;
+
+        for (const { param, value } of fxMeterItems) {
+          const fxIndex = param - FX_METER_PARAM_START;
+          if (fxIndex < 0 || fxIndex >= current.length) continue;
+
+          const loByte = value & 255;
+          const meterDb = meterByteToDb(loByte);
+          const meterLevel = meterDbToLevel(meterDb);
+          const clipUntil =
+            meterDb > 12
+              ? now + CLIP_HOLD_MS
+              : current[fxIndex].clipUntil > now
+                ? current[fxIndex].clipUntil
+                : 0;
+
+          const previous = (next ?? current)[fxIndex];
+          const unchanged =
+            previous.meterDb === meterDb &&
+            previous.meterLevel === meterLevel &&
+            previous.clipUntil === clipUntil;
+
+          if (!unchanged) {
+            if (!next) next = [...current];
+            next[fxIndex] = {
+              ...previous,
+              meterDb,
+              meterLevel,
+              clipUntil,
+            };
+          }
+        }
+
+        return next ?? current;
+      });
+    }
   }
 
   function startMeterPolling(explicitChannelCount?: number) {
@@ -8194,25 +8291,32 @@ function App() {
       const client = clientRef.current;
 
       if (client) {
-        // Poll dos meters: canais (2-maxChannelMeterParam) + main master (47) + monitor/solo (48) + master alts
-        // AX16: params 2-9 (CH1-16)
-        // AX24: params 2-13 (CH1-24)
-        // AX32: params 2-17 (CH1-32)
+        // Poll dos meters: canais (2-maxChannelMeterParam) + AUX/FX + main master (47) + monitor/solo (48) + master alts
+        // AX16: params 2-9 (CH1-16) + 8 AUX + 2 FX
+        // AX24: params 2-13 (CH1-24) + 8 AUX + 2 FX
+        // AX32: params 2-17 (CH1-32) + 14 AUX + 4 FX
         try {
           meterBusyRef.current = true;
           meterPollCycle += 1;
           const maxChannelMeterParam = effectiveChannelCount / 2 + 1;
           const chMeterParams = Array.from({ length: maxChannelMeterParam - 1 }, (_, i) => i + 2);
+          
+          // AUX/FX meter params
+          const auxCount = getAuxBusCount();
+          const fxCount = getFxBusCount();
+          const auxMeterParams = Array.from({ length: auxCount }, (_, i) => AUX_METER_PARAM_START + i);
+          const fxMeterParams = Array.from({ length: fxCount }, (_, i) => FX_METER_PARAM_START + i);
+          
           const masterMeterParams = [47, 48, 2862, 1947, 1948, 4644, 4645, 4753, 4754];
-          const meterParams = [...chMeterParams, ...masterMeterParams];
+          const meterParams = [...chMeterParams, ...auxMeterParams, ...fxMeterParams, ...masterMeterParams];
           if (meterPollCycle === 1 || meterPollCycle % 20 === 0) {
-            console.log(`[METER_POLL] cycle=${meterPollCycle} channelCount=${effectiveChannelCount} max=${maxChannelMeterParam} requesting_params=${meterParams.length}`);
+            console.log(`[METER_POLL] cycle=${meterPollCycle} channelCount=${effectiveChannelCount} max=${maxChannelMeterParam} auxCount=${auxCount} fxCount=${fxCount} requesting_params=${meterParams.length}`);
           }
           const meterResponse = await client.readParams(
             meterParams,
             METER_READ_TIMEOUT_MS
           );
-          updateMetersFromResponse(meterResponse);
+          updateMetersFromResponse(meterResponse, effectiveChannelCount);
         } catch {
           // Falhas pontuais de meter são ignoradas.
         } finally {
