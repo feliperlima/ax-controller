@@ -1,6 +1,9 @@
 import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
 import { stripColorForScope } from "./stripColor";
+import type { UniversalRawParamStore } from "../lib/universalRawParamStore";
+import type { DomainSelectors } from "../lib/domainSelectors";
+import { useRawParamSelector } from "../hooks/useRawParamSelector";
 
 type MasterBusProps = {
   name?: string;
@@ -38,6 +41,8 @@ type MasterBusProps = {
   onRightFaderChange: (value: number) => void;
   detailSide?: "left" | "right";
   onOpenDetail?: () => void;
+  rawParamStore?: UniversalRawParamStore;
+  domainSelectors?: DomainSelectors;
 };
 
 const FADER_DB_POINTS = [
@@ -102,7 +107,24 @@ export function MasterBus({
   onLeftFaderChange,
   onRightFaderChange,
   onOpenDetail,
+  rawParamStore,
+  domainSelectors,
 }: MasterBusProps) {
+  const storeMaster = useRawParamSelector(
+    rawParamStore ?? null,
+    (store) => { void store; return domainSelectors?.selectMasterStrip() ?? null; },
+    (prev, next) =>
+      prev?.leftFader?.rawValue === next?.leftFader?.rawValue &&
+      prev?.leftMute?.rawValue === next?.leftMute?.rawValue &&
+      prev?.rightFader?.rawValue === next?.rightFader?.rawValue &&
+      prev?.rightMute?.rawValue === next?.rightMute?.rawValue
+  );
+  const activeLeftMuted = storeMaster?.leftMute?.muted ?? leftMuted;
+  const activeRightMuted = storeMaster?.rightMute?.muted ?? rightMuted;
+  const activeLeftFaderDb = storeMaster?.leftFader?.db ?? leftFaderDb;
+  const activeLeftFaderPosition = storeMaster?.leftFader?.position ?? leftFaderPosition;
+  const activeRightFaderDb = storeMaster?.rightFader?.db ?? (rightFaderDb ?? leftFaderDb);
+  const activeRightFaderPosition = storeMaster?.rightFader?.position ?? rightFaderPosition;
   const footerName = "Master Bus";
   const isLinked = linked;
   const canOpenDetail = typeof onOpenDetail === "function";
@@ -114,12 +136,12 @@ export function MasterBus({
       ? leftColor
       : `linear-gradient(90deg, ${leftColor} 0%, ${leftColor} 50%, ${rightColor} 50%, ${rightColor} 100%)`;
 
-  const effectiveMuted = leftMuted ?? rightMuted ?? muted;
+  const effectiveMuted = activeLeftMuted ?? activeRightMuted ?? muted;
   const effectiveSoloOn = leftSoloOn ?? rightSoloOn ?? soloOn;
   const effectiveToggleMute = onToggleMainMute ?? onToggleMute ?? (() => undefined);
   void detailSide;
   const effectiveToggleSolo = onToggleMainSolo ?? onToggleSolo ?? (() => undefined);
-  const displayDb = linked ? leftFaderDb : rightFaderDb ?? leftFaderDb;
+  const displayDb = linked ? activeLeftFaderDb : activeRightFaderDb;
 
   void onToggleLeftMute;
   void onToggleLeftSolo;
@@ -287,7 +309,7 @@ export function MasterBus({
           {isLinked ? (
             <div style={{ width: 23, flexShrink: 0, height: "100%", overflow: "visible" }}>
               <VerticalFader
-                value={leftFaderPosition}
+                value={activeLeftFaderPosition}
                 height="100%"
                 width={23}
                 disabled={disabled}
@@ -303,7 +325,7 @@ export function MasterBus({
             <>
               <div style={{ width: 23, flexShrink: 0, height: "100%", overflow: "visible" }}>
                 <VerticalFader
-                  value={leftFaderPosition}
+                  value={activeLeftFaderPosition}
                   height="100%"
                   width={23}
                   disabled={disabled}
@@ -317,7 +339,7 @@ export function MasterBus({
               </div>
               <div style={{ width: 23, flexShrink: 0, height: "100%", overflow: "visible" }}>
                 <VerticalFader
-                  value={rightFaderPosition}
+                  value={activeRightFaderPosition}
                   height="100%"
                   width={23}
                   disabled={disabled}

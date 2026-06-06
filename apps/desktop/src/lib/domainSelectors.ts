@@ -98,6 +98,13 @@ export type SelectedBasicStrip = {
   params: SelectedParamGroup;
 };
 
+export type SelectedMasterStrip = {
+  leftFader: SelectedFader | null;
+  leftMute: SelectedMute | null;
+  rightFader: SelectedFader | null;
+  rightMute: SelectedMute | null;
+};
+
 export type DomainSelectors = {
   selectRawParam: (paramId: number | undefined) => SelectedRawParam | null;
   selectParamGroup: (params: ParamMap) => SelectedParamGroup;
@@ -117,6 +124,7 @@ export type DomainSelectors = {
   selectDcaGroup: (dcaId: number) => SelectedParamGroup | null;
   selectMuteGroup: (groupId: number) => SelectedParamGroup | null;
   selectMaster: () => SelectedParamGroup | null;
+  selectMasterStrip: () => SelectedMasterStrip | null;
   selectMasterProcessor: (side: "left" | "right") => SelectedParamGroup | null;
   selectSend: (channelId: number, sendId: string) => SelectedParamGroup | null;
   selectChannelProcessor: (channelId: number) => SelectedParamGroup | null;
@@ -311,6 +319,17 @@ export function createDomainSelectors(
     return params ? selectParamGroup(params) : null;
   }
 
+  function selectMasterStrip(): SelectedMasterStrip | null {
+    const params = normalizeParamGroup(resolver.getMasterParams?.());
+    if (!params) return null;
+    return {
+      leftFader: selectFaderByParam(params.leftFader),
+      leftMute: selectMuteByParam(params.leftMute),
+      rightFader: selectFaderByParam(params.rightFader),
+      rightMute: selectMuteByParam(params.rightMute),
+    };
+  }
+
   function selectMasterProcessor(side: "left" | "right") {
     const params = normalizeParamGroup(resolver.getMasterProcessorParams?.(side));
     return params ? selectParamGroup(params) : null;
@@ -360,6 +379,7 @@ export function createDomainSelectors(
     selectDcaGroup,
     selectMuteGroup,
     selectMaster,
+    selectMasterStrip,
     selectMasterProcessor,
     selectSend,
     selectChannelProcessor,

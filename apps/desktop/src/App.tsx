@@ -139,6 +139,12 @@ import {
   ProfileAwareParameterRegistry,
   type ProfileAwareParamDescriptor,
 } from "./lib/profileAwareParameterRegistry";
+import {
+  createDomainSelectors,
+  type AppParamResolver,
+  type ChannelValueDecoder,
+  type DomainSelectors,
+} from "./lib/domainSelectors";
 
 type ChannelState = {
   muted: boolean;
@@ -229,6 +235,7 @@ const AX32_AUX_METER_PARAMS = [2854, 2855, 2856, 2857, 2858, 2859, 2860];
 const AX32_FX_METER_PARAMS = [2864, 2865, 2866, 2867];
 
 let ACTIVE_CHANNEL_PROFILE: AxiosProtocolProfile = "ax16_24";
+let ACTIVE_CHANNEL_COUNT = 24;
 const ENABLE_SEMANTIC_SET_CHANNEL_FADER_PILOT = true;
 const ENABLE_SEMANTIC_SET_CHANNEL_MUTE_PILOT = true;
 
@@ -582,13 +589,22 @@ function channelColorBadgeBackground(colorId: number) {
   return `var(--channel-${String(normalized).padStart(2, "0")}, #c96626)`;
 }
 
-const MASTER_PARAMS_AX16_24 = {
+const MASTER_PARAMS_AX16 = {
   leftFader: 2548,
   leftMute: 2550,
   rightFader: 2657,
   rightMute: 2659,
   leftColor: 3146,
   rightColor: 3147,
+};
+
+const MASTER_PARAMS_AX24 = {
+  leftFader: 2548,
+  leftMute: 2550,
+  rightFader: 2657,
+  rightMute: 2659,
+  leftColor: 3154,
+  rightColor: 3155,
 };
 
 const MASTER_PARAMS_AX32 = {
@@ -601,7 +617,9 @@ const MASTER_PARAMS_AX32 = {
 };
 
 function getMasterParams() {
-  return isAx32ProfileActive() ? MASTER_PARAMS_AX32 : MASTER_PARAMS_AX16_24;
+  if (isAx32ProfileActive()) return MASTER_PARAMS_AX32;
+  if (ACTIVE_CHANNEL_COUNT <= 16) return MASTER_PARAMS_AX16;
+  return MASTER_PARAMS_AX24;
 }
 
 const MASTER_PROCESSOR_PARAMS_AX16_24 = {
@@ -662,26 +680,23 @@ function masterProcessorParams(side: "left" | "right" = "left") {
   return MASTER_PROCESSOR_PARAMS_AX32_LEFT;
 }
 
-const FX_COLOR_PARAMS_AX16_24: Record<number, number> = {
-  1: 3136,
-  2: 3137,
-};
-
 const FX_COLOR_BASE_AX32 = 5165;
-const AUX_COLOR_BASE_AX16_24 = 3138;
 const AUX_COLOR_BASE_AX32 = 5169;
 
 function fxColorParam(fx: number) {
   if (isAx32ProfileActive()) {
     return FX_COLOR_BASE_AX32 + fx - 1;
   }
-
-  return FX_COLOR_PARAMS_AX16_24[fx];
+  // AX16: fxBase=0x12=18, AX24: fxBase=0x1A=26 — both share colorBaseParam 3110
+  const fxBase = ACTIVE_CHANNEL_COUNT <= 16 ? 0x12 : 0x1A;
+  return 3110 + fxBase + fx - 1;
 }
 
 function auxColorParam(aux: number) {
-  const base = isAx32ProfileActive() ? AUX_COLOR_BASE_AX32 : AUX_COLOR_BASE_AX16_24;
-  return base + aux - 1;
+  if (isAx32ProfileActive()) return AUX_COLOR_BASE_AX32 + aux - 1;
+  // AX16: auxBase=0x14=20, AX24: auxBase=0x1C=28 — both share colorBaseParam 3110
+  const auxBase = ACTIVE_CHANNEL_COUNT <= 16 ? 0x14 : 0x1C;
+  return 3110 + auxBase + aux - 1;
 }
 
 function getFxStateParams(fxNumber: number): {
@@ -775,7 +790,7 @@ function getFxPresetParams(fxNumber: number) {
 
   const fx = Math.max(1, Math.min(4, Math.round(fxNumber)));
   const ax32SelectorMap: Record<number, number> = {
-    1: 5117,
+    1: 5116,
     2: 5117,
     3: 5118,
     4: 5119,
@@ -1898,17 +1913,23 @@ function isDefaultMixerName(target: NameTarget, mixerName: string) {
     );
   }
 
-  return (
-    normalized === `FX${target.fx}` ||
-    normalized === `EFFECT${target.fx}` ||
-    normalized === `EFEITO${target.fx}`
-  );
+  if (target.type === "fx") {
+    return (
+      normalized === `FX${target.fx}` ||
+      normalized === `EFFECT${target.fx}` ||
+      normalized === `EFEITO${target.fx}`
+    );
+  }
+
+  return false;
 }
 
 function getDefaultDisplayName(target: NameTarget) {
   if (target.type === "channel") return `Channel ${target.channel}`;
   if (target.type === "aux") return `Auxiliar ${target.aux}`;
-  return `Efeito ${target.fx}`;
+  if (target.type === "fx") return `Efeito ${target.fx}`;
+  if (target.type === "master") return `Master ${target.side === "left" ? "L" : "R"}`;
+  return `DCA ${target.dca}`;
 }
 
 function getDefaultMixerAlias(target: NameTarget) {
@@ -1920,7 +1941,9 @@ function getDefaultMixerAlias(target: NameTarget) {
 
     return `AUX${target.aux}`;
   }
-  return `FX${target.fx}`;
+  if (target.type === "fx") return `FX${target.fx}`;
+  if (target.type === "master") return target.side === "left" ? "MASTERL" : "MASTERR";
+  return `DCA${target.dca}`;
 }
 
 function isLocalDefaultDisplayName(target: NameTarget, displayName: string) {
@@ -2743,6 +2766,102 @@ function App() {
   const pendingFaderWritesRef = useRef<Map<string, () => void>>(new Map());
   const rawParamStoreRef = useRef(new UniversalRawParamStore());
   const profileAwareRegistryRef = useRef(new ProfileAwareParameterRegistry());
+  const domainSelectorsRef = useRef<DomainSelectors | null>(null);
+
+  const domainSelectors: DomainSelectors = useMemo(() => {
+    const resolver: AppParamResolver = {
+      getFaderParam: (ch) => channelParam(ch, 76),
+      getMuteParam: (ch) => channelParam(ch, 74),
+      getSoloLeftParam: (ch) => channelParam(ch, 87),
+      getSoloRightParam: (ch) => channelParam(ch, 88),
+      getPanParam: (ch) => channelParam(ch, 75),
+
+      getChannelLinkParams: () => ({
+        linkMask: getChannelLinkParam(),
+      }),
+
+      getChannelProcessorParams: (ch) => processorParams(ch),
+
+      getSendParams: (ch, sendId) => {
+        try {
+          return { level: sendIdToParam(ch, sendId as SendStripId) };
+        } catch {
+          return {};
+        }
+      },
+
+      getAuxParams: (aux) => ({
+        fader: auxProcessorParams(aux).fader,
+        phase: auxProcessorParams(aux).phase,
+        color: auxColorParam(aux),
+        mute: auxMuteParam(aux),
+      }),
+
+      getAuxLinkParams: () => ({
+        linkMask: getLinkMaskParam(),
+      }),
+
+      getAuxProcessorParams: (aux) => auxProcessorParams(aux),
+
+      getFxParams: (fx) => {
+        try {
+          const fp = getFxStateParams(fx);
+          return { fader: fp.fader, mute: fp.mute, color: fxColorParam(fx) };
+        } catch {
+          return {};
+        }
+      },
+
+      getFxProcessorParams: (fx) => getFxProcessorParams(fx) ?? {},
+
+      getFxPresetParams: (fx) => {
+        const selectorParamId = isAx32ProfileActive() ? 5116 + fx - 1 : undefined;
+        return selectorParamId !== undefined ? { selector: selectorParamId } : {};
+      },
+
+      getMasterParams: () => {
+        const mp = getMasterParams();
+        return {
+          leftFader: mp.leftFader,
+          leftMute: mp.leftMute,
+          rightFader: mp.rightFader,
+          rightMute: mp.rightMute,
+        };
+      },
+
+      getMasterLinkParams: () => ({
+        linkMask: getLinkMaskParam(),
+      }),
+
+      getMasterProcessorParams: (side) => masterProcessorParams(side),
+
+      getDcaParams: (id) => ({
+        onOff: getDcaOnOffParam(id as DcaGroupId),
+        fader: getDcaFaderParam(id as DcaGroupId),
+      }),
+
+      getMuteGroupParams: (id) => ({
+        active: getMuteGroupActiveParam(id as MuteGroupId),
+      }),
+    };
+
+    const decoder: ChannelValueDecoder = {
+      faderRawToDb: valueToFaderDb,
+      faderDbToPosition: dbToFaderPosition,
+      muteRawToBoolean: (v) => valueToMute(v),
+      soloRawToBoolean: (v) => v > 0,
+      panRawToValue: valueToPan,
+      auxLinkRawToBoolean: (pairOdd, maskRaw) =>
+        maskRaw !== undefined ? isAuxLinked(maskRaw, pairOdd) : null,
+      masterLinkRawToBoolean: (maskRaw) =>
+        maskRaw !== undefined ? isMasterLinked(maskRaw) : null,
+    };
+
+    return createDomainSelectors(rawParamStoreRef.current, resolver, decoder);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelCount, isConnected]);
+  domainSelectorsRef.current = domainSelectors;
+
   const rawParamDebugLastPublishAtRef = useRef(0);
   const channelFaderUiCommitTimerRef = useRef<number | null>(null);
   const channelFaderUiPendingRef = useRef<Map<number, { position: number; db: number }>>(
@@ -3922,6 +4041,7 @@ function App() {
 
   function applyMixerChannelProfile(nextChannelCount: number) {
     ACTIVE_CHANNEL_PROFILE = channelCountToProtocolProfile(nextChannelCount);
+    ACTIVE_CHANNEL_COUNT = nextChannelCount;
     setGroupProtocolProfile(ACTIVE_CHANNEL_PROFILE);
     setBitmaskProtocolProfile(ACTIVE_CHANNEL_PROFILE);
     const nextAuxCount = getAuxBusCount();
@@ -5832,7 +5952,9 @@ function App() {
           return;
         }
 
-        client.setFxName(target.fx, mixerName);
+        if (target.type === "fx") {
+          client.setFxName(target.fx, mixerName);
+        }
       });
     }
   }
@@ -5855,6 +5977,8 @@ function App() {
       } catch { /* ignore */ }
       return next;
     });
+
+    clientRef.current?.setDcaName(id, finalName);
   }
 
   function handleDcaGroupColorChange(id: DcaGroupId, colorId: number) {
@@ -6356,8 +6480,13 @@ function App() {
 
     const auxCount = getAuxBusCount();
     for (let aux = 1; aux <= auxCount; aux += 1) {
-      getAuxSyncParams(aux).forEach((paramId) => {
-        addDescriptor(paramId);
+      const auxStateParams = getAuxStateParams(aux);
+      addDescriptor(auxStateParams.fader, `aux:${aux}`, "fader");
+      addDescriptor(auxStateParams.mute, `aux:${aux}`, "mute");
+      addDescriptor(auxStateParams.color, `aux:${aux}`, "color");
+      addDescriptor(auxStateParams.phase, `aux:${aux}`, "phase");
+      Object.values(auxProcessorParams(aux)).forEach((paramId) => {
+        addDescriptor(paramId as number, `aux:${aux}`);
       });
     }
 
@@ -11101,7 +11230,7 @@ function App() {
     if (section === "aux") {
       const normalizedColorId = normalizeColorByScope("aux", colorId);
       if (!isSyncing) {
-        clientRef.current?.sendParam(auxColorParam(index), normalizedColorId);
+        clientRef.current?.setAuxColor(index, normalizedColorId);
       }
       updateAuxStripState(index, { colorId: normalizedColorId });
       return;
@@ -12149,6 +12278,8 @@ function App() {
               }}
               linkButtonLabel={`${pairOdd}-${pairEven}`}
               onOpenDetail={goToDetailChannel}
+              rawParamStore={rawParamStoreRef.current}
+              domainSelectors={domainSelectors}
             />
           </aside>
 
@@ -12449,6 +12580,8 @@ function App() {
               linkButtonLabel={`${pairOdd}-${pairEven}`}
               onFaderChange={(position) => handleStripFaderChange("aux", auxNumber, position)}
               onOpenDetail={goToDetailAux}
+              rawParamStore={rawParamStoreRef.current}
+              domainSelectors={domainSelectors}
             />
           </aside>
 
@@ -12800,6 +12933,8 @@ function App() {
               onToggleMute={() => toggleStripMute("fx", fxNumber)}
               onToggleSolo={() => toggleStripSolo("fx", fxNumber)}
               onFaderChange={(position) => handleStripFaderChange("fx", fxNumber, position)}
+              rawParamStore={rawParamStoreRef.current}
+              domainSelectors={domainSelectors}
             />
           </aside>
 
@@ -13166,6 +13301,8 @@ function App() {
               onLeftFaderChange={handleMasterLeftFaderChange}
               onRightFaderChange={handleMasterRightFaderChange}
               detailSide={!masterLinked ? masterDetailSide : undefined}
+              rawParamStore={rawParamStoreRef.current}
+              domainSelectors={domainSelectors}
             />
           </aside>
 
@@ -13464,6 +13601,8 @@ function App() {
           onOpenEditMenu={(channelNumber) =>
             setCustomizationView({ section: "inputs", index: channelNumber })
           }
+          rawParamStore={rawParamStoreRef.current}
+          domainSelectors={domainSelectors}
         />
       </div>
     );
@@ -13505,6 +13644,8 @@ function App() {
           onOpenEditMenu={(targetFxNumber) =>
             setCustomizationView({ section: "fx", index: targetFxNumber })
           }
+          rawParamStore={rawParamStoreRef.current}
+          domainSelectors={domainSelectors}
         />
       </div>
     );
@@ -13572,6 +13713,8 @@ function App() {
           onOpenEditMenu={(targetAuxNumber) =>
             setCustomizationView({ section: "aux", index: targetAuxNumber })
           }
+          rawParamStore={rawParamStoreRef.current}
+          domainSelectors={domainSelectors}
         />
       </div>
     );
@@ -13616,6 +13759,8 @@ function App() {
             setDetailView(null);
             setSettingsDropdownOpen(false);
           }}
+          rawParamStore={rawParamStoreRef.current}
+          domainSelectors={domainSelectors}
         />
       </div>
     );
@@ -13674,6 +13819,8 @@ function App() {
         onLeftFaderChange={handleMasterLeftFaderChange}
         onRightFaderChange={handleMasterRightFaderChange}
         onOpenDetail={goToDetailMaster}
+        rawParamStore={rawParamStoreRef.current}
+        domainSelectors={domainSelectors}
       />
     );
   }
@@ -13906,6 +14053,8 @@ function App() {
                 }}
                 linkButtonLabel={selectedAuxPair ? `${selectedAuxPair[0]}-${selectedAuxPair[1]}` : undefined}
                 onFaderChange={(position) => handleStripFaderChange("aux", selectedBus, position)}
+                rawParamStore={rawParamStoreRef.current}
+                domainSelectors={domainSelectors}
               />
             ) : selectedFxStrip ? (
               <FxStrip
@@ -13924,6 +14073,8 @@ function App() {
                 onToggleMute={() => toggleStripMute("fx", selectedBus)}
                 onToggleSolo={() => toggleStripSolo("fx", selectedBus)}
                 onFaderChange={(position) => handleStripFaderChange("fx", selectedBus, position)}
+                rawParamStore={rawParamStoreRef.current}
+                domainSelectors={domainSelectors}
               />
             ) : null}
           </aside>
@@ -14795,9 +14946,9 @@ function App() {
           : mainView === "fxSends"
             ? renderGlobalSendsView("fx")
             : mainView === "dcaGroups"
-                ? <div className="global-view-shell"><DcaGroupsView isConnected={isConnected} channelCount={channelCount} groups={dcaGroups} onToggleEnabled={handleDcaGroupToggleEnabled} onMembersChange={handleDcaGroupMembersChange} onClear={handleDcaGroupClear} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} dcaNames={dcaNames} dcaColorIds={dcaColorIds} /></div>
+                ? <div className="global-view-shell"><DcaGroupsView isConnected={isConnected} channelCount={channelCount} groups={dcaGroups} onToggleEnabled={handleDcaGroupToggleEnabled} onMembersChange={handleDcaGroupMembersChange} onClear={handleDcaGroupClear} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} dcaNames={dcaNames} dcaColorIds={dcaColorIds} rawParamStore={rawParamStoreRef.current} domainSelectors={domainSelectors} /></div>
             : mainView === "muteGroups"
-                ? <div className="global-view-shell"><MuteGroupsView isConnected={isConnected} channelCount={channelCount} groups={muteGroups} onToggleActive={handleMuteGroupToggleActive} onMembersChange={handleMuteGroupMembersChange} onClear={handleMuteGroupClear} onAllMuted={handleMuteGroupAllMuted} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} /></div>
+                ? <div className="global-view-shell"><MuteGroupsView isConnected={isConnected} channelCount={channelCount} groups={muteGroups} onToggleActive={handleMuteGroupToggleActive} onMembersChange={handleMuteGroupMembersChange} onClear={handleMuteGroupClear} onAllMuted={handleMuteGroupAllMuted} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} rawParamStore={rawParamStoreRef.current} domainSelectors={domainSelectors} /></div>
             : mainView === "patching"
               ? <div className="global-view-shell"><PatchingView isConnected={isConnected} isAx32ProfileActive={isAx32ProfileActive()} channelCount={channelCount} usbInputToUsbRoutes={usbInputToUsbRoutes} usbReturnRoutes={usbReturnRoutes} inputRoutes={inputPatchRoutes} outputRoutes={outputPatchRoutes} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} onUsbInputToUsbRouteChange={handleUsbInputToUsbRouteChange} onUsbReturnRouteChange={handleUsbReturnRouteChange} onInputRouteChange={handleInputPatchRouteChange} onOutputRouteChange={handleOutputPatchRouteChange} onResetRecordPatchingDefaults={handleResetRecordPatchingDefaults} onResetPlayPatchingDefaults={handleResetPlayPatchingDefaults} resetBusy={patchingResetBusy} /></div>
             : mainView === "scenes"

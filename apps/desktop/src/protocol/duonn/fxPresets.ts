@@ -1,12 +1,31 @@
 /**
  * FX Presets Configuration
- * 
+ *
  * Centralized configuration for all 16 FX presets with their control schemas.
- * Parameter mappings:
- * - 3097: Active preset selector (1-16)
+ *
+ * AX16/AX24 parameter mappings:
+ * - 3097: Active preset selector (1-16), single selector shared
  * - 2940: Control A (contextual, depends on active preset)
  * - 2941: Control B (contextual, depends on active preset)
+ *
+ * AX32 parameter mappings (confirmed runtime + EXE analysis):
+ * - Selectors: FX1=5116, FX2=5117, FX3=5118, FX4=5119
+ * - Controls: FX1={A:2754,B:2755}, FX2={A:2785,B:2786}, FX3={A:2816,B:2817}, FX4={A:2847,B:2848}
+ *
+ * Model-aware resolvers are in protocolAddressing.ts:
+ *   resolveFxPresetSelectorParam(model, fxNumber)
+ *   resolveFxControlParams(model, fxNumber)
  */
+
+export {
+  AX16_24_FX_PRESET_SELECTOR,
+  AX16_24_FX_CONTROL_A,
+  AX16_24_FX_CONTROL_B,
+  AX32_FX_PRESET_SELECTORS,
+  AX32_FX_CONTROLS,
+  resolveFxPresetSelectorParam,
+  resolveFxControlParams,
+} from "./protocolAddressing";
 
 export type FxPresetId = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
 

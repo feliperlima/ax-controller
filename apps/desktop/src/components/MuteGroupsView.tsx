@@ -1,4 +1,7 @@
 import { useState, type CSSProperties } from "react";
+import { useRawParamSelector } from "../hooks/useRawParamSelector";
+import type { UniversalRawParamStore } from "../lib/universalRawParamStore";
+import type { DomainSelectors } from "../lib/domainSelectors";
 import type { GroupMember } from "../protocol/duonn/bitmask";
 import type { MuteGroupId } from "../protocol/duonn/groups";
 import { getMuteGroupConfig } from "../protocol/duonn/groups";
@@ -38,6 +41,8 @@ type MuteGroupsViewProps = {
   fxNames?: string[];
   fxColorIds?: number[];
   masterColorIds?: [number, number];
+  rawParamStore?: UniversalRawParamStore;
+  domainSelectors?: DomainSelectors;
 };
 
 function rowBadgeColorFromId(row: MatrixRow): string {
@@ -62,8 +67,15 @@ export function MuteGroupsView({
   fxNames,
   fxColorIds,
   masterColorIds,
+  rawParamStore,
+  domainSelectors,
 }: MuteGroupsViewProps) {
   const [selectedGroup, setSelectedGroup] = useState<MuteGroupId>(1);
+  const storeMuteGroup = useRawParamSelector(
+    rawParamStore ?? null,
+    (store) => { void store; return domainSelectors?.selectMuteGroup(selectedGroup) ?? null; },
+    (prev, next) => prev?.active?.value === next?.active?.value
+  );
   const [confirmAllMuted, setConfirmAllMuted] = useState<MuteGroupId | null>(null);
   const availableGroupIds = groups.map((_, index) => (index + 1) as MuteGroupId);
   const channelIds = CHANNEL_IDS_MAX.slice(0, Math.max(1, Math.min(CHANNEL_IDS_MAX.length, channelCount))) as GroupMember[];
@@ -75,6 +87,10 @@ export function MuteGroupsView({
     active: false,
     members: [],
   };
+  const activeGroupActive =
+    storeMuteGroup?.active != null
+      ? storeMuteGroup.active.value > 0
+      : selectedGroupState.active;
   const isDerived = getMuteGroupConfig(selectedGroup).isDerived ?? false;
   const selectedAssignableMembers = assignableMemberIds.filter((member) => selectedGroupState.members.includes(member));
   const selectedSet = new Set(selectedAssignableMembers);
@@ -256,7 +272,7 @@ export function MuteGroupsView({
             </button>
             <button
               type="button"
-              className={`mute-toggle groups-view__toggle-btn ${selectedGroupState.active ? "mute-toggle--on" : "mute-toggle--off"}`}
+              className={`mute-toggle groups-view__toggle-btn ${activeGroupActive ? "mute-toggle--on" : "mute-toggle--off"}`}
               disabled={!isConnected}
               onClick={() => onToggleActive(selectedGroup)}
             >

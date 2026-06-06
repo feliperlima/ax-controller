@@ -3,6 +3,9 @@ import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
 import { eqMagnitudeDb, type EqState } from "./ChannelProcessors";
 import { stripColorForScope } from "./stripColor";
+import { useRawParamSelector } from "../hooks/useRawParamSelector";
+import type { UniversalRawParamStore } from "../lib/universalRawParamStore";
+import type { DomainSelectors } from "../lib/domainSelectors";
 
 type AuxStripProps = {
   auxNumber: number;
@@ -26,6 +29,8 @@ type AuxStripProps = {
   onFaderChange: (value: number) => void;
   onOpenDetail?: (auxNumber: number) => void;
   onOpenEditMenu?: (auxNumber: number) => void;
+  rawParamStore?: UniversalRawParamStore;
+  domainSelectors?: DomainSelectors;
 };
 
 const FOOTER_LONG_PRESS_MS = 450;
@@ -110,7 +115,26 @@ export function AuxStrip({
   onFaderChange,
   onOpenDetail,
   onOpenEditMenu,
+  rawParamStore,
+  domainSelectors,
 }: AuxStripProps) {
+  const storeStrip = useRawParamSelector(
+    rawParamStore ?? null,
+    (store) => {
+      void store;
+      return domainSelectors?.selectAuxStrip(auxNumber) ?? null;
+    },
+    (prev, next) =>
+      prev?.fader?.rawValue === next?.fader?.rawValue &&
+      prev?.mute?.rawValue === next?.mute?.rawValue &&
+      prev?.solo?.soloOn === next?.solo?.soloOn
+  );
+
+  const activeFaderDb = storeStrip?.fader?.db ?? faderDb;
+  const activeFaderPosition = storeStrip?.fader?.position ?? faderPosition;
+  const activeMuted = storeStrip?.mute?.muted ?? muted;
+  const activeSoloOn = storeStrip?.solo?.soloOn ?? soloOn;
+
   const isDetailVariant = variant === "detail";
   const stripColor = stripColorForScope(colorId, "aux");
   const label = `AUX${auxNumber}`;
@@ -335,11 +359,11 @@ export function AuxStrip({
             width: "100%",
             height: "28px",
             borderRadius: "8px",
-            border: muted
+            border: activeMuted
               ? "2px solid var(--button-mute-border)"
               : "1px solid var(--button-default-border)",
-            background: muted ? "var(--button-mute-bg)" : "var(--button-default-bg)",
-            color: muted ? "var(--button-mute-text)" : "var(--button-default-text)",
+            background: activeMuted ? "var(--button-mute-bg)" : "var(--button-default-bg)",
+            color: activeMuted ? "var(--button-mute-text)" : "var(--button-default-text)",
             fontSize: "8px",
             fontWeight: 700,
             letterSpacing: "0.4px",
@@ -347,7 +371,7 @@ export function AuxStrip({
             minWidth: 0,
             cursor: disabled ? "not-allowed" : "pointer",
             opacity: disabled ? 0.5 : 1,
-            boxShadow: muted ? "var(--button-mute-glow)" : "none",
+            boxShadow: activeMuted ? "var(--button-mute-glow)" : "none",
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -366,11 +390,11 @@ export function AuxStrip({
             width: "100%",
             height: "28px",
             borderRadius: "8px",
-            border: soloOn
+            border: activeSoloOn
               ? "2px solid var(--button-solo-border)"
               : "1px solid var(--button-default-border)",
-            background: soloOn ? "var(--button-solo-bg)" : "var(--button-default-bg)",
-            color: soloOn ? "var(--button-solo-text)" : "var(--button-default-text)",
+            background: activeSoloOn ? "var(--button-solo-bg)" : "var(--button-default-bg)",
+            color: activeSoloOn ? "var(--button-solo-text)" : "var(--button-default-text)",
             fontSize: "8px",
             fontWeight: 700,
             letterSpacing: "0.4px",
@@ -378,7 +402,7 @@ export function AuxStrip({
             minWidth: 0,
             cursor: disabled ? "not-allowed" : "pointer",
             opacity: disabled ? 0.5 : 1,
-            boxShadow: soloOn ? "var(--button-solo-glow)" : "none",
+            boxShadow: activeSoloOn ? "var(--button-solo-glow)" : "none",
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -426,7 +450,7 @@ export function AuxStrip({
         {/* Fader */}
         <div style={{ flex: "0 0 auto", height: "100%", display: "flex", alignItems: "center", overflow: "visible" }}>
           <VerticalFader
-            value={faderPosition}
+            value={activeFaderPosition}
             height="100%"
             width={21}
             disabled={disabled}
@@ -466,7 +490,7 @@ export function AuxStrip({
           whiteSpace: "nowrap",
         }}
       >
-        {faderDb <= -120 ? "-∞" : `${faderDb} dB`}
+        {activeFaderDb <= -120 ? "-∞" : `${activeFaderDb} dB`}
       </div>
       </div>
 

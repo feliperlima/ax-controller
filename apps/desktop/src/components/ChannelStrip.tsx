@@ -4,6 +4,9 @@ import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
 import { eqMagnitudeDb, type EqState } from "./ChannelProcessors";
 import { stripColorForScope, type StripColorScope } from "./stripColor";
+import { useRawParamSelector } from "../hooks/useRawParamSelector";
+import type { UniversalRawParamStore } from "../lib/universalRawParamStore";
+import type { DomainSelectors } from "../lib/domainSelectors";
 
 export type ChannelStripProps = {
   channel?: number;
@@ -39,6 +42,8 @@ export type ChannelStripProps = {
   onFooterClick?: () => void;
   onOpenDetail?: (channel: number) => void;
   onOpenEditMenu?: (channel: number) => void;
+  rawParamStore?: UniversalRawParamStore;
+  domainSelectors?: DomainSelectors;
 };
 
 const FOOTER_LONG_PRESS_MS = 450;
@@ -142,7 +147,28 @@ export function ChannelStrip({
   onFooterClick,
   onOpenDetail,
   onOpenEditMenu,
+  rawParamStore,
+  domainSelectors,
 }: ChannelStripProps) {
+  const storeStrip = useRawParamSelector(
+    rawParamStore ?? null,
+    (store) => {
+      void store;
+      return domainSelectors?.selectChannelStrip(channel) ?? null;
+    },
+    (prev, next) =>
+      prev?.fader?.rawValue === next?.fader?.rawValue &&
+      prev?.mute?.rawValue === next?.mute?.rawValue &&
+      prev?.solo?.soloOn === next?.solo?.soloOn &&
+      prev?.pan?.rawValue === next?.pan?.rawValue
+  );
+
+  const activeFaderDb = storeStrip?.fader?.db ?? faderDb;
+  const activeFaderPosition = storeStrip?.fader?.position ?? faderPosition;
+  const activeMuted = storeStrip?.mute?.muted ?? muted;
+  const activeSoloOn = storeStrip?.solo?.soloOn ?? soloOn;
+  const activePan = storeStrip?.pan?.pan ?? pan;
+
   const colorScope: StripColorScope = section === "aux" ? "aux" : section === "fx" ? "fx" : "channel";
   const channelColor = disabled ? stripColorForScope(0, "channel") : stripColorForScope(colorId, colorScope);
   const channelPrefix = section === "aux" ? "AUX" : section === "fx" ? "FX" : "CH";
@@ -434,7 +460,7 @@ export function ChannelStrip({
         <Knob
           label="PAN"
           variant="pan"
-          value={pan}
+          value={activePan}
           min={0}
           max={200}
           pixelsPerStep={2.5}
@@ -469,11 +495,11 @@ export function ChannelStrip({
             width: "100%",
             height: "28px",
             borderRadius: "8px",
-            border: muted
+            border: activeMuted
               ? "2px solid var(--button-mute-border)"
               : "1px solid var(--button-default-border)",
-            background: muted ? "var(--button-mute-bg)" : "var(--button-default-bg)",
-            color: muted ? "var(--button-mute-text)" : "var(--button-default-text)",
+            background: activeMuted ? "var(--button-mute-bg)" : "var(--button-default-bg)",
+            color: activeMuted ? "var(--button-mute-text)" : "var(--button-default-text)",
             fontSize: "8px",
             fontWeight: 700,
             letterSpacing: "0.4px",
@@ -481,7 +507,7 @@ export function ChannelStrip({
             minWidth: 0,
             cursor: disabled ? "not-allowed" : "pointer",
             opacity: disabled ? 0.5 : 1,
-            boxShadow: muted ? "var(--button-mute-glow)" : "none",
+            boxShadow: activeMuted ? "var(--button-mute-glow)" : "none",
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -500,11 +526,11 @@ export function ChannelStrip({
             width: "100%",
             height: "28px",
             borderRadius: "8px",
-            border: soloOn
+            border: activeSoloOn
               ? "2px solid var(--button-solo-border)"
               : "1px solid var(--button-default-border)",
-            background: soloOn ? "var(--button-solo-bg)" : "var(--button-default-bg)",
-            color: soloOn ? "var(--button-solo-text)" : "var(--button-default-text)",
+            background: activeSoloOn ? "var(--button-solo-bg)" : "var(--button-default-bg)",
+            color: activeSoloOn ? "var(--button-solo-text)" : "var(--button-default-text)",
             fontSize: "8px",
             fontWeight: 700,
             letterSpacing: "0.4px",
@@ -512,7 +538,7 @@ export function ChannelStrip({
             minWidth: 0,
             cursor: disabled ? "not-allowed" : "pointer",
             opacity: disabled ? 0.5 : 1,
-            boxShadow: soloOn ? "var(--button-solo-glow)" : "none",
+            boxShadow: activeSoloOn ? "var(--button-solo-glow)" : "none",
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -641,7 +667,7 @@ export function ChannelStrip({
         {/* Fader */}
         <div style={{ flex: "0 0 auto", height: "100%", display: "flex", alignItems: "center", overflow: "visible" }}>
           <VerticalFader
-            value={faderPosition}
+            value={activeFaderPosition}
             height="100%"
             width={21}
             disabled={disabled}
@@ -680,10 +706,10 @@ export function ChannelStrip({
           fontStyle: "normal",
           lineHeight: 1,
           whiteSpace: "nowrap",
-          opacity: muted ? 0.7 : 1,
+          opacity: activeMuted ? 0.7 : 1,
         }}
       >
-        {faderDb <= -120 ? "-∞" : `${faderDb} dB`}
+        {activeFaderDb <= -120 ? "-∞" : `${activeFaderDb} dB`}
       </div>
 
       </div>

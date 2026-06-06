@@ -10,7 +10,9 @@ export type RemoteParamRead = AxiosCommand & { at: number };
 export type NameTarget =
   | { type: "channel"; channel: number }
   | { type: "fx"; fx: number }
-  | { type: "aux"; aux: number };
+  | { type: "aux"; aux: number }
+  | { type: "master"; side: "left" | "right" }
+  | { type: "dca"; dca: number };
 
 export type AxiosProtocolProfile = "ax16_24" | "ax32" | "ax32_experimental";
 
@@ -155,21 +157,17 @@ const BASE = {
 
 const CHANNEL_COLOR_BASE = 3110;
 const AX32_CHANNEL_COLOR_BASE = 5131;
-// Color params confirmed on DUONN Axios 16: channels use 3110–3125, FX1=3136, FX2=3137, MasterL=3146, MasterR=3147. Value 0 means clear/default; values 1–12 map to the mixer color palette.
-const FX_COLOR_PARAMS_AX16_24: Record<number, number> = {
-  1: 3136,
-  2: 3137,
-};
 const AX32_FX_COLOR_BASE = 5165;
-const MASTER_COLOR_PARAMS = {
-  left: 3146,
-  right: 3147,
-};
-
-const MASTER_COLOR_PARAMS_AX32 = {
-  left: 5185,
-  right: 5186,
-};
+const AX32_AUX_COLOR_BASE = 5169;
+// Color param = colorBase + targetId.
+// AX16: fxBase=0x12, auxBase=0x14, masterBase=0x24 (colorBase=3110)
+// AX24: fxBase=0x1A, auxBase=0x1C, masterBase=0x2C (colorBase=3110)
+// AX32: fxBase=0x22, auxBase=0x26, masterBase=0x36 (colorBase=5131)
+// Value 0 = clear/default; 1–12 = mixer color palette.
+// DCA color is never sent to the mixer.
+const MASTER_COLOR_PARAMS_AX16 = { left: 3146, right: 3147 };
+const MASTER_COLOR_PARAMS_AX24 = { left: 3154, right: 3155 };
+const MASTER_COLOR_PARAMS_AX32 = { left: 5185, right: 5186 };
 
 export const MASTER = {
   left: {
@@ -458,7 +456,9 @@ function fxColorParam(fxNumber: number) {
     return AX32_FX_COLOR_BASE + rounded - 1;
   }
 
-  return FX_COLOR_PARAMS_AX16_24[rounded];
+  // AX16: fxBase=0x12, AX24: fxBase=0x1A
+  const fxBase = ACTIVE_PROFILE_CAPABILITIES.channelCount <= 16 ? 0x12 : 0x1A;
+  return CHANNEL_COLOR_BASE + fxBase + rounded - 1;
 }
 
 function channelSoloParams(channel: number) {
@@ -678,6 +678,20 @@ function decodeParamResponse(buffer: ArrayBuffer) {
   return results;
 }
 
+function decodeOpcode03Response(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length < 9) return [];
+  if (bytes[0] !== 128) return [];
+  if (bytes[2] !== 3) return [];
+  const results: AxiosCommand[] = [];
+  for (let i = 3; i < bytes.length - 2; i += 4) {
+    const param = (bytes[i] << 8) | bytes[i + 1];
+    const value = (bytes[i + 2] << 8) | bytes[i + 3];
+    results.push({ param, value });
+  }
+  return results;
+}
+
 function decodeNameResponse(buffer: ArrayBuffer) {
   const bytes = new Uint8Array(buffer);
 
@@ -699,6 +713,8 @@ function decodeNameResponse(buffer: ArrayBuffer) {
 
 function getNameTargetIndex(target: NameTarget) {
   const { channelCount, fxCount, auxCount } = ACTIVE_PROFILE_CAPABILITIES;
+  const isAx32 = ACTIVE_PROTOCOL_PROFILE === "ax32_experimental";
+  const isAx16 = !isAx32 && channelCount <= 16;
 
   if (target.type === "channel") {
     const channel = Math.round(target.channel);
@@ -713,24 +729,40 @@ function getNameTargetIndex(target: NameTarget) {
     if (fx < 1 || fx > fxCount) {
       throw new Error(`FX inválido para nome. Use de 1 a ${fxCount}.`);
     }
+    if (isAx32) return 0x21 + fx;  // FX1=0x22
+    if (isAx16) return 0x11 + fx;  // FX1=0x12
+    return 0x19 + fx;              // FX1=0x1A (AX24)
+  }
 
-    if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
-      return 33 + fx;
+  if (target.type === "aux") {
+    const aux = Math.round(target.aux);
+    if (aux < 1 || aux > auxCount) {
+      throw new Error(`AUX inválido para nome. Use de 1 a ${auxCount}.`);
     }
-
-    return 25 + fx;
+    if (isAx32) return 0x25 + aux;  // AUX1=0x26
+    if (isAx16) return 0x13 + aux;  // AUX1=0x14
+    return 0x1B + aux;              // AUX1=0x1C (AX24)
   }
 
-  const aux = Math.round(target.aux);
-  if (aux < 1 || aux > auxCount) {
-    throw new Error(`AUX inválido para nome. Use de 1 a ${auxCount}.`);
+  if (target.type === "master") {
+    const sideIndex = target.side === "left" ? 0 : 1;
+    if (isAx32) return 0x36 + sideIndex;   // L=0x36, R=0x37
+    if (isAx16) return 0x24 + sideIndex;   // L=0x24, R=0x25
+    return 0x2C + sideIndex;               // L=0x2C, R=0x2D (AX24)
   }
 
-  if (ACTIVE_PROTOCOL_PROFILE === "ax32_experimental") {
-    return 37 + aux;
+  if (target.type === "dca") {
+    const dca = Math.round(target.dca);
+    const maxDca = isAx32 ? 8 : 4;
+    if (dca < 1 || dca > maxDca) {
+      throw new Error(`DCA inválido para nome. Use de 1 a ${maxDca}.`);
+    }
+    if (isAx32) return 0x37 + dca;  // DCA1=0x38
+    if (isAx16) return 0x25 + dca;  // DCA1=0x26
+    return 0x2D + dca;              // DCA1=0x2E (AX24)
   }
 
-  return 27 + aux;
+  throw new Error("Tipo de target inválido.");
 }
 
 function makeReadNameCommand(targetIndex: number) {
@@ -1158,6 +1190,7 @@ export class Axios16Client {
   private localParamWriteListeners = new Set<(write: LocalParamWrite) => void>();
   private remoteParamReadListeners = new Set<(read: RemoteParamRead) => void>();
   private capabilities: ProfileCapabilities;
+  private globalRxHandler: MixerSocketListener<"message"> | null = null;
 
   constructor(
     private ip: string,
@@ -1191,6 +1224,19 @@ export class Axios16Client {
     };
   }
 
+  private createGlobalRxHandler(): MixerSocketListener<"message"> {
+    return (event: MixerMessageEvent) => {
+      const decoded = decodeOpcode03Response(event.data);
+      if (decoded.length === 0) return;
+      const at = Date.now();
+      decoded.forEach((item) => {
+        this.remoteParamReadListeners.forEach((listener) =>
+          listener({ param: item.param, value: item.value, at })
+        );
+      });
+    };
+  }
+
   get url() {
     return `ws://${this.ip}:${this.port}/`;
   }
@@ -1218,6 +1264,9 @@ export class Axios16Client {
 
       const socket = new TauriMixerSocket(ws);
       this.ws = socket;
+
+      this.globalRxHandler = this.createGlobalRxHandler();
+      socket.addEventListener("message", this.globalRxHandler);
 
       socket.addEventListener("close", (event) => {
         console.log("WebSocket fechado:", {
@@ -1265,6 +1314,9 @@ export class Axios16Client {
 
       this.ws = ws;
       rawSocket.binaryType = "arraybuffer";
+
+      this.globalRxHandler = this.createGlobalRxHandler();
+      ws.addEventListener("message", this.globalRxHandler);
 
       rawSocket.onopen = () => {
         if (settled) return;
@@ -1316,6 +1368,10 @@ export class Axios16Client {
   }
 
   disconnect() {
+    if (this.globalRxHandler && this.ws) {
+      this.ws.removeEventListener("message", this.globalRxHandler);
+      this.globalRxHandler = null;
+    }
     this.ws?.close();
     this.ws = null;
     this.readQueue = Promise.resolve();
@@ -1794,12 +1850,39 @@ export class Axios16Client {
   }
 
   setMasterColor(side: MasterSide, colorId: number) {
-    const colors =
-      this.profile === "ax32_experimental"
-        ? MASTER_COLOR_PARAMS_AX32
-        : MASTER_COLOR_PARAMS;
+    let colors: { left: number; right: number };
+    if (this.profile === "ax32_experimental") {
+      colors = MASTER_COLOR_PARAMS_AX32;
+    } else if (this.capabilities.channelCount <= 16) {
+      colors = MASTER_COLOR_PARAMS_AX16;
+    } else {
+      colors = MASTER_COLOR_PARAMS_AX24;
+    }
     const param = side === "L" || side === "left" ? colors.left : colors.right;
     this.sendParam(param, channelColorToValue(colorId));
+  }
+
+  setAuxColor(auxNumber: number, colorId: number) {
+    const rounded = Math.round(auxNumber);
+    const maxAux = this.profile === "ax32_experimental" ? 14 : 8;
+    if (rounded < 1 || rounded > maxAux) return;
+
+    let param: number;
+    if (this.profile === "ax32_experimental") {
+      param = AX32_AUX_COLOR_BASE + rounded - 1;
+    } else {
+      // AX16: auxBase=0x14, AX24: auxBase=0x1C
+      const auxBase = this.capabilities.channelCount <= 16 ? 0x14 : 0x1C;
+      param = CHANNEL_COLOR_BASE + auxBase + rounded - 1;
+    }
+    this.sendParam(param, channelColorToValue(colorId));
+  }
+
+  setDcaName(dca: number, displayName: string) {
+    if (!this.ws || this.ws.readyState !== SOCKET_OPEN) {
+      throw new Error("Cliente não conectado.");
+    }
+    this.setName({ type: "dca", dca }, displayName);
   }
 
   setGateEnabled(channel: number, enabled: boolean) {

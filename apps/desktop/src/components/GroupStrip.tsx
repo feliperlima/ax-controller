@@ -5,7 +5,11 @@ import {
   dcaDbToPosition,
   dcaFaderLabel,
   dcaPositionToDb,
+  dcaValueToPosition,
 } from "../lib/groupControls";
+import type { UniversalRawParamStore } from "../lib/universalRawParamStore";
+import type { DomainSelectors } from "../lib/domainSelectors";
+import { useRawParamSelector } from "../hooks/useRawParamSelector";
 
 type GroupStripProps = {
   kind: "dca" | "mute";
@@ -20,6 +24,8 @@ type GroupStripProps = {
   onFaderChange?: (value: number) => void;
   onOpenDetail?: (groupId: number) => void;
   onOpenEditMenu?: (groupId: number) => void;
+  rawParamStore?: UniversalRawParamStore;
+  domainSelectors?: DomainSelectors;
 };
 
 const DCA_FADER_TRACK_WIDTH = 23;
@@ -38,30 +44,54 @@ export function GroupStrip({
   onFaderChange,
   onOpenDetail,
   onOpenEditMenu,
+  rawParamStore,
+  domainSelectors,
 }: GroupStripProps) {
+  const storeGroup = useRawParamSelector(
+    rawParamStore ?? null,
+    (store) => {
+      void store;
+      if (kind === "dca") return domainSelectors?.selectDcaGroup(groupId) ?? null;
+      return domainSelectors?.selectMuteGroup(groupId) ?? null;
+    },
+    (prev, next) =>
+      prev?.onOff?.value === next?.onOff?.value &&
+      prev?.fader?.value === next?.fader?.value &&
+      prev?.active?.value === next?.active?.value
+  );
+  const activeActive =
+    storeGroup
+      ? kind === "dca"
+        ? (storeGroup.onOff?.value ?? -1) > 0
+        : (storeGroup.active?.value ?? -1) > 0
+      : active;
+  const activeFaderPosition =
+    kind === "dca" && storeGroup?.fader != null
+      ? dcaValueToPosition(storeGroup.fader.value)
+      : faderPosition;
   const isDca = kind === "dca";
   const resolvedAccentColor = isDca ? (accentColor ?? "var(--channel-05, #7b7b7b)") : "var(--button-mute-border)";
   const footerLabel = isDca ? `DCA ${groupId}` : `MUTE ${groupId}`;
-  const buttonLabel = isDca ? (active ? "ON" : "OFF") : "MUTE";
+  const buttonLabel = isDca ? (activeActive ? "ON" : "OFF") : "MUTE";
   const buttonClass = isDca
-    ? active
+    ? activeActive
       ? "var(--button-phase-bg)"
       : "var(--button-default-bg)"
-    : active
+    : activeActive
       ? "var(--button-mute-bg)"
       : "var(--button-default-bg)";
   const buttonBorder = isDca
-    ? active
+    ? activeActive
       ? "2px solid var(--button-phase-border)"
       : "1px solid var(--button-default-border)"
-    : active
+    : activeActive
       ? "2px solid var(--button-mute-border)"
       : "1px solid var(--button-default-border)";
   const buttonColor = isDca
-    ? active
+    ? activeActive
       ? "var(--button-phase-text)"
       : "var(--button-default-text)"
-    : active
+    : activeActive
       ? "var(--button-mute-text)"
       : "var(--button-default-text)";
   const canOpenDetail = typeof onOpenDetail === "function";
@@ -165,7 +195,7 @@ export function GroupStrip({
             letterSpacing: "0.12em",
             cursor: disabled ? "not-allowed" : "pointer",
             opacity: disabled ? 0.5 : 1,
-            boxShadow: isDca && active ? "var(--button-phase-glow)" : !isDca && active ? "var(--button-mute-glow)" : "none",
+            boxShadow: isDca && activeActive ? "var(--button-phase-glow)" : !isDca && activeActive ? "var(--button-mute-glow)" : "none",
           }}
         >
           {buttonLabel}
@@ -183,10 +213,10 @@ export function GroupStrip({
               }}
             >
               <VerticalFader
-                value={faderPosition}
+                value={activeFaderPosition}
                 height="100%"
                 width={DCA_FADER_TRACK_WIDTH}
-                disabled={disabled || !active}
+                disabled={disabled || !activeActive}
                 snapPoints={DCA_FADER_SNAP_POINTS}
                 snapThreshold={2}
                 zeroMarkerValue={dcaDbToPosition(0)}
@@ -215,7 +245,7 @@ export function GroupStrip({
                 padding: "8px 4px",
               }}
             >
-              {dcaFaderLabel(dcaPositionToDb(faderPosition))}
+              {dcaFaderLabel(dcaPositionToDb(activeFaderPosition))}
             </div>
           </>
         ) : (
@@ -237,7 +267,7 @@ export function GroupStrip({
                 fontSize: 26,
                 lineHeight: 1,
                 fontWeight: 800,
-                color: active ? "var(--button-mute-text)" : "var(--text-secondary)",
+                color: activeActive ? "var(--button-mute-text)" : "var(--text-secondary)",
               }}
             >
               {memberCount}
@@ -249,10 +279,10 @@ export function GroupStrip({
                 fontWeight: 800,
                 letterSpacing: "0.12em",
                 textTransform: "uppercase",
-                color: active ? "var(--button-mute-text)" : "var(--text-tertiary)",
+                color: activeActive ? "var(--button-mute-text)" : "var(--text-tertiary)",
               }}
             >
-              {active ? "Muted" : "Ready"}
+              {activeActive ? "Muted" : "Ready"}
             </div>
           </div>
         )}

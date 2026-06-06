@@ -1,4 +1,7 @@
 import { useState, type CSSProperties } from "react";
+import { useRawParamSelector } from "../hooks/useRawParamSelector";
+import type { UniversalRawParamStore } from "../lib/universalRawParamStore";
+import type { DomainSelectors } from "../lib/domainSelectors";
 import type { GroupMember } from "../protocol/duonn/bitmask";
 import type { DcaGroupId } from "../protocol/duonn/groups";
 import {
@@ -42,6 +45,8 @@ type DcaGroupsViewProps = {
   masterColorIds?: [number, number];
   dcaNames?: string[];
   dcaColorIds?: number[];
+  rawParamStore?: UniversalRawParamStore;
+  domainSelectors?: DomainSelectors;
 };
 
 function rowBadgeColorFromId(row: MatrixRow): string {
@@ -67,8 +72,15 @@ export function DcaGroupsView({
   masterColorIds,
   dcaNames,
   dcaColorIds,
+  rawParamStore,
+  domainSelectors,
 }: DcaGroupsViewProps) {
   const [selectedGroup, setSelectedGroup] = useState<DcaGroupId>(1);
+  const storeDcaGroup = useRawParamSelector(
+    rawParamStore ?? null,
+    (store) => { void store; return domainSelectors?.selectDcaGroup(selectedGroup) ?? null; },
+    (prev, next) => prev?.onOff?.value === next?.onOff?.value
+  );
   const availableGroupIds = groups.map((_, index) => (index + 1) as DcaGroupId);
   const channelIds = CHANNEL_IDS_MAX.slice(0, Math.max(1, Math.min(CHANNEL_IDS_MAX.length, channelCount))) as GroupMember[];
   const auxIds = AUX_IDS.slice(0, getAuxCountForChannelCount(channelCount));
@@ -98,6 +110,10 @@ export function DcaGroupsView({
     faderPosition: 90,
     members: [],
   };
+  const activeDcaEnabled =
+    storeDcaGroup?.onOff != null
+      ? storeDcaGroup.onOff.value > 0
+      : selectedGroupState.enabled;
   const selectedAssignableMembers = visibleMemberIds.filter((member) => selectedGroupState.members.includes(member));
   const selectedSet = new Set(selectedAssignableMembers);
   const selectedNonAssignableMembers = selectedGroupState.members.filter(
@@ -252,7 +268,7 @@ export function DcaGroupsView({
             </button>
             <button
               type="button"
-              className={`dca-toggle groups-view__toggle-btn ${selectedGroupState.enabled ? "dca-toggle--on" : "dca-toggle--off"}`}
+              className={`dca-toggle groups-view__toggle-btn ${activeDcaEnabled ? "dca-toggle--on" : "dca-toggle--off"}`}
               disabled={!isConnected}
               onClick={() => onToggleEnabled(selectedGroup)}
             >
