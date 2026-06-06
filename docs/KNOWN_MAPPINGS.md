@@ -66,6 +66,24 @@ This file keeps only mappings and structural facts that are useful to remember w
 - AX16/AX24 preset params (3097/2940/2941) must not be reused as AX32 FX preset mapping.
 - 4895: observed/unknown; do not use as preset selector.
 
+## Input Source Mode — all models
+value 0 = USB Return / REC PLAY (digital source)
+value 1 = Physical input / MIC-LINE (analog source)
+
+### AX16/AX24 (confirmed by project runtime mapping)
+- Input Level:        param = 2815 + channelIndex (0-based). CH1=2815, CH2=2816.
+- Rec/Play Volume:    param = 2833 + channelIndex. CH1=2833, CH2=2834.
+- Input Source Mode:  param = 2849 + channelIndex. CH1=2849, CH2=2850, CH24=2872.
+- Indexed directly by channel — no patch map indirection.
+
+### AX32 (confirmed by runtime capture)
+- Record Out To Channel: params 2565..2596. formula = 2564 + recordSlot (slot 1..32). value = channelNumber.
+- Input Source Mode:     params 2661..2692. formula = 2660 + recordSlot. value 0=USB, 1=MIC-LINE.
+- Physical Input Mapping: params 2693..2724. formula = 2692 + channelNumber. value 0=unpatched, 1..32=physical input.
+- Input Source Mode is NOT indexed by channel strip — it is indexed by USB return slot.
+- To toggle CH1 inputSourceMode: look up Record Out map → find slot → write param (2660+slot).
+- Example: CH1 on USB return slot 3 → toggle writes param 2663.
+
 ## AX32 notes still under validation
 - Param 2862 can vary, but must not be treated as a confirmed individual FX meter without new capture tests.
 - AX32 AUX meters 8-14 still require dedicated validation.

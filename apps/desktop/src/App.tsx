@@ -567,8 +567,14 @@ function channelParam(channel: number, base: number) {
   return base + (channel - 1) * 62;
 }
 
-function inputSourceParam(channel: number) {
-  return isAx32ProfileActive() ? 2662 + channel : 2846 + channel;
+// AX16/AX24: param = 2849 + channelIndex (0-based) = 2848 + channel (1-based).
+//   CH1 → 2849, CH2 → 2850, ..., CH24 → 2872.
+//   Indexed directly by channel — no patch map indirection.
+// AX32: param = 2660 + usbReturnSlot (1-based slot from Record Out To Channel map).
+//   Slot 1 → 2661, slot 2 → 2662, ..., slot 32 → 2692.
+//   slotOrChannel must come from resolveInputSourceControlChannel(), NOT from channelNumber directly.
+function inputSourceParam(slotOrChannel: number) {
+  return isAx32ProfileActive() ? 2660 + slotOrChannel : 2848 + slotOrChannel;
 }
 
 function channelColorParam(channel: number) {
@@ -2654,6 +2660,8 @@ function App() {
     createIdentityRoutes(AX32_INPUT_PATCH_VISIBLE_SIZE)
   );
   const [detailView, setDetailView] = useState<DetailView>(null);
+  const detailViewRef = useRef<DetailView>(null);
+  detailViewRef.current = detailView;
   const [customizationView, setCustomizationView] = useState<CustomizationView>(null);
   const [channels, setChannels] = useState<ChannelState[]>(
     createInitialChannelsState
@@ -2877,6 +2885,7 @@ function App() {
   const usbReturnOutputPatchMapRef = useRef<Map<number, number>>(new Map());
   const ax32OutputPatchMapRef = useRef<Map<number, number>>(new Map());
   const usbReturnPatchSyncInFlightRef = useRef(false);
+  const recordOutRxDebounceTimerRef = useRef<number | null>(null);
   const backgroundLicenseRevalidationBusyRef = useRef(false);
   const lastBackgroundRevalidationAtRef = useRef(0);
   const strictStartupValidationDoneRef = useRef(false);
@@ -4459,24 +4468,19 @@ function App() {
     }
 
     if (!isAx32ProfileActive()) {
+      // AX16/AX24: channel maps 1:1 to param index (no patch map indirection).
       return channelNumber;
     }
 
-    // AX32: source select follows input patching (CH -> CH) for the destination channel.
-    const mappedChannel = usbReturnPatchMapRef.current.get(channelNumber);
-    if (mappedChannel === undefined) {
-      return channelNumber;
-    }
-
-    if (mappedChannel === 0) {
+    // AX32: Input Source Mode is indexed by USB return slot, NOT by channel strip number.
+    // The Record Out To Channel map (params 2565-2596) tells us which slot feeds each channel.
+    // inputSourceParam(slot) = 2660 + slot  →  slot 1=2661, slot 3=2663, etc.
+    const usbReturnSlot = usbReturnOutputPatchMapRef.current.get(channelNumber);
+    if (usbReturnSlot === undefined) {
+      // Channel has no USB return slot assigned — toggle not applicable.
       return null;
     }
-
-    if (mappedChannel < 1 || mappedChannel > AX32_INPUT_PATCH_VISIBLE_SIZE) {
-      return channelNumber;
-    }
-
-    return mappedChannel;
+    return usbReturnSlot;
   }
 
   function resolveUsbInputOnFromRaw(rawValue: number) {
@@ -4487,9 +4491,9 @@ function App() {
     return rawValueFromUsbInputSelected(usbInputOn);
   }
 
-  async function refreshResolvedInputSourceStates() {
+  async function refreshResolvedInputSourceStates(options?: { ignoreConnectionState?: boolean }) {
     const client = clientRef.current;
-    if (!client || !isConnected) return;
+    if (!client || (!isConnected && !options?.ignoreConnectionState)) return;
 
     if (!isAx32ProfileActive()) {
       const readParams = Array.from(
@@ -6545,6 +6549,25 @@ function App() {
       getMuteGroupMemberParams(id).forEach((paramId) => addDescriptor(paramId));
     });
 
+    // Input Source Mode and related channel params per profile.
+    if (isAx32ProfileActive()) {
+      // AX32: Record Out To Channel (2565-2596), Input Source Mode (2661-2692),
+      // Physical Input Mapping (2693-2724) — all 32 slots registered unconditionally
+      // so params arriving via 0x03 before the record-out map is built are still classified.
+      for (let slot = 1; slot <= 32; slot += 1) {
+        addDescriptor(2564 + slot, `recordSlot:${slot}`, "recordOutToChannel");
+        addDescriptor(2660 + slot, `recordSlot:${slot}`, "inputSourceMode");
+        addDescriptor(2692 + slot, `channel:${slot}`, "physicalInputMapping");
+      }
+    } else {
+      // AX16/AX24: inputLevel, recPlayVolume, inputSourceMode — indexed by channelIndex (0-based).
+      for (let ch = 1; ch <= channelCount; ch += 1) {
+        addDescriptor(2815 + (ch - 1), `channel:${ch}`, "inputLevel");
+        addDescriptor(2833 + (ch - 1), `channel:${ch}`, "recPlayVolume");
+        addDescriptor(2849 + (ch - 1), `channel:${ch}`, "inputSourceMode");
+      }
+    }
+
     return Array.from(descriptorByParam.values());
   }
 
@@ -6611,12 +6634,112 @@ function App() {
     upsertRawParamFromTransport(write.param, write.value, write.at, "userTxEcho");
   }
 
+  function routeRxParamToDetailView(paramId: number) {
+    const view = detailViewRef.current;
+    if (!view) return;
+
+    const store = rawParamStoreRef.current;
+
+    function buildValuesFromStore(paramRecord: Record<string, number | undefined>): Map<number, number> {
+      const map = new Map<number, number>();
+      for (const id of Object.values(paramRecord)) {
+        if (typeof id !== "number") continue;
+        const entry = store.getRawParam(id);
+        if (entry) map.set(id, entry.value);
+      }
+      return map;
+    }
+
+    if (view.type === "channel") {
+      const ch = view.channel;
+      const proc = processorParams(ch);
+      const procIds = new Set(Object.values(proc));
+      if (procIds.has(paramId)) {
+        applyChannelProcessorStateFromValues(ch, buildValuesFromStore(proc), proc);
+        return;
+      }
+      const sendIds = getActiveSendIds();
+      for (const sendId of sendIds) {
+        try {
+          if (sendIdToParam(ch, sendId) !== paramId) continue;
+          const decoded = decodeSendRawValue(store.getRawParam(paramId)?.value);
+          setChannelSendValues((cur) =>
+            cur[sendId] === decoded.value ? cur : { ...cur, [sendId]: decoded.value }
+          );
+          setSendTapPoints((cur) =>
+            cur[sendId] === decoded.tapPoint ? cur : { ...cur, [sendId]: decoded.tapPoint }
+          );
+          return;
+        } catch { /* invalid sendId for this profile */ }
+      }
+      return;
+    }
+
+    if (view.type === "aux") {
+      const aux = view.aux;
+      const params = auxProcessorParams(aux);
+      const allIds = Object.values(params).filter((v): v is number => typeof v === "number");
+      if (!allIds.includes(paramId)) return;
+      applyAuxProcessorStateFromValues(aux, buildValuesFromStore(params as Record<string, number | undefined>), params);
+      return;
+    }
+
+    if (view.type === "fx") {
+      const fx = view.fx;
+      const fxProc = getFxProcessorParams(fx);
+      if (!fxProc) return;
+      const allIds = Object.values(fxProc).filter((v): v is number => typeof v === "number");
+      if (!allIds.includes(paramId)) return;
+      const values = buildValuesFromStore(fxProc as Record<string, number | undefined>);
+      if (!values.has(fxProc.eqEnabled)) return;
+      applyFxStateFromValues(fx, values, getFxStateParams(fx));
+      return;
+    }
+  }
+
   function handleRemoteParamRead(read: RemoteParamRead) {
     if (shouldSuppressRemoteParam(read.param, read.value, read.at)) {
       return;
     }
 
     upsertRawParamFromTransport(read.param, read.value, read.at, resolveRawParamSource());
+    routeRxParamToDetailView(read.param);
+
+    // Semantic apply — Input Source Mode received from mixer (opcode 0x03 or polling).
+    // AX16/AX24: params 2849..(2849 + channelCount - 1), indexed by channel (0-based).
+    if (!isAx32ProfileActive()) {
+      const ax1624InputSourceBase = 2849;
+      if (read.param >= ax1624InputSourceBase && read.param < ax1624InputSourceBase + channelCount) {
+        const channelNumber = read.param - ax1624InputSourceBase + 1;
+        updateChannelState(channelNumber, { usbInputOn: read.value === 0 });
+      }
+    }
+
+    if (isAx32ProfileActive()) {
+      // AX32: Input Source Mode params 2661..2692 (slot 1..32).
+      // Reverse-lookup: find which channel has this USB return slot assigned.
+      if (read.param >= 2661 && read.param <= 2692) {
+        const usbReturnSlot = read.param - 2660;
+        for (const [channelNumber, slot] of usbReturnOutputPatchMapRef.current.entries()) {
+          if (slot === usbReturnSlot) {
+            updateChannelState(channelNumber, { usbInputOn: read.value === 0 });
+            break;
+          }
+        }
+      }
+
+      // AX32: Record Out To Channel params 2565..2596 received — debounce re-sync of the
+      // record-out map so the Input Source Mode lookup stays consistent.
+      if (read.param >= 2565 && read.param <= 2596) {
+        if (recordOutRxDebounceTimerRef.current !== null) {
+          window.clearTimeout(recordOutRxDebounceTimerRef.current);
+        }
+        recordOutRxDebounceTimerRef.current = window.setTimeout(() => {
+          recordOutRxDebounceTimerRef.current = null;
+          void syncUsbReturnOutputPatchMap().catch(() => {});
+        }, 350);
+      }
+    }
 
     if (
       isAx32ProfileActive() &&
@@ -8729,7 +8852,7 @@ function App() {
               refreshInputStates: false,
               ignoreConnectionState: true,
             }),
-            syncUsbReturnOutputPatchMap({ ignoreConnectionState: true }),
+            syncUsbReturnOutputPatchMap({ ignoreConnectionState: true, refreshInputStates: false }),
             syncAx32OutputPatchMap({ ignoreConnectionState: true }),
           ]);
         });
@@ -8773,8 +8896,9 @@ function App() {
           setStatus(connectedStatus);
         }
 
-        void refreshResolvedInputSourceStates().catch(() => {
+        void refreshResolvedInputSourceStates({ ignoreConnectionState: true }).catch(() => {
           // Background refresh for INPUT/USB state after connect to keep startup responsive.
+          // ignoreConnectionState: true because isConnected in this closure is stale (false).
         });
       })().finally(() => {
         setInitialConnectSyncBusy(false);

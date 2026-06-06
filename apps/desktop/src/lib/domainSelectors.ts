@@ -2,6 +2,14 @@ import type { UniversalRawParamStore } from "./universalRawParamStore";
 
 export type ParamMap = Record<string, number | undefined>;
 
+// value 0 = USB Return / REC PLAY (digital source)
+// value 1 = Physical input / MIC-LINE (analog source)
+export const InputSourceMode = {
+  USB_RETURN_OR_REC_PLAY: 0,
+  PHYSICAL_INPUT_OR_MIC_LINE: 1,
+} as const;
+export type InputSourceMode = typeof InputSourceMode[keyof typeof InputSourceMode];
+
 export type ChannelParamResolver = {
   getFaderParam: (channelId: number) => number;
   getMuteParam: (channelId: number) => number;
@@ -25,6 +33,11 @@ export type AppParamResolver = ChannelParamResolver & {
   getAuxProcessorParams?: (auxId: number) => ParamMap;
   getFxProcessorParams?: (fxId: number) => ParamMap;
   getFxPresetParams?: (fxId: number) => ParamMap;
+  // Returns the raw param ID for the Input Source Mode toggle of a channel (1-based channelId).
+  // AX16/AX24: 2849 + (channelId - 1), indexed directly by channel.
+  // AX32: 2660 + usbReturnSlot, where slot comes from the Record Out To Channel mapping.
+  // Returns null when the channel has no applicable USB return slot (AX32 only).
+  getInputSourceModeParam?: (channelId: number) => number | null;
 };
 
 export type ChannelValueDecoder = {
