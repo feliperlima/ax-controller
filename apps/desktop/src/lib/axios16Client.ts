@@ -16,6 +16,10 @@ export type AxiosProtocolProfile = "ax16_24" | "ax32" | "ax32_experimental";
 
 let ACTIVE_PROTOCOL_PROFILE: AxiosProtocolProfile = "ax16_24";
 
+export function getActiveProtocolProfile(): AxiosProtocolProfile {
+  return ACTIVE_PROTOCOL_PROFILE;
+}
+
 type ProfileCapabilities = {
   channelCount: number;
   fxCount: number;

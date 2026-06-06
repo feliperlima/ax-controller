@@ -17,6 +17,7 @@ import {
   valueToFaderDb,
   valueToFrequency,
   valueToGain,
+  getActiveProtocolProfile,
   valueToGateAttack,
   valueToGateDecay,
   valueToGateHold,
@@ -65,6 +66,7 @@ import {
 import { getMixerCompatibility } from "./lib/mixerCompatibility";
 import {
   decodeGroupMembers,
+  getBitmaskProtocolProfile,
   type GroupMember,
   setBitmaskProtocolProfile,
 } from "./protocol/duonn/bitmask";
@@ -76,6 +78,7 @@ import {
   buildSetDcaMembersMessages,
   buildSetMuteGroupActiveMessages,
   buildSetMuteGroupMembersMessages,
+  getGroupProtocolProfile,
   getDcaFaderParam,
   getDcaMemberParams,
   getDcaOnOffParam,
@@ -771,13 +774,46 @@ function getFxPresetParams(fxNumber: number) {
   }
 
   const fx = Math.max(1, Math.min(4, Math.round(fxNumber)));
-  const base = 2727 + (fx - 1) * 31;
+  const ax32SelectorMap: Record<number, number> = {
+    1: 5117,
+    2: 5117,
+    3: 5118,
+    4: 5119,
+  };
+  // Control A/B were capture-confirmed on AX32 and align with +31 stride across FX blocks.
+  const ax32ControlMap: Record<number, { controlA: number; controlB: number }> = {
+    1: { controlA: 2754, controlB: 2755 },
+    2: { controlA: 2785, controlB: 2786 },
+    3: { controlA: 2816, controlB: 2817 },
+    4: { controlA: 2847, controlB: 2848 },
+  };
 
   return {
-    preset: 5116 + (fx - 1),
-    controlA: base + 27,
-    controlB: base + 28,
+    preset: ax32SelectorMap[fx],
+    controlA: ax32ControlMap[fx].controlA,
+    controlB: ax32ControlMap[fx].controlB,
   };
+}
+
+function warnIfProtocolProfilesOutOfSync(context: string) {
+  const channelProfile = normalizeProtocolProfile(ACTIVE_CHANNEL_PROFILE);
+  const protocolProfile = normalizeProtocolProfile(getActiveProtocolProfile());
+  const groupProfile = normalizeProtocolProfile(getGroupProtocolProfile());
+  const bitmaskProfile = normalizeProtocolProfile(getBitmaskProtocolProfile());
+
+  if (
+    channelProfile !== protocolProfile
+    || channelProfile !== groupProfile
+    || channelProfile !== bitmaskProfile
+  ) {
+    console.warn("[ProfileSync] Profile globals out of sync", {
+      context,
+      channelProfile,
+      protocolProfile,
+      groupProfile,
+      bitmaskProfile,
+    });
+  }
 }
 
 type DetailView =
@@ -3917,6 +3953,7 @@ function App() {
     setAuxInputSendTapPoints({});
     setFxInputSendValues({});
     setFxInputSendTapPoints({});
+    warnIfProtocolProfilesOutOfSync("applyMixerChannelProfile");
   }
 
   function hydrateDcaCacheForMixer(mixerCacheIdentity: string | null, channelTotal: number) {

@@ -6,6 +6,10 @@ export type GroupProtocolProfile = "ax16_24" | "ax32" | "ax32_experimental";
 
 let ACTIVE_GROUP_PROFILE: GroupProtocolProfile = "ax16_24";
 
+export function getGroupProtocolProfile(): GroupProtocolProfile {
+  return ACTIVE_GROUP_PROFILE;
+}
+
 export function setGroupProtocolProfile(profile: GroupProtocolProfile) {
   ACTIVE_GROUP_PROFILE = profile === "ax32" ? "ax32_experimental" : profile;
 }

@@ -64,6 +64,10 @@ export type BitmaskProtocolProfile = "ax16_24" | "ax32" | "ax32_experimental";
 
 let ACTIVE_BITMASK_PROFILE: BitmaskProtocolProfile = "ax16_24";
 
+export function getBitmaskProtocolProfile(): BitmaskProtocolProfile {
+  return ACTIVE_BITMASK_PROFILE;
+}
+
 export function setBitmaskProtocolProfile(profile: BitmaskProtocolProfile) {
   ACTIVE_BITMASK_PROFILE = profile === "ax32" ? "ax32_experimental" : profile;
 }

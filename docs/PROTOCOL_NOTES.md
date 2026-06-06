@@ -20,6 +20,18 @@
 - Do not assume one linear parameter formula fits every profile.
 - Confirmed profile-specific behavior should be encoded in the app, not inferred from incidental values.
 
+## FX preset mapping notes
+- Preset schema is universal (preset values 1-16 and control semantics), but parameter IDs are model/bus-specific.
+- AX32 uses explicit selector/control tables per FX bus.
+- AX16/AX24 current code path uses 3097/2940/2941 and does not expose explicit FX2-specific selector/control params.
+- Do not claim AX16/AX24 FX2 dedicated selector/control params without logs or new hardware validation.
+- 4895 is observed/unknown and must not be used as a preset selector.
+
+## FX meter notes
+- AX32 FX meters capture-confirmed: 2864, 2865, 2866, 2867.
+- AX32 param 2862 may vary, but is not a confirmed individual FX meter.
+- AX32 AUX meters 8-14 remain pending validation.
+
 ## Licensing gate
 - Licensing state is a gate in the operational flow.
 - The app should not rely on local guesses when the backend has already returned a normalized licensing result.
