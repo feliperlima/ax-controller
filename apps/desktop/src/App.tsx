@@ -61,7 +61,9 @@ import productAxios24 from "./assets/product-axios24.webp";
 import { useMixerDiscovery } from "./hooks/useMixerDiscovery";
 import {
   type DiscoveredMixer,
+  type ProfileConfidence,
   rememberConnectedMixerIp,
+  saveKnownMixer,
 } from "./services/mixerDiscovery";
 import { getMixerCompatibility } from "./lib/mixerCompatibility";
 import {
@@ -133,7 +135,7 @@ import {
   resolveBootDecision,
   writeRuntimeLicenseCacheToStorage,
 } from "./lib/licenseEngine";
-import { LockKeyhole, Mail, Monitor, Phone, ShieldCheck, User, Zap } from "lucide-react";
+import { Eye, EyeOff, Hash, Laptop2, LockKeyhole, Mail, Monitor, Phone, RefreshCw, ShieldCheck, Smartphone, User, X, Zap } from "lucide-react";
 import { UniversalRawParamStore, type RawParamProfileModel, type RawParamSource } from "./lib/universalRawParamStore";
 import {
   ProfileAwareParameterRegistry,
@@ -145,6 +147,15 @@ import {
   type ChannelValueDecoder,
   type DomainSelectors,
 } from "./lib/domainSelectors";
+import { useToast } from "./components/FloatingToast";
+import { useMixerClipboard } from "./hooks/useMixerClipboard";
+import {
+  buildChannelSnapshot,
+  buildAuxSnapshot,
+  applyChannelPaste,
+  applyAuxPaste,
+  isClipboardCompatible,
+} from "./lib/mixerClipboard";
 
 type ChannelState = {
   muted: boolean;
@@ -947,6 +958,7 @@ const LICENSE_ACTIVATED_ONCE_STORAGE_KEY = "ax_license_activated_once";
 const LICENSE_STATUS_STORAGE_KEY = "ax_license_status";
 const LICENSE_RUNTIME_CACHE_STORAGE_KEY = "ax_license_runtime_cache_v2";
 const LICENSE_KEY_STORAGE_KEY = "ax_license_key_last";
+const TRIAL_UPGRADE_PROMPT_DATE_KEY = "ax_trial_upgrade_prompt_date";
 const LICENSE_REVALIDATE_INTERVAL_DAYS = 30;
 const LICENSE_REVALIDATE_WARNING_DAYS = 5;
 const LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS = 2 * 60 * 1000;
@@ -974,6 +986,8 @@ const LOGIN_ENDPOINT_PATH = (import.meta.env.VITE_LICENSE_LOGIN_PATH ?? "login.p
 const ME_ENDPOINT_PATH = (import.meta.env.VITE_LICENSE_ME_PATH ?? "me.php").trim();
 const VALIDATE_ENDPOINT_PATH = (import.meta.env.VITE_LICENSE_VALIDATE_PATH ?? "validate.php").trim();
 const STATUS_ENDPOINT_PATH = (import.meta.env.VITE_LICENSE_STATUS_PATH ?? "status.php").trim();
+const REVOKE_DEVICE_PATH = (import.meta.env.VITE_LICENSE_REVOKE_DEVICE_PATH ?? "revoke-device.php").trim();
+const REACTIVATE_DEVICE_PATH = (import.meta.env.VITE_LICENSE_REACTIVATE_DEVICE_PATH ?? "reactivate-device.php").trim();
 const UPGRADE_PRICE_LABEL = (import.meta.env.VITE_UPGRADE_PRICE_LABEL ?? "R$99,90").trim();
 const SUPPORT_WHATSAPP = (import.meta.env.VITE_SUPPORT_WHATSAPP ?? "+5592993361237").trim();
 const SUPPORT_EMAIL = (import.meta.env.VITE_SUPPORT_EMAIL ?? "").trim();
@@ -1383,6 +1397,25 @@ function normalizeLicenseApiPayload(payload: Record<string, unknown>): Record<st
   return data && typeof data === "object" ? (data as Record<string, unknown>) : body;
 }
 
+function isAppKeyError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as Record<string, unknown>).isAppKeyError === true;
+}
+
+function isSessionExpiredError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as Record<string, unknown>).isSessionExpiredError === true;
+}
+
+function isRateLimitError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as Record<string, unknown>).isRateLimitError === true;
+}
+
+function licenseApiErrorText(err: unknown): string | null {
+  if (isAppKeyError(err)) return "Erro de configuração do aplicativo. Por favor, reinstale ou atualize o app.";
+  if (isSessionExpiredError(err)) return "Sessão expirada. Faça login novamente.";
+  if (isRateLimitError(err)) return "Muitas tentativas. Aguarde alguns minutos e tente novamente.";
+  return null;
+}
+
 async function requestLicenseApiViaNative(
   method: "GET" | "POST",
   url: string,
@@ -1402,8 +1435,19 @@ async function requestLicenseApiViaNative(
       }
     );
 
+    if (response.statusCode === 403) {
+      throw Object.assign(new Error("APP_KEY_UNAUTHORIZED"), { isAppKeyError: true });
+    }
+    if (response.statusCode === 401) {
+      throw Object.assign(new Error("SESSION_EXPIRED"), { isSessionExpiredError: true });
+    }
+    if (response.statusCode === 429) {
+      throw Object.assign(new Error("RATE_LIMIT"), { isRateLimitError: true });
+    }
+
     return response;
-  } catch {
+  } catch (err) {
+    if (isAppKeyError(err) || isSessionExpiredError(err) || isRateLimitError(err)) throw err;
     return null;
   }
 }
@@ -1539,12 +1583,12 @@ function generateInstallationId() {
 
 function getPlatformLabel() {
   const ua = navigator.userAgent.toLowerCase();
-  if (ua.includes("android")) return "android";
-  if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios")) return "ios";
-  if (ua.includes("mac")) return "macos";
-  if (ua.includes("win")) return "windows";
-  if (ua.includes("linux")) return "linux";
-  return "unknown";
+  if (ua.includes("android")) return "Android";
+  if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios")) return "iOS";
+  if (ua.includes("mac")) return "macOS";
+  if (ua.includes("win")) return "Windows";
+  if (ua.includes("linux")) return "Linux";
+  return "";
 }
 
 function getDeviceNameLabel() {
@@ -2634,6 +2678,9 @@ function App() {
   const [licenseSignInEmail, setLicenseSignInEmail] = useState("");
   const [licenseSignInPassword, setLicenseSignInPassword] = useState("");
   const [licenseSignInBusy, setLicenseSignInBusy] = useState(false);
+  const [licenseSignInShowPassword, setLicenseSignInShowPassword] = useState(false);
+  const [licenseRegisterShowPassword, setLicenseRegisterShowPassword] = useState(false);
+  const [licenseRegisterShowConfirmPassword, setLicenseRegisterShowConfirmPassword] = useState(false);
   const [, setHasLicenseActivatedOnce] = useState(false);
   const [licenseRevalidationHint, setLicenseRevalidationHint] = useState("");
   const [pendingDiscoveryMixer, setPendingDiscoveryMixer] = useState<DiscoveredMixer | null>(null);
@@ -2739,6 +2786,16 @@ function App() {
 
   const clientRef = useRef<Axios16Client | null>(null);
   const meterTimerRef = useRef<number | null>(null);
+  const reconnectParamsRef = useRef<{
+    ip: string;
+    source: "manual" | "discovered";
+    profile: AxiosProtocolProfile;
+    channelCount: number;
+  } | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const { showToast, ToastRenderer } = useToast();
+  const { snapshot: clipboardSnapshot, saveSnapshot: saveClipboardSnapshot } = useMixerClipboard();
   const activeDcaIds = getDcaIdsForChannelCount(channelCount);
   const [dcaColorIds, setDcaColorIds] = useState<number[]>(() =>
     initialDcaIds.map((id) => DCA_DEFAULT_COLOR_IDS[id])
@@ -2911,6 +2968,8 @@ function App() {
   const [isChannelsDragging, setIsChannelsDragging] = useState(false);
   const {
     mixers: discoveredMixers,
+    knownMixers: knownDiscoveryMixers,
+    hasSearched: mixerDiscoveryHasSearched,
     isLoading: isDiscoveringMixers,
     error: discoveryError,
     refresh: refreshMixerDiscovery,
@@ -2929,6 +2988,28 @@ function App() {
       window.clearTimeout(timer);
     };
   }, []);
+
+  // Reconecta automaticamente quando o app volta ao foreground (iOS background → foreground)
+  useEffect(() => {
+    if (appStage !== "mixer") return;
+
+    function handleReturnToForeground() {
+      if (document.visibilityState !== "visible") return;
+      if (!isConnected && reconnectParamsRef.current && !reconnectTimerRef.current) {
+        setStatus("Reconectando...");
+        scheduleAutoReconnect(500);
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleReturnToForeground);
+    window.addEventListener("focus", handleReturnToForeground);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleReturnToForeground);
+      window.removeEventListener("focus", handleReturnToForeground);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appStage, isConnected]);
 
   useEffect(() => {
     const storedInstallationId = localStorage.getItem(INSTALLATION_ID_STORAGE_KEY);
@@ -8728,6 +8809,13 @@ function App() {
         setIp(normalizedIp);
       }
 
+      if (import.meta.env.DEV) {
+        console.debug(
+          `[AX] connectToMixer: ip=${normalizedIp} source=${source}` +
+          ` forcedChannelCount=${forcedChannelCount ?? "auto"} forcedProfile=${forcedProfile ?? "auto"}`
+        );
+      }
+
       const resolvedTarget = resolveConnectionTargetProfile(
         normalizedIp,
         discoveredMixers,
@@ -8753,13 +8841,22 @@ function App() {
       client.setOnDisconnect(() => {
         // Keep UI/client state consistent when the socket drops unexpectedly.
         if (clientRef.current !== client) return;
+        if (import.meta.env.DEV) {
+          console.debug(`[AX] unexpected disconnect from: ${normalizedIp}`);
+        }
         stopMeterPolling();
         clearScheduledSendWrites();
         clearLocalParamWriteTracking();
         rawParamStoreRef.current.clear();
         clientRef.current = null;
         setIsConnected(false);
-        setStatus("Conexao com a mesa foi encerrada.");
+
+        if (reconnectParamsRef.current) {
+          setStatus("Reconectando...");
+          scheduleAutoReconnect();
+        } else {
+          setStatus("Conexao com a mesa foi encerrada.");
+        }
       });
 
       clientRef.current = client;
@@ -8773,6 +8870,13 @@ function App() {
         applyMixerChannelProfile(targetChannelCount);
       }
 
+      if (import.meta.env.DEV) {
+        console.debug(
+          `[AX] profile applied: profile=${selectedProfile} channelCount=${targetChannelCount}` +
+          ` cacheScope=${mixerCacheIdentity}`
+        );
+      }
+
       setActiveMixerCacheIdentity(mixerCacheIdentity);
       hydrateDcaCacheForMixer(mixerCacheIdentity, targetChannelCount);
 
@@ -8782,11 +8886,16 @@ function App() {
       });
 
       if (licenseFormalState === "TRIAL_ACTIVE") {
-        setPendingDiscoveryMixer(null);
-        setLicenseValidationMessage({ kind: "idle", text: "" });
-        setLicenseModalMandatory(true);
-        setLicenseModalMode("upgrade");
-        setLicenseModalOpen(true);
+        const todayDate = new Date().toISOString().slice(0, 10);
+        const lastPromptDate = localStorage.getItem(TRIAL_UPGRADE_PROMPT_DATE_KEY);
+        if (lastPromptDate !== todayDate) {
+          localStorage.setItem(TRIAL_UPGRADE_PROMPT_DATE_KEY, todayDate);
+          setPendingDiscoveryMixer(null);
+          setLicenseValidationMessage({ kind: "idle", text: "" });
+          setLicenseModalMandatory(true);
+          setLicenseModalMode("upgrade");
+          setLicenseModalOpen(true);
+        }
       }
 
       mixerChannelsScrollLeftRef.current = 0;
@@ -8795,11 +8904,35 @@ function App() {
       }
 
       setIsConnected(true);
+      reconnectParamsRef.current = {
+        ip: normalizedIp,
+        source,
+        profile: selectedProfile,
+        channelCount: targetChannelCount,
+      };
+      reconnectAttemptsRef.current = 0;
       if (licenseFormalState === "TRIAL_ACTIVE") {
         setLicenseModalMandatory(false);
       }
 
       rememberConnectedMixerIp(normalizedIp);
+
+      // Salvar entrada completa no cache de mesas conhecidas
+      const discoveredMixerRef = discoveredMixers.find((m) => m.ip.trim() === normalizedIp);
+      const knownMixerConfidence: ProfileConfidence = source === "manual" ? "manual" : "confirmed";
+      saveKnownMixer({
+        ip: normalizedIp,
+        port: 8088,
+        mac: discoveredMixerRef?.macAddress,
+        channelCount: normalizeSupportedChannelCount(targetChannelCount) as 16 | 24 | 32,
+        name: discoveredMixerRef?.name,
+        lastSeenAt: Date.now(),
+        lastConnectedAt: Date.now(),
+        source: source === "manual" ? "manual" : "discovery",
+        confidence: knownMixerConfidence,
+        cacheScopeKey: mixerCacheIdentity,
+      });
+
       startMeterPolling(targetChannelCount);
       setConnectingSource(null);
 
@@ -9360,34 +9493,117 @@ function App() {
     }
   }
 
-  async function handleRevokeLicenseDevice(targetDeviceId: string) {
-    if (!LICENSE_API_BASE_URL || !licenseKeyInput.trim() || !installationId || !targetDeviceId) return;
+  function resolveDeviceEndpointUrl(path: string): string {
+    if (/^https?:\/\//i.test(path)) return path;
+    if (path.startsWith("/")) {
+      try {
+        return `${new URL(LICENSE_API_BASE_URL).origin}${path}`;
+      } catch {
+        return path;
+      }
+    }
+    return buildLicenseApiUrl(path);
+  }
+
+  async function callDeviceEndpoint(
+    phpFile: string,
+    targetDeviceId: string,
+    successCodes: string[],
+    successMsg: string
+  ) {
+    if (!licenseKeyInput.trim() || !installationId || !targetDeviceId) return;
 
     setLicenseDeviceActionBusy(targetDeviceId);
     try {
-      const endpoint = buildLicenseApiUrl("revoke-device.php");
+      const endpoint = resolveDeviceEndpointUrl(phpFile);
       if (!endpoint) {
         setLicenseValidationMessage({ kind: "error", text: "URL da API de licença não configurada." });
         return;
       }
 
-      await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          license_key: licenseKeyInput.trim(),
-          series: installationId,
-          device_id: targetDeviceId,
-        }),
+      const response = await requestLicenseApiViaNative("POST", endpoint, {
+        license_key: licenseKeyInput.trim(),
+        series: installationId,
+        installation_uuid: installationId,
+        device_id: targetDeviceId,
+        device_name: getDeviceNameLabel(),
+        device_platform: getPlatformLabel(),
       });
 
+      if (!response) {
+        setLicenseValidationMessage({ kind: "error", text: "Falha de conexão com a API. Tente novamente." });
+        return;
+      }
+
+      // A API retorna HTTP 200 com code no body — usar o code, não o HTTP status
+      const body = response.body as Record<string, unknown>;
+      const code = typeof body.code === "string" ? body.code.toUpperCase() : "";
+      // Rust coloca o body bruto em "message" quando não é JSON válido — ignorar HTML
+      const rawMsg = typeof body.message === "string" ? body.message : "";
+      const serverMsg = rawMsg.trimStart().startsWith("<") ? "" : rawMsg;
+
+      if (code === "DEVICE_NOT_FOUND") {
+        setLicenseValidationMessage({
+          kind: "error",
+          text: "Dispositivo não localizado nesta licença. Verifique se o ID está correto.",
+        });
+        return;
+      }
+
+      if (code === "ACTIVATION_LIMIT_REACHED") {
+        setLicenseValidationMessage({
+          kind: "error",
+          text: "Limite de dispositivos atingido. Revogue outro dispositivo antes de reativar este.",
+        });
+        return;
+      }
+
+      if (code === "LICENSE_NOT_FOUND") {
+        setLicenseValidationMessage({ kind: "error", text: "Licença não encontrada. Verifique a chave informada." });
+        return;
+      }
+
+      if (response.statusCode === 404) {
+        setLicenseValidationMessage({ kind: "error", text: "Endpoint não encontrado. Verifique a configuração da API." });
+        return;
+      }
+
+      if (response.statusCode >= 400 && !successCodes.includes(code)) {
+        setLicenseValidationMessage({ kind: "error", text: serverMsg || "Operação recusada pela API. Tente novamente." });
+        return;
+      }
+
+      if (!successCodes.includes(code) && code !== "") {
+        setLicenseValidationMessage({ kind: "error", text: serverMsg || "Resposta inesperada da API. Tente novamente." });
+        return;
+      }
+
+      // Reconsultar status com include_devices=1 para atualizar a lista
       await handleRefreshLicenseStatus();
-      setLicenseValidationMessage({ kind: "success", text: "Dispositivo revogado com sucesso." });
-    } catch {
-      setLicenseValidationMessage({ kind: "error", text: "Falha ao revogar dispositivo." });
+      setLicenseValidationMessage({ kind: "success", text: successMsg });
+    } catch (err) {
+      setLicenseValidationMessage({ kind: "error", text: licenseApiErrorText(err) ?? "Erro inesperado. Tente novamente." });
     } finally {
       setLicenseDeviceActionBusy(null);
     }
+  }
+
+  function handleRevokeLicenseDevice(targetDeviceId: string) {
+    void callDeviceEndpoint(
+      REVOKE_DEVICE_PATH,
+      targetDeviceId,
+      ["DEVICE_REVOKED"],
+      "Dispositivo revogado com sucesso."
+    );
+  }
+
+  function handleReactivateLicenseDevice(targetDeviceId: string) {
+    void callDeviceEndpoint(
+      REACTIVATE_DEVICE_PATH,
+      targetDeviceId,
+      ["DEVICE_REACTIVATED", "DEVICE_ALREADY_ACTIVE"],
+      "Dispositivo reativado com sucesso."
+    );
   }
 
   function buildUpgradeDraft() {
@@ -9481,10 +9697,30 @@ function App() {
       return;
     }
 
-    const normalizedChannels =
-      resolveMixerChannelCount(mixer) ?? normalizeSupportedChannelCount(mixer.channels);
+    const resolvedChannelCount = resolveMixerChannelCount(mixer);
+
+    // Bloquear connect silencioso com profile errado: se o modelo não foi identificado
+    // via discovery/probe e não é conexão manual explícita, exigir seleção do usuário.
+    if (resolvedChannelCount === undefined && mixer.source !== "manual") {
+      const message =
+        "Modelo da mesa não identificado. Selecione o modelo na lista ou use 'Conexão Manual'.";
+      setConnectionError(message);
+      setStatus(message);
+      return;
+    }
+
+    const normalizedChannels = resolvedChannelCount ?? normalizeSupportedChannelCount(mixer.channels);
     const protocolProfile = channelCountToProtocolProfile(normalizedChannels);
     const connectSource = mixer.source === "manual" ? "manual" : "discovered";
+    const profileConfidence: ProfileConfidence =
+      mixer.source === "manual" ? "manual" : "confirmed";
+
+    if (import.meta.env.DEV) {
+      console.debug(
+        `[AX] connectToSelectedMixer: ip=${mixer.ip} channels=${normalizedChannels}` +
+        ` profile=${protocolProfile} confidence=${profileConfidence} source=${mixer.source}`
+      );
+    }
 
     applyMixerChannelProfile(normalizedChannels);
     setConnectionError(null);
@@ -9812,17 +10048,54 @@ function App() {
       setHasLicenseActivatedOnce(true);
       setLicenseSignInPassword("");
       handleLicenseOnboardingSuccess("Dados de licença recuperados com sucesso.");
-    } catch {
-      setLicenseValidationMessage({
-        kind: "error",
-        text: "Não foi possível recuperar os dados de licença agora. Tente novamente.",
-      });
+    } catch (err) {
+      const text = licenseApiErrorText(err) ?? "Não foi possível autenticar. Verifique e-mail, senha e tente novamente.";
+      setLicenseValidationMessage({ kind: "error", text });
     } finally {
       setLicenseSignInBusy(false);
     }
   }
 
+  const MAX_AUTO_RECONNECT_ATTEMPTS = 6;
+
+  function scheduleAutoReconnect(delayMs = 2000) {
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    reconnectTimerRef.current = setTimeout(() => {
+      void attemptAutoReconnect();
+    }, delayMs);
+  }
+
+  async function attemptAutoReconnect() {
+    const params = reconnectParamsRef.current;
+    if (!params) return;
+
+    reconnectAttemptsRef.current += 1;
+
+    if (reconnectAttemptsRef.current > MAX_AUTO_RECONNECT_ATTEMPTS) {
+      reconnectParamsRef.current = null;
+      reconnectAttemptsRef.current = 0;
+      setStatus("Nao foi possivel reconectar. Verifique a conexao de rede.");
+      setAppStage("device-selection");
+      return;
+    }
+
+    const connected = await connectToMixer(params.ip, params.source, params.profile, params.channelCount);
+
+    if (!connected) {
+      // Backoff: 2s, 3s, 4s, 5s, 5s, 5s
+      const delay = Math.min(2000 + (reconnectAttemptsRef.current - 1) * 1000, 5000);
+      scheduleAutoReconnect(delay);
+    }
+  }
+
   function handleDisconnect() {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    reconnectParamsRef.current = null;
+    reconnectAttemptsRef.current = 0;
+
     stopMeterPolling();
     clearScheduledSendWrites();
     clearLocalParamWriteTracking();
@@ -9967,6 +10240,9 @@ function App() {
             appVersion: APP_VERSION,
           },
         });
+        if (response.statusCode === 403) {
+          throw Object.assign(new Error("APP_KEY_UNAUTHORIZED"), { isAppKeyError: true });
+        }
         const payload = normalizeLicenseApiPayload(response.body ?? {});
         snapshot = parseLicenseSnapshot(payload);
       }
@@ -9999,8 +10275,9 @@ function App() {
         kind: "error",
         text: snapshot.message || "Licença bloqueada. Revalide para continuar.",
       });
-    } catch {
-      setLicenseValidationMessage({ kind: "error", text: "Falha ao consultar o endpoint de licença." });
+    } catch (err) {
+      const text = licenseApiErrorText(err) ?? "Não foi possível verificar a licença. Tente novamente.";
+      setLicenseValidationMessage({ kind: "error", text });
     } finally {
       setLicenseValidationBusy(false);
     }
@@ -10096,6 +10373,9 @@ function App() {
           appVersion: APP_VERSION,
         },
       });
+      if (response.statusCode === 403) {
+        throw Object.assign(new Error("APP_KEY_UNAUTHORIZED"), { isAppKeyError: true });
+      }
 
       const payload = normalizeLicenseApiPayload(response.body ?? {});
       const snapshot = parseLicenseSnapshot(payload);
@@ -10124,8 +10404,11 @@ function App() {
       });
       enforceLicenseBlock(snapshot.message || "Licença suspensa ou inválida. Revalide para continuar.");
       return false;
-    } catch {
-      if (strict) {
+    } catch (err) {
+      const knownErrText = licenseApiErrorText(err);
+      if (knownErrText) {
+        setLicenseValidationMessage({ kind: "error", text: knownErrText });
+      } else if (strict) {
         localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
         setIsLicenseValidated(false);
         setLicenseRevalidationHint("");
@@ -12096,6 +12379,54 @@ function App() {
     );
   }
 
+  function handleCopyChannel(channelNumber: number) {
+    const store = rawParamStoreRef.current;
+    const model = resolveActiveRawProfileModel();
+    if (!store || model === "unknown") return;
+    const snapshot = buildChannelSnapshot(channelNumber, store, model, channelCount);
+    saveClipboardSnapshot(snapshot);
+    showToast(`CH ${channelNumber} copiado`);
+  }
+
+  function handlePasteChannel(channelNumber: number) {
+    const store = rawParamStoreRef.current;
+    const client = clientRef.current;
+    const model = resolveActiveRawProfileModel();
+    if (model === "unknown") return;
+    if (!store || !client || !clipboardSnapshot) { showToast("Nada copiado ainda"); return; }
+    if (clipboardSnapshot.type !== "channel") { showToast("Clipboard não contém configuração de canal"); return; }
+    if (!isClipboardCompatible(clipboardSnapshot, model, channelCount)) {
+      showToast("Clipboard incompatível com o modelo atual");
+      return;
+    }
+    applyChannelPaste(clipboardSnapshot, channelNumber, client, store, model);
+    showToast(`${clipboardSnapshot.sourceLabel} colado em CH ${channelNumber}`);
+  }
+
+  function handleCopyAux(auxNumber: number) {
+    const store = rawParamStoreRef.current;
+    const model = resolveActiveRawProfileModel();
+    if (!store || model === "unknown") return;
+    const snapshot = buildAuxSnapshot(auxNumber, store, model, channelCount);
+    saveClipboardSnapshot(snapshot);
+    showToast(`AUX ${auxNumber} copiado`);
+  }
+
+  function handlePasteAux(auxNumber: number) {
+    const store = rawParamStoreRef.current;
+    const client = clientRef.current;
+    const model = resolveActiveRawProfileModel();
+    if (model === "unknown") return;
+    if (!store || !client || !clipboardSnapshot) { showToast("Nada copiado ainda"); return; }
+    if (clipboardSnapshot.type !== "aux") { showToast("Clipboard não contém configuração de auxiliar"); return; }
+    if (!isClipboardCompatible(clipboardSnapshot, model, channelCount)) {
+      showToast("Clipboard incompatível com o modelo atual");
+      return;
+    }
+    applyAuxPaste(clipboardSnapshot, auxNumber, client, store, model);
+    showToast(`${clipboardSnapshot.sourceLabel} colado em AUX ${auxNumber}`);
+  }
+
   function renderChannelDetail() {
     if (!detailView || detailView.type !== "channel") return null;
 
@@ -12287,50 +12618,102 @@ function App() {
                 alignItems: "center",
                 justifyContent: "flex-end",
                 gap: 6,
-                width: 113,
                 flexShrink: 0,
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <button
-                  type="button"
-                  disabled={channelNumber === 1}
-                  onClick={() => goToDetailChannel(channelNumber - 1, { preserveActiveModule: true })}
-                  style={{
-                    width: 28,
-                    height: 28,
-                    borderRadius: 6,
-                    border: "1px solid #334155",
-                    background: "#0b1220",
-                    color: "#fff",
-                    fontWeight: 900,
-                    fontSize: 14,
-                    cursor: channelNumber === 1 ? "not-allowed" : "pointer",
-                    opacity: channelNumber === 1 ? 0.4 : 1,
-                  }}
-                >
-                  ‹
-                </button>
-                <button
-                  type="button"
-                  disabled={channelNumber >= channelCount}
-                  onClick={() => goToDetailChannel(channelNumber + 1, { preserveActiveModule: true })}
-                  style={{
-                    width: 28,
-                    height: 28,
-                    borderRadius: 6,
-                    border: "1px solid #334155",
-                    background: "#0b1220",
-                    color: "#fff",
-                    fontWeight: 900,
-                    fontSize: 14,
-                    cursor: channelNumber >= channelCount ? "not-allowed" : "pointer",
-                    opacity: channelNumber >= channelCount ? 0.4 : 1,
-                  }}
-                >
-                  ›
-                </button>
-              </div>
+              <button
+                type="button"
+                disabled={!isConnected}
+                onClick={() => handleCopyChannel(channelNumber)}
+                aria-label="Copiar canal"
+                title="Copiar canal"
+                style={{
+                  width: 24,
+                  height: 24,
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--text-secondary)",
+                  display: "grid",
+                  placeItems: "center",
+                  padding: 0,
+                  cursor: !isConnected ? "not-allowed" : "pointer",
+                  opacity: !isConnected ? 0.5 : 1,
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+                  <rect x="5" y="1" width="9" height="9" rx="1.25" stroke="currentColor" strokeWidth="1.25"/>
+                  <path d="M4 4.5H2.5A1.5 1.5 0 0 0 1 6v6.5A1.5 1.5 0 0 0 2.5 14h6A1.5 1.5 0 0 0 10 12.5V11" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round"/>
+                </svg>
+              </button>
+              <button
+                type="button"
+                disabled={!isConnected || !clipboardSnapshot || clipboardSnapshot.type !== "channel" || !isClipboardCompatible(clipboardSnapshot, resolveActiveRawProfileModel(), channelCount)}
+                onClick={() => handlePasteChannel(channelNumber)}
+                aria-label="Colar no canal"
+                title={
+                  !clipboardSnapshot ? "Nada copiado ainda"
+                  : clipboardSnapshot.type !== "channel" ? "Clipboard não contém canal"
+                  : !isClipboardCompatible(clipboardSnapshot, resolveActiveRawProfileModel(), channelCount) ? "Clipboard incompatível"
+                  : `Colar ${clipboardSnapshot.sourceLabel}`
+                }
+                style={{
+                  width: 24,
+                  height: 24,
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--text-secondary)",
+                  display: "grid",
+                  placeItems: "center",
+                  padding: 0,
+                  cursor: (!isConnected || !clipboardSnapshot || clipboardSnapshot.type !== "channel") ? "not-allowed" : "pointer",
+                  opacity: (!isConnected || !clipboardSnapshot || clipboardSnapshot.type !== "channel" || !isClipboardCompatible(clipboardSnapshot, resolveActiveRawProfileModel(), channelCount)) ? 0.3 : 1,
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+                  <rect x="2.5" y="3.5" width="10" height="10.5" rx="1.25" stroke="currentColor" strokeWidth="1.25"/>
+                  <path d="M5.5 3.5V2.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v1" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round"/>
+                  <path d="M5 9.5l1.5 1.5 3-3" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+              <div style={{ width: 1, height: 20, background: "#334155", margin: "0 2px" }} />
+              <button
+                type="button"
+                disabled={channelNumber === 1}
+                onClick={() => goToDetailChannel(channelNumber - 1, { preserveActiveModule: true })}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  border: "1px solid #334155",
+                  background: "#0b1220",
+                  color: "#fff",
+                  fontWeight: 900,
+                  fontSize: 14,
+                  cursor: channelNumber === 1 ? "not-allowed" : "pointer",
+                  opacity: channelNumber === 1 ? 0.4 : 1,
+                }}
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                disabled={channelNumber >= channelCount}
+                onClick={() => goToDetailChannel(channelNumber + 1, { preserveActiveModule: true })}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  border: "1px solid #334155",
+                  background: "#0b1220",
+                  color: "#fff",
+                  fontWeight: 900,
+                  fontSize: 14,
+                  cursor: channelNumber >= channelCount ? "not-allowed" : "pointer",
+                  opacity: channelNumber >= channelCount ? 0.4 : 1,
+                }}
+              >
+                ›
+              </button>
             </div>
           </div>
 
@@ -12604,10 +12987,64 @@ function App() {
                 alignItems: "center",
                 justifyContent: "flex-end",
                 gap: 6,
-                width: 113,
                 flexShrink: 0,
               }}
             >
+              <button
+                type="button"
+                disabled={!isConnected}
+                onClick={() => handleCopyAux(auxNumber)}
+                aria-label="Copiar auxiliar"
+                title="Copiar auxiliar"
+                style={{
+                  width: 24,
+                  height: 24,
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--text-secondary)",
+                  display: "grid",
+                  placeItems: "center",
+                  padding: 0,
+                  cursor: !isConnected ? "not-allowed" : "pointer",
+                  opacity: !isConnected ? 0.5 : 1,
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+                  <rect x="5" y="1" width="9" height="9" rx="1.25" stroke="currentColor" strokeWidth="1.25"/>
+                  <path d="M4 4.5H2.5A1.5 1.5 0 0 0 1 6v6.5A1.5 1.5 0 0 0 2.5 14h6A1.5 1.5 0 0 0 10 12.5V11" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round"/>
+                </svg>
+              </button>
+              <button
+                type="button"
+                disabled={!isConnected || !clipboardSnapshot || clipboardSnapshot.type !== "aux" || !isClipboardCompatible(clipboardSnapshot, resolveActiveRawProfileModel(), channelCount)}
+                onClick={() => handlePasteAux(auxNumber)}
+                aria-label="Colar no auxiliar"
+                title={
+                  !clipboardSnapshot ? "Nada copiado ainda"
+                  : clipboardSnapshot.type !== "aux" ? "Clipboard não contém auxiliar"
+                  : !isClipboardCompatible(clipboardSnapshot, resolveActiveRawProfileModel(), channelCount) ? "Clipboard incompatível"
+                  : `Colar ${clipboardSnapshot.sourceLabel}`
+                }
+                style={{
+                  width: 24,
+                  height: 24,
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--text-secondary)",
+                  display: "grid",
+                  placeItems: "center",
+                  padding: 0,
+                  cursor: (!isConnected || !clipboardSnapshot || clipboardSnapshot.type !== "aux") ? "not-allowed" : "pointer",
+                  opacity: (!isConnected || !clipboardSnapshot || clipboardSnapshot.type !== "aux" || !isClipboardCompatible(clipboardSnapshot, resolveActiveRawProfileModel(), channelCount)) ? 0.3 : 1,
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+                  <rect x="2.5" y="3.5" width="10" height="10.5" rx="1.25" stroke="currentColor" strokeWidth="1.25"/>
+                  <path d="M5.5 3.5V2.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v1" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round"/>
+                  <path d="M5 9.5l1.5 1.5 3-3" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+              <div style={{ width: 1, height: 20, background: "#334155", margin: "0 2px" }} />
               <button
                 type="button"
                 disabled={auxNumber === 1}
@@ -14325,24 +14762,31 @@ function App() {
   const trialIsExpired = licenseFormalState === "TRIAL_EXPIRED";
   const trialDaysRemainingLabel = trialDaysRemaining !== null ? `${Math.max(0, trialDaysRemaining)} dia(s)` : "trial ativo";
   const isTrialLicense = trialIsActive || trialIsExpired;
-  const associatedLicenseDevices = licenseDevices.filter((device) => device.active !== false);
   const normalizedInstallationId = installationId.trim();
-  const hasCurrentDeviceInList = associatedLicenseDevices.some((device) => device.deviceId === normalizedInstallationId);
+  const hasCurrentDeviceInList = licenseDevices.some((device) => device.deviceId === normalizedInstallationId);
   const shouldInjectCurrentDevice =
     Boolean(normalizedInstallationId) &&
     !isLicenseStateBlocked(licenseFormalState) &&
     !hasCurrentDeviceInList;
-  const visibleAssociatedDevices = shouldInjectCurrentDevice
-    ? [
-        {
-          deviceId: normalizedInstallationId,
-          deviceName: getDeviceNameLabel(),
-          devicePlatform: getPlatformLabel(),
-          active: true,
-        },
-        ...associatedLicenseDevices,
-      ]
-    : associatedLicenseDevices;
+  const visibleAssociatedDevices = (() => {
+    const base = shouldInjectCurrentDevice
+      ? [
+          {
+            deviceId: normalizedInstallationId,
+            deviceName: getDeviceNameLabel(),
+            devicePlatform: getPlatformLabel(),
+            active: true,
+          },
+          ...licenseDevices,
+        ]
+      : licenseDevices;
+
+    return [...base].sort((a, b) => {
+      if (a.deviceId === normalizedInstallationId) return -1;
+      if (b.deviceId === normalizedInstallationId) return 1;
+      return 0;
+    });
+  })();
   const hasUnlimitedActivations = licenseUnlimitedActivations || licenseLinkedUserType === "admin";
   const defaultDeviceLimit = isTrialLicense ? 1 : 2;
   const apiDeviceLimit =
@@ -14353,38 +14797,44 @@ function App() {
         )
       : null;
   const associatedDeviceLimit = hasUnlimitedActivations ? null : (apiDeviceLimit ?? defaultDeviceLimit);
+  const activeDeviceCount = visibleAssociatedDevices.filter((d) => d.active).length;
+  const canReactivate = hasUnlimitedActivations || associatedDeviceLimit === null || activeDeviceCount < associatedDeviceLimit;
+  const deviceCount = visibleAssociatedDevices.length;
+  const deviceCountLabel = deviceCount === 1 ? "1 dispositivo" : `${deviceCount} dispositivos`;
   const settingsUsageLabel = hasUnlimitedActivations
-    ? `${visibleAssociatedDevices.length} dispositivo(s) associado(s) • Limite ilimitado`
-    : `${visibleAssociatedDevices.length} de ${associatedDeviceLimit} dispositivo(s) associado(s)`;
-  const associatedDeviceCapacityLabel = hasUnlimitedActivations ? "Ilimitado" : String(associatedDeviceLimit);
+    ? `${deviceCountLabel} ${deviceCount === 1 ? "ativo" : "ativos"}`
+    : `${deviceCountLabel} de ${associatedDeviceLimit}`;
+  const associatedDeviceCapacityLabel = hasUnlimitedActivations ? "Sem limite" : String(associatedDeviceLimit);
   const isFullLicenseView = !isTrialLicense && licenseFormalState !== "LICENSE_NOT_FOUND";
   const settingsVariantClass = isFullLicenseView ? "settings-modal--settings-full" : "settings-modal--settings-trial";
   const settingsStatusChipLabel = trialIsActive
-    ? "Trial ativo"
+    ? "Teste ativo"
     : trialIsExpired
-      ? "Trial expirado"
+      ? "Teste encerrado"
       : licenseFormalState === "LICENSE_NOT_FOUND"
         ? "Sem licença"
         : "Licença adquirida";
   const settingsStatusChipDetail = trialIsActive
     ? `${trialDaysRemainingLabel} restantes`
     : isTrialLicense
-      ? "Faça upgrade para liberar 2 dispositivos"
+      ? "Adquira a licença para liberar mais dispositivos"
       : hasUnlimitedActivations
-        ? "Ativações ilimitadas para usuário admin"
+        ? "Licença ativa"
         : licenseRemainingActivations !== null
-          ? `${licenseRemainingActivations} ativação(ões) restante(s)`
-          : "Limite de ativações definido pela licença";
+          ? licenseRemainingActivations === 1
+            ? "1 ativação disponível"
+            : `${licenseRemainingActivations} ativações disponíveis`
+          : "Licença ativa";
   const upgradeBadgeLabel = trialIsActive
     ? trialDaysRemaining !== null && trialDaysRemaining >= 0
-      ? `TESTE ATIVO • ${trialDaysRemaining} DIAS RESTANTES`
-      : "TESTE ATIVO"
-    : "TESTE ENCERRADO";
+      ? `Teste ativo · ${trialDaysRemaining} dias`
+      : "Teste ativo"
+    : "Teste encerrado";
   const upgradeHeadline = trialIsActive
     ? "Continue usando o AX Control"
     : "Ative seu acesso ao AX Control";
   const upgradeDescription = trialIsActive
-    ? "Garanta o acesso completo e continue controlando sua Mesa Axios sem interrupções."
+    ? "Adquira sua licença e continue controlando sua Mesa Axios sem interrupções."
     : "Finalize a compra pelo WhatsApp e volte a usar o AX Control sem interrupções.";
 
   const licenseModalNode = licenseModalOpen ? (
@@ -14400,29 +14850,41 @@ function App() {
         className={`settings-modal ${licenseModalMode === "onboarding" ? "settings-modal--onboarding" : ""} ${licenseModalMode === "upgrade" ? "settings-modal--upgrade" : ""} ${licenseModalMode === "settings" ? `settings-modal--settings ${settingsVariantClass}` : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-label="License Validation"
+        aria-label="Licença"
         onClick={(event) => event.stopPropagation()}
       >
+        {!licenseModalMandatory && (
+          <button
+            type="button"
+            className="settings-modal__close"
+            onClick={closeLicenseModal}
+            aria-label="Fechar"
+          >
+            <X size={16} />
+          </button>
+        )}
         <div className="settings-modal__header">
           <div>
-            {(licenseModalMode === "upgrade" || (licenseModalMode === "onboarding" && licenseOnboardingView === "register")) && (
-              <span className="settings-modal__badge">{licenseModalMode === "upgrade" ? "upgrade" : "7 dias grátis"}</span>
+            {licenseModalMode === "onboarding" && licenseOnboardingView === "register" && (
+              <span className="settings-modal__badge">7 dias grátis</span>
             )}
             {licenseModalMode !== "upgrade" && (
               <>
                 <h2>
                   {licenseModalMode === "onboarding"
                     ? licenseOnboardingView === "register"
-                      ? "Comece seu teste grátis"
+                      ? "Experimente grátis por 7 dias"
                       : "Entre na sua conta"
                     : "Licença e acesso"}
                 </h2>
                 <p>
                   {licenseModalMode === "onboarding"
                     ? licenseOnboardingView === "register"
-                      ? "Use o AX Control por 7 dias e controle sua Mesa Axios com uma experiência mais moderna, visual e precisa."
-                      : "Acesse sua conta para recuperar sua licença e continuar usando o AX Control."
-                    : "Veja o status do seu teste grátis e gerencie seu acesso."}
+                      ? "Controle total da sua Mesa Axios. Sem cartão, sem compromisso."
+                      : "Entre com sua conta e continue de onde parou."
+                    : isTrialLicense
+                      ? "Veja o status do seu teste grátis e gerencie seu acesso."
+                      : "Gerencie sua licença e os dispositivos associados."}
                 </p>
               </>
             )}
@@ -14430,10 +14892,10 @@ function App() {
               <p className="settings-modal__hint">Sem internet no momento. A ativação exige conexão.</p>
             )}
             {licenseModalMode === "upgrade" && trialIsActive && trialDaysRemaining !== null && (
-              <p>Seu trial está ativo com {trialDaysRemaining} dia(s) restante(s).</p>
+              <p>Seu teste ainda tem {trialDaysRemaining === 1 ? "1 dia" : `${trialDaysRemaining} dias`}. Aproveite para garantir o acesso completo.</p>
             )}
             {licenseModalMode === "upgrade" && trialIsExpired && (
-              <p>Seu trial expirou. Para conectar à mesa, finalize a compra da licença.</p>
+              <p>Seu período de teste encerrou. Adquira a licença para voltar a usar o AX Control.</p>
             )}
             {licenseModalMode === "settings" && !isOnline && <p>Sem internet no momento. Alguns recursos exigem conexão.</p>}
           </div>
@@ -14470,7 +14932,7 @@ function App() {
                 <div className="settings-modal__upgrade-price">{UPGRADE_PRICE_LABEL}</div>
                 <div className="settings-modal__upgrade-copy">
                   <strong>Acesso completo ao AX Control</strong>
-                  <span>Licença definitiva com todos os recursos liberados.</span>
+                  <span>Licença permanente para o AX Control.</span>
                 </div>
               </div>
               <div className="settings-modal__upgrade-benefits">
@@ -14500,7 +14962,7 @@ function App() {
                 void handleContactForUpgrade();
               }}
             >
-              <span className="settings-modal__upgrade-button-label">COMPRAR PELO WHATSAPP</span>
+              <span className="settings-modal__upgrade-button-label">Comprar pelo WhatsApp</span>
               <span className="settings-modal__upgrade-button-hint">Atendimento direto para pagamento e ativação</span>
             </button>
 
@@ -14517,7 +14979,7 @@ function App() {
                   closeLicenseModal();
                 }}
               >
-                CONTINUAR COM TESTE GRÁTIS
+                Continuar com o teste grátis
               </button>
             )}
 
@@ -14545,12 +15007,15 @@ function App() {
                 <div className="settings-modal__settings-card-header">
                   <div>
                     <h3>Este dispositivo</h3>
-                    <p>O identificador deste aparelho é fixo. Você pode inserir ou trocar a licença a qualquer momento.</p>
+                    <p>Seu ID de dispositivo é único e permanente. Use-o para ativar ou transferir sua licença.</p>
                   </div>
                 </div>
 
                 <div className="settings-modal__row">
-                  <label htmlFor="settings-installation-id">UUID do dispositivo</label>
+                  <label htmlFor="settings-installation-id">
+                    <Hash size={10} style={{ display: "inline", verticalAlign: "middle", marginRight: 4 }} aria-hidden="true" />
+                    ID do dispositivo
+                  </label>
                   <div className="settings-modal__inline">
                     <input
                       id="settings-installation-id"
@@ -14569,13 +15034,13 @@ function App() {
                 </div>
 
                 <div className="settings-modal__row">
-                  <label htmlFor="settings-license-key">Licença</label>
+                  <label htmlFor="settings-license-key">Chave de licença</label>
                   <input
                     id="settings-license-key"
                     className="settings-modal__input"
                     value={licenseKeyInput}
                     onChange={(event) => setLicenseKeyInput(event.target.value)}
-                    placeholder="Digite ou substitua sua licença"
+                    placeholder="Cole ou digite sua chave de licença"
                     disabled={licenseValidationBusy}
                   />
                 </div>
@@ -14591,7 +15056,7 @@ function App() {
                   >
                     {licenseValidationBusy
                       ? "Validando..."
-                      : "Trocar licença"}
+                      : isFullLicenseView ? "Trocar licença" : "Aplicar licença"}
                   </button>
                   {isTrialLicense && (
                     <button
@@ -14612,22 +15077,24 @@ function App() {
                   <div>
                     <h3>Dispositivos associados</h3>
                     <p>{hasUnlimitedActivations
-                      ? "Conta com ativações ilimitadas (admin)."
+                      ? "Sem limite de dispositivos para esta conta."
                       : isTrialLicense
-                        ? "Limite de 1 dispositivo no teste grátis."
+                        ? "O teste grátis permite apenas 1 dispositivo."
                         : associatedDeviceLimit !== null
-                          ? `Limite atual de ${associatedDeviceLimit} dispositivo(s) para esta licença.`
-                          : "Limite definido pelo servidor de licenças."}</p>
+                          ? `Esta licença permite até ${associatedDeviceLimit} dispositivos.`
+                          : "Número de dispositivos definido pela sua licença."}</p>
                   </div>
                   <button
                     type="button"
-                    className="startup-button startup-button--secondary"
+                    className="startup-button startup-button--secondary settings-modal__refresh-btn"
                     disabled={licenseDevicesLoading}
                     onClick={() => {
                       void handleRefreshLicenseStatus();
                     }}
+                    aria-label="Atualizar lista de dispositivos"
                   >
-                    {licenseDevicesLoading ? "Atualizando..." : "Atualizar status"}
+                    <RefreshCw size={13} className={licenseDevicesLoading ? "settings-modal__spin" : ""} aria-hidden="true" />
+                    {licenseDevicesLoading ? "Atualizando..." : "Atualizar"}
                   </button>
                 </div>
 
@@ -14635,29 +15102,67 @@ function App() {
                   <div className="settings-modal__device-list">
                     {visibleAssociatedDevices.map((device) => {
                       const isCurrentDevice = device.deviceId === installationId;
+                      const platformLower = device.devicePlatform.toLowerCase();
+                      const PlatformIcon = platformLower === "ios" || platformLower === "android"
+                        ? Smartphone
+                        : platformLower === "macos" || platformLower === "windows" || platformLower === "linux"
+                          ? Laptop2
+                          : Monitor;
+
+                      const isBusy = licenseDeviceActionBusy === device.deviceId;
+                      const isRevoked = device.active === false;
 
                       return (
-                        <div key={device.deviceId} className="settings-modal__device-card">
+                        <div
+                          key={device.deviceId}
+                          className={[
+                            "settings-modal__device-card",
+                            isCurrentDevice ? "settings-modal__device-card--current" : "",
+                            isRevoked ? "settings-modal__device-card--revoked" : "",
+                          ].filter(Boolean).join(" ")}
+                        >
                           <div className="settings-modal__device-copy">
-                            <strong>
+                            <strong className="settings-modal__device-name">
+                              <PlatformIcon size={13} className="settings-modal__device-icon" aria-hidden="true" />
                               {device.deviceName}
-                              {isCurrentDevice ? " • Este dispositivo" : ""}
+                              {isCurrentDevice && <span className="settings-modal__device-current-tag">Este dispositivo</span>}
+                              {isRevoked && <span className="settings-modal__device-revoked-tag">Removido</span>}
                             </strong>
                             <span>
-                              {device.devicePlatform}
-                              {isCurrentDevice ? " • Ativo agora" : ""}
+                              {device.devicePlatform || "Plataforma desconhecida"}
+                              {isCurrentDevice ? " · Ativo agora" : ""}
+                            </span>
+                            <span className="settings-modal__device-id">
+                              {device.deviceId}
                             </span>
                           </div>
-                          <button
-                            type="button"
-                            className="startup-button startup-button--secondary"
-                            disabled={licenseDeviceActionBusy === device.deviceId}
-                            onClick={() => {
-                              void handleRevokeLicenseDevice(device.deviceId);
-                            }}
-                          >
-                            {licenseDeviceActionBusy === device.deviceId ? "Revogando..." : "Revogar"}
-                          </button>
+                          {!isCurrentDevice && (
+                            isRevoked ? (
+                              canReactivate && (
+                                <button
+                                  type="button"
+                                  className="startup-button startup-button--primary settings-modal__remove-btn"
+                                  disabled={isBusy}
+                                  onClick={() => handleReactivateLicenseDevice(device.deviceId)}
+                                >
+                                  {isBusy
+                                    ? <><RefreshCw size={12} className="settings-modal__spin" aria-hidden="true" /> Reativando...</>
+                                    : "Reativar"}
+                                </button>
+                              )
+                            ) : (
+                              <button
+                                type="button"
+                                className="startup-button startup-button--secondary settings-modal__remove-btn"
+                                disabled={isBusy}
+                                onClick={() => handleRevokeLicenseDevice(device.deviceId)}
+                              >
+                                {isBusy
+                                  ? <><RefreshCw size={12} className="settings-modal__spin" aria-hidden="true" /> Revogando...</>
+                                  : <><X size={12} aria-hidden="true" /> Revogar</>}
+                              </button>
+                            )
+                          )}
                         </div>
                       );
                     })}
@@ -14674,9 +15179,6 @@ function App() {
 
         {licenseModalMode === "onboarding" && (
           <div className="settings-modal__onboarding">
-            <label className="settings-modal__onboarding-label">
-              {licenseOnboardingView === "register" ? "Crie sua conta" : "Entre com seu acesso"}
-            </label>
             {licenseOnboardingView === "register" ? (
               <>
                 <div className="settings-modal__onboarding-fields">
@@ -14712,29 +15214,54 @@ function App() {
                       disabled={licenseRegisterBusy}
                     />
                   </div>
-                  <div className="settings-modal__field">
+                  <div className="settings-modal__field settings-modal__field--with-toggle">
                     <LockKeyhole size={16} className="settings-modal__field-icon" aria-hidden="true" />
                     <input
                       className="settings-modal__input"
                       value={licenseRegisterPassword}
                       onChange={(event) => setLicenseRegisterPassword(event.target.value)}
                       placeholder="Senha"
-                      type="password"
+                      type={licenseRegisterShowPassword ? "text" : "password"}
+                      autoComplete="new-password"
                       disabled={licenseRegisterBusy}
                     />
+                    <button
+                      type="button"
+                      className="settings-modal__password-toggle"
+                      onClick={() => setLicenseRegisterShowPassword((v) => !v)}
+                      aria-label={licenseRegisterShowPassword ? "Ocultar senha" : "Mostrar senha"}
+                      disabled={licenseRegisterBusy}
+                    >
+                      {licenseRegisterShowPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
                   </div>
-                  <div className="settings-modal__field">
+                  <div className="settings-modal__field settings-modal__field--with-toggle">
                     <LockKeyhole size={16} className="settings-modal__field-icon" aria-hidden="true" />
                     <input
                       className="settings-modal__input"
                       value={licenseRegisterConfirmPassword}
                       onChange={(event) => setLicenseRegisterConfirmPassword(event.target.value)}
                       placeholder="Confirmar senha"
-                      type="password"
+                      type={licenseRegisterShowConfirmPassword ? "text" : "password"}
+                      autoComplete="new-password"
                       disabled={licenseRegisterBusy}
                     />
+                    <button
+                      type="button"
+                      className="settings-modal__password-toggle"
+                      onClick={() => setLicenseRegisterShowConfirmPassword((v) => !v)}
+                      aria-label={licenseRegisterShowConfirmPassword ? "Ocultar confirmação" : "Mostrar confirmação"}
+                      disabled={licenseRegisterBusy}
+                    >
+                      {licenseRegisterShowConfirmPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
                   </div>
                 </div>
+                {licenseValidationMessage.kind !== "idle" && (
+                  <div className={`settings-modal__result ${licenseValidationMessage.kind === "success" ? "settings-modal__result--success" : "settings-modal__result--error"}`}>
+                    {licenseValidationMessage.text}
+                  </div>
+                )}
                 <button
                   type="button"
                   className="startup-button startup-button--primary settings-modal__onboarding-cta"
@@ -14743,7 +15270,7 @@ function App() {
                     void handleRequestLicenseRegistration();
                   }}
                 >
-                  {licenseRegisterBusy ? "Iniciando..." : "Começar teste grátis"}
+                  {licenseRegisterBusy ? "Criando conta..." : "Criar conta grátis"}
                 </button>
               </>
             ) : (
@@ -14757,21 +15284,37 @@ function App() {
                       onChange={(event) => setLicenseSignInEmail(event.target.value)}
                       placeholder="E-mail da conta"
                       inputMode="email"
+                      autoComplete="email"
                       disabled={licenseSignInBusy}
                     />
                   </div>
-                  <div className="settings-modal__field">
+                  <div className="settings-modal__field settings-modal__field--with-toggle">
                     <LockKeyhole size={16} className="settings-modal__field-icon" aria-hidden="true" />
                     <input
                       className="settings-modal__input"
                       value={licenseSignInPassword}
                       onChange={(event) => setLicenseSignInPassword(event.target.value)}
                       placeholder="Senha"
-                      type="password"
+                      type={licenseSignInShowPassword ? "text" : "password"}
+                      autoComplete="current-password"
                       disabled={licenseSignInBusy}
                     />
+                    <button
+                      type="button"
+                      className="settings-modal__password-toggle"
+                      onClick={() => setLicenseSignInShowPassword((v) => !v)}
+                      aria-label={licenseSignInShowPassword ? "Ocultar senha" : "Mostrar senha"}
+                      disabled={licenseSignInBusy}
+                    >
+                      {licenseSignInShowPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
                   </div>
                 </div>
+                {licenseValidationMessage.kind !== "idle" && (
+                  <div className={`settings-modal__result ${licenseValidationMessage.kind === "success" ? "settings-modal__result--success" : "settings-modal__result--error"}`}>
+                    {licenseValidationMessage.text}
+                  </div>
+                )}
                 <button
                   type="button"
                   className="startup-button startup-button--primary settings-modal__onboarding-cta"
@@ -14780,20 +15323,23 @@ function App() {
                     void handleRecoverLicenseByCredentials();
                   }}
                 >
-                  {licenseSignInBusy ? "Recuperando..." : "Recuperar dados de licença"}
+                  {licenseSignInBusy ? "Entrando..." : "Entrar"}
                 </button>
               </>
             )}
 
             <div className="settings-modal__onboarding-divider">
               <span className="settings-modal__onboarding-divider-label">
-                {licenseOnboardingView === "register" ? "Já tem uma conta?" : "Ainda não tem conta?"}
+                {licenseOnboardingView === "register" ? "Já tem acesso?" : "Ainda não tem conta?"}
               </span>
               <button
                 type="button"
                 className="settings-modal__onboarding-link"
                 onClick={() => {
                   setLicenseValidationMessage({ kind: "idle", text: "" });
+                  setLicenseSignInShowPassword(false);
+                  setLicenseRegisterShowPassword(false);
+                  setLicenseRegisterShowConfirmPassword(false);
                   setLicenseOnboardingView((current) => (current === "register" ? "signin" : "register"));
                 }}
               >
@@ -14801,37 +15347,39 @@ function App() {
               </button>
             </div>
 
-            <div className="settings-modal__onboarding-benefits">
-              <div className="settings-modal__benefit">
-                <ShieldCheck size={16} className="settings-modal__benefit-icon" aria-hidden="true" />
-                <div className="settings-modal__benefit-text">
-                  <strong>Sem cartão</strong>
-                  <span>Não cobramos nada</span>
+            {licenseOnboardingView === "register" && (
+              <div className="settings-modal__onboarding-benefits">
+                <div className="settings-modal__benefit">
+                  <ShieldCheck size={16} className="settings-modal__benefit-icon" aria-hidden="true" />
+                  <div className="settings-modal__benefit-text">
+                    <strong>Sem cartão</strong>
+                    <span>Comece sem pagar nada</span>
+                  </div>
+                </div>
+                <div className="settings-modal__benefit">
+                  <Zap size={16} className="settings-modal__benefit-icon" aria-hidden="true" />
+                  <div className="settings-modal__benefit-text">
+                    <strong>Ativação imediata</strong>
+                    <span>Pronto para usar</span>
+                  </div>
+                </div>
+                <div className="settings-modal__benefit">
+                  <Monitor size={16} className="settings-modal__benefit-icon" aria-hidden="true" />
+                  <div className="settings-modal__benefit-text">
+                    <strong>Axios 16, 24 e 32</strong>
+                    <span>Compatível com todos</span>
+                  </div>
                 </div>
               </div>
-              <div className="settings-modal__benefit">
-                <Zap size={16} className="settings-modal__benefit-icon" aria-hidden="true" />
-                <div className="settings-modal__benefit-text">
-                  <strong>Ativação imediata</strong>
-                  <span>Acesso na hora</span>
-                </div>
-              </div>
-              <div className="settings-modal__benefit">
-                <Monitor size={16} className="settings-modal__benefit-icon" aria-hidden="true" />
-                <div className="settings-modal__benefit-text">
-                  <strong>Axios 16, 24 e 32</strong>
-                  <span>Total compatibilidade</span>
-                </div>
-              </div>
-            </div>
+            )}
 
             <p className="settings-modal__onboarding-security">
-              Seus dados estão protegidos e não compartilhamos com terceiros.
+              Seus dados são seus. Nunca compartilhamos com terceiros.
             </p>
           </div>
         )}
 
-        {licenseValidationMessage.kind !== "idle" && !(licenseModalMode === "settings" && licenseValidationMessage.kind === "success") && (
+        {licenseValidationMessage.kind !== "idle" && licenseModalMode !== "onboarding" && !(licenseModalMode === "settings" && licenseValidationMessage.kind === "success") && (
           <div
             className={`settings-modal__result ${licenseValidationMessage.kind === "success" ? "settings-modal__result--success" : "settings-modal__result--error"}`}
           >
@@ -14856,7 +15404,7 @@ function App() {
                 className="startup-button startup-button--secondary"
                 onClick={handleDisconnect}
               >
-                Disconnect
+                Desconectar
               </button>
             )}
           </div>
@@ -14874,6 +15422,8 @@ function App() {
       <>
         <DeviceSelectionScreen
           mixers={discoveredMixers}
+          knownMixers={knownDiscoveryMixers}
+          hasSearched={mixerDiscoveryHasSearched}
           discoveryLoading={isDiscoveringMixers}
           discoveryError={discoveryError}
           connectBusy={connectingSource !== null}
@@ -14881,7 +15431,7 @@ function App() {
           version={APP_VERSION}
           onRefresh={() => {
             setConnectionError(null);
-            void refreshMixerDiscovery();
+            void refreshMixerDiscovery(true);
           }}
           onConnectMixer={handlePreconnectMixerSelection}
         />
@@ -14994,7 +15544,7 @@ function App() {
             <button
               type="button"
               className={`settings-gear-btn ${settingsDropdownOpen || (!detailView && (mainView === "scenes" || mainView === "patching")) ? "settings-gear-btn--active" : ""}`}
-              title="Settings"
+              title="Configurações"
               onClick={() => setSettingsDropdownOpen((v) => !v)}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -15031,25 +15581,28 @@ function App() {
                   className="settings-dropdown__item"
                   onClick={() => openLicenseModal(false)}
                 >
-                  Device ID / License
+                  Licença
                 </button>
                 <button
                   type="button"
-                  className="settings-dropdown__item settings-dropdown__item--danger"
-                  disabled={!isConnected}
+                  className={`settings-dropdown__item${isConnected ? " settings-dropdown__item--danger" : ""}`}
                   onClick={() => {
-                    handleDisconnect();
+                    if (isConnected) {
+                      handleDisconnect();
+                    } else {
+                      void attemptAutoReconnect();
+                    }
                     setSettingsDropdownOpen(false);
                   }}
                 >
-                  Disconnect
+                  {isConnected ? "Desconectar" : "Reconectar"}
                 </button>
                 <button
                   type="button"
                   className="settings-dropdown__item settings-dropdown__item--danger"
                   onClick={handleLogout}
                 >
-                  Logout
+                  Sair
                 </button>
               </div>
             )}
@@ -15108,6 +15661,7 @@ function App() {
       )}
 
       {licenseModalNode}
+      <ToastRenderer />
     </main>
   );
 }
