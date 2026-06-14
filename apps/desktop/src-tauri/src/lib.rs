@@ -1,5 +1,6 @@
 use if_addrs::{get_if_addrs, IfAddr};
 use regex::Regex;
+use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
@@ -10,6 +11,13 @@ use std::process::Command;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tungstenite::{connect, Message};
+
+// Chave de autenticação do app compilada em tempo de build via AX_API_KEY env var.
+// Build: AX_API_KEY=axcontrol_app_key_2026_06_14_v1 npm run tauri build
+const AX_API_KEY: &str = match option_env!("AX_API_KEY") {
+    Some(key) => key,
+    None => "",
+};
 
 #[derive(Debug, Clone, Copy)]
 struct WsProbeCacheEntry {
@@ -114,9 +122,17 @@ fn license_http_client() -> Result<&'static reqwest::Client, String> {
         return Ok(client);
     }
 
+    let mut default_headers = HeaderMap::new();
+    if !AX_API_KEY.is_empty() {
+        if let Ok(value) = HeaderValue::from_str(AX_API_KEY) {
+            default_headers.insert("X-AX-App-Key", value);
+        }
+    }
+
     let client = reqwest::Client::builder()
         .cookie_store(true)
         .timeout(Duration::from_secs(15))
+        .default_headers(default_headers)
         .build()
         .map_err(|error| format!("client build error: {error}"))?;
 
@@ -855,7 +871,7 @@ async fn probe_mixer_ip(
             cached
         } else {
             // Probe WS curto e com cooldown via cache por IP para evitar travar a mesa.
-            let channels = probe_channel_capacity_via_ws(ip, 120);
+            let channels = probe_channel_capacity_via_ws(ip, 280);
             set_cached_ws_probe_channels(ip, channels);
             channels
         }
@@ -1051,10 +1067,7 @@ async fn discover_mixers_by_preferred_ips(preferred_ips: &[String]) -> Result<Ve
                 found.entry(mixer.ip.clone()).or_insert(mixer);
             }
         }
-
-        if !found.is_empty() {
-            break;
-        }
+        // Sem break: proba TODOS os IPs conhecidos mesmo após achar um.
     }
 
     Ok(found.into_values().collect())
@@ -1096,14 +1109,23 @@ mod tests {
 }
 
 #[tauri::command]
-async fn discover_mixers(preferred_ips: Option<Vec<String>>) -> Result<Vec<DiscoveredMixer>, String> {
+async fn discover_mixers(preferred_ips: Option<Vec<String>>, full_scan: Option<bool>) -> Result<Vec<DiscoveredMixer>, String> {
     let preferred = preferred_ips.unwrap_or_default();
 
+    if full_scan.unwrap_or(false) {
+        // Scan completo: varre toda a rede local (IPs conhecidos primeiro).
+        // Usado no refresh manual — encontra mesas desconhecidas além das já vistas.
+        return discover_mixers_by_local_probe(Some(preferred)).await;
+    }
+
+    // Scan rápido (padrão): proba apenas IPs conhecidos/preferidos.
+    // Usado no polling periódico — retorna rápido e mantém lista atualizada.
     let preferred_results = discover_mixers_by_preferred_ips(&preferred).await?;
     if !preferred_results.is_empty() {
         return Ok(preferred_results);
     }
 
+    // Nenhum IP conhecido respondeu: tenta o scan local completo como fallback.
     discover_mixers_by_local_probe(Some(preferred)).await
 }
 

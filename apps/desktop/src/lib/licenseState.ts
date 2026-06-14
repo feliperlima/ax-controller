@@ -111,6 +111,17 @@ function normalizeLicenseType(value: unknown): LicenseType {
   return "unknown";
 }
 
+function normalizePlatformLabel(value: string): string {
+  const lower = value.trim().toLowerCase();
+  if (!lower || lower === "unknown") return "";
+  if (lower.includes("mac") || lower.includes("osx") || lower.includes("darwin")) return "macOS";
+  if (lower.includes("win")) return "Windows";
+  if (lower.includes("iphone") || lower.includes("ipad") || lower.includes("ios")) return "iOS";
+  if (lower.includes("android")) return "Android";
+  if (lower.includes("linux")) return "Linux";
+  return value.trim();
+}
+
 function normalizeDevices(value: unknown): LicenseDevice[] {
   if (!Array.isArray(value)) return [];
 
@@ -126,7 +137,7 @@ function normalizeDevices(value: unknown): LicenseDevice[] {
       return {
         deviceId,
         deviceName: toStringValue(record.device_name) || "Dispositivo",
-        devicePlatform: toStringValue(record.device_platform) || "unknown",
+        devicePlatform: normalizePlatformLabel(toStringValue(record.device_platform)),
         active: toBooleanValue(record.active) !== false,
       };
     })

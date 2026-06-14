@@ -42,6 +42,7 @@ export class UniversalRawParamStore {
   private recentParamIds: number[] = [];
   private updateTimestamps: number[] = [];
   private version = 0;
+  private emitPending = false;
 
   subscribe(listener: () => void) {
     this.subscribers.add(listener);
@@ -129,7 +130,15 @@ export class UniversalRawParamStore {
   }
 
   private emit() {
-    this.subscribers.forEach((listener) => listener());
+    if (this.emitPending) return;
+    this.emitPending = true;
+    // Defer to a microtask so that multiple synchronous upserts within the
+    // same call stack (e.g. 20+ meter params arriving in one poll cycle) are
+    // collapsed into a single notification instead of spamming every subscriber.
+    queueMicrotask(() => {
+      this.emitPending = false;
+      this.subscribers.forEach((listener) => listener());
+    });
   }
 
   private trackRecentParam(paramId: number) {

@@ -66,6 +66,7 @@ import {
   saveKnownMixer,
 } from "./services/mixerDiscovery";
 import { getMixerCompatibility } from "./lib/mixerCompatibility";
+import { apiCreatePixPayment, apiCheckPixStatus } from "./lib/pixPaymentApi";
 import {
   decodeGroupMembers,
   getBitmaskProtocolProfile,
@@ -959,6 +960,10 @@ const LICENSE_STATUS_STORAGE_KEY = "ax_license_status";
 const LICENSE_RUNTIME_CACHE_STORAGE_KEY = "ax_license_runtime_cache_v2";
 const LICENSE_KEY_STORAGE_KEY = "ax_license_key_last";
 const TRIAL_UPGRADE_PROMPT_DATE_KEY = "ax_trial_upgrade_prompt_date";
+const PIX_CREATE_PATH = (import.meta.env.VITE_PIX_CREATE_PATH ?? "/api/payment/create-pix.php").trim();
+const PIX_STATUS_PATH = (import.meta.env.VITE_PIX_STATUS_PATH ?? "/api/payment/status.php").trim();
+const PIX_AMOUNT_BRL = 99.90;
+const AX_APP_KEY = (import.meta.env.VITE_AX_APP_KEY ?? "").trim();
 const LICENSE_REVALIDATE_INTERVAL_DAYS = 30;
 const LICENSE_REVALIDATE_WARNING_DAYS = 5;
 const LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS = 2 * 60 * 1000;
@@ -2649,6 +2654,13 @@ function App() {
   const [licenseModalOpen, setLicenseModalOpen] = useState(false);
   const [licenseModalMandatory, setLicenseModalMandatory] = useState(false);
   const [licenseModalMode, setLicenseModalMode] = useState<"onboarding" | "settings" | "upgrade">("onboarding");
+  const [pixPayment, setPixPayment] = useState<
+    | { stage: "idle" }
+    | { stage: "creating" }
+    | { stage: "awaiting"; paymentId: string; qrCode: string; qrCodeBase64: string; expiresAt: string }
+    | { stage: "confirmed" }
+    | { stage: "failed"; reason: "rejected" | "cancelled" | "expired" | "network" }
+  >({ stage: "idle" });
   const [installationId, setInstallationId] = useState("");
   const [licenseKeyInput, setLicenseKeyInput] = useState("");
   const [licenseValidationBusy, setLicenseValidationBusy] = useState(false);
@@ -2794,6 +2806,7 @@ function App() {
   } | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  const pixPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { showToast, ToastRenderer } = useToast();
   const { snapshot: clipboardSnapshot, saveSnapshot: saveClipboardSnapshot } = useMixerClipboard();
   const activeDcaIds = getDcaIdsForChannelCount(channelCount);
@@ -3229,6 +3242,37 @@ function App() {
     setLicenseSignInPassword("");
     setLicenseValidationMessage({ kind: "idle", text: "" });
   }, [licenseModalMode, licenseModalOpen]);
+
+  useEffect(() => {
+    if (licenseModalOpen) return;
+    stopPixPolling();
+    setPixPayment({ stage: "idle" });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [licenseModalOpen]);
+
+  // On boot: if still on trial and there's a pending Pix payment_id, check if it was approved.
+  useEffect(() => {
+    if (!isOnline || !installationId) return;
+    if (licenseFormalState !== "TRIAL_ACTIVE" && licenseFormalState !== "TRIAL_EXPIRED") return;
+
+    const pendingPaymentId = localStorage.getItem("ax_pending_pix_payment_id");
+    if (!pendingPaymentId) return;
+
+    void apiCheckPixStatus(
+      "https://www.axcontrol.com.br",
+      PIX_STATUS_PATH,
+      pendingPaymentId,
+      installationId,
+      AX_APP_KEY
+    ).then((result) => {
+      if (result.status === "approved" && result.license_key) {
+        void handlePixPaymentApproved(result.license_key);
+      } else if (result.status === "rejected" || result.status === "cancelled") {
+        localStorage.removeItem("ax_pending_pix_payment_id");
+      }
+    }).catch(() => { /* network unavailable — will retry on next boot */ });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnline, installationId, licenseFormalState]);
 
   useEffect(() => {
     if (!isOnline || !installationId) return;
@@ -5020,30 +5064,41 @@ function App() {
             ? currentState.eq.lpfFreq
             : resolveLpfFreqFromRaw(rawLpfFreq, currentState.eq.lpfFreq),
           bands: [
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(params.eqBand1Freq, 120)),
-              gain: valueToEqGain(getValue(params.eqBand1Gain, 470)),
-              q: valueToEqQ(getValue(params.eqBand1Q, 120)),
-            },
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(params.eqBand2Freq, 393)),
-              gain: valueToEqGain(getValue(params.eqBand2Gain, 477)),
-              q: valueToEqQ(getValue(params.eqBand2Q, 121)),
-            },
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(params.eqBand3Freq, 1010)),
-              gain: valueToEqGain(getValue(params.eqBand3Gain, 478)),
-              q: valueToEqQ(getValue(params.eqBand3Q, 121)),
-            },
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(params.eqBand4Freq, 11000)),
-              gain: valueToEqGain(getValue(params.eqBand4Gain, 526)),
-              q: valueToEqQ(getValue(params.eqBand4Q, 121)),
-            },
+            // Band enabled is UI-only: mixer doesn't know about it. When a band is disabled,
+            // we send defaults to the mixer — so incoming mixer values for a disabled band
+            // are the defaults, not the user's saved values. Preserve the full band state.
+            currentState.eq.bands[0]?.enabled === false
+              ? currentState.eq.bands[0]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(params.eqBand1Freq, 120)),
+                  gain: valueToEqGain(getValue(params.eqBand1Gain, 470)),
+                  q: valueToEqQ(getValue(params.eqBand1Q, 120)),
+                },
+            currentState.eq.bands[1]?.enabled === false
+              ? currentState.eq.bands[1]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(params.eqBand2Freq, 393)),
+                  gain: valueToEqGain(getValue(params.eqBand2Gain, 477)),
+                  q: valueToEqQ(getValue(params.eqBand2Q, 121)),
+                },
+            currentState.eq.bands[2]?.enabled === false
+              ? currentState.eq.bands[2]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(params.eqBand3Freq, 1010)),
+                  gain: valueToEqGain(getValue(params.eqBand3Gain, 478)),
+                  q: valueToEqQ(getValue(params.eqBand3Q, 121)),
+                },
+            currentState.eq.bands[3]?.enabled === false
+              ? currentState.eq.bands[3]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(params.eqBand4Freq, 11000)),
+                  gain: valueToEqGain(getValue(params.eqBand4Gain, 526)),
+                  q: valueToEqQ(getValue(params.eqBand4Q, 121)),
+                },
           ],
         },
       };
@@ -5275,48 +5330,62 @@ function App() {
               ? current.eq.lpfFreq
               : resolveLpfFreqFromRaw(values.get(params.lpfFreq), current.eq.lpfFreq),
           bands: [
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(params.eqBand1Freq, 63)),
-              gain: valueToEqGain(getValue(params.eqBand1Gain, 500)),
-              q: valueToEqQ(getValue(params.eqBand1Q, 100)),
-            },
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(params.eqBand2Freq, 160)),
-              gain: valueToEqGain(getValue(params.eqBand2Gain, 500)),
-              q: valueToEqQ(getValue(params.eqBand2Q, 100)),
-            },
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(params.eqBand3Freq, 400)),
-              gain: valueToEqGain(getValue(params.eqBand3Gain, 500)),
-              q: valueToEqQ(getValue(params.eqBand3Q, 100)),
-            },
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(params.eqBand4Freq, 1000)),
-              gain: valueToEqGain(getValue(params.eqBand4Gain, 500)),
-              q: valueToEqQ(getValue(params.eqBand4Q, 100)),
-            },
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(params.eqBand5Freq, 2500)),
-              gain: valueToEqGain(getValue(params.eqBand5Gain, 500)),
-              q: valueToEqQ(getValue(params.eqBand5Q, 100)),
-            },
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(params.eqBand6Freq, 6300)),
-              gain: valueToEqGain(getValue(params.eqBand6Gain, 500)),
-              q: valueToEqQ(getValue(params.eqBand6Q, 100)),
-            },
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(params.eqBand7Freq, 16000)),
-              gain: valueToEqGain(getValue(params.eqBand7Gain, 500)),
-              q: valueToEqQ(getValue(params.eqBand7Q, 100)),
-            },
+            current.eq.bands[0]?.enabled === false
+              ? current.eq.bands[0]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(params.eqBand1Freq, 63)),
+                  gain: valueToEqGain(getValue(params.eqBand1Gain, 500)),
+                  q: valueToEqQ(getValue(params.eqBand1Q, 100)),
+                },
+            current.eq.bands[1]?.enabled === false
+              ? current.eq.bands[1]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(params.eqBand2Freq, 160)),
+                  gain: valueToEqGain(getValue(params.eqBand2Gain, 500)),
+                  q: valueToEqQ(getValue(params.eqBand2Q, 100)),
+                },
+            current.eq.bands[2]?.enabled === false
+              ? current.eq.bands[2]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(params.eqBand3Freq, 400)),
+                  gain: valueToEqGain(getValue(params.eqBand3Gain, 500)),
+                  q: valueToEqQ(getValue(params.eqBand3Q, 100)),
+                },
+            current.eq.bands[3]?.enabled === false
+              ? current.eq.bands[3]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(params.eqBand4Freq, 1000)),
+                  gain: valueToEqGain(getValue(params.eqBand4Gain, 500)),
+                  q: valueToEqQ(getValue(params.eqBand4Q, 100)),
+                },
+            current.eq.bands[4]?.enabled === false
+              ? current.eq.bands[4]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(params.eqBand5Freq, 2500)),
+                  gain: valueToEqGain(getValue(params.eqBand5Gain, 500)),
+                  q: valueToEqQ(getValue(params.eqBand5Q, 100)),
+                },
+            current.eq.bands[5]?.enabled === false
+              ? current.eq.bands[5]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(params.eqBand6Freq, 6300)),
+                  gain: valueToEqGain(getValue(params.eqBand6Gain, 500)),
+                  q: valueToEqQ(getValue(params.eqBand6Q, 100)),
+                },
+            current.eq.bands[6]?.enabled === false
+              ? current.eq.bands[6]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(params.eqBand7Freq, 16000)),
+                  gain: valueToEqGain(getValue(params.eqBand7Gain, 500)),
+                  q: valueToEqQ(getValue(params.eqBand7Q, 100)),
+                },
           ],
         },
       };
@@ -5471,30 +5540,38 @@ function App() {
               ? current.eq.lpfFreq
               : resolveLpfFreqFromRaw(rawLpfFreq, current.eq.lpfFreq),
           bands: [
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(processorParams.eqBand1Freq, frequencyToRawValue(DEFAULT_EQ.bands[0].freq))),
-              gain: valueToEqGain(getValue(processorParams.eqBand1Gain, 500)),
-              q: valueToEqQ(getValue(processorParams.eqBand1Q, 100)),
-            },
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(processorParams.eqBand2Freq, frequencyToRawValue(DEFAULT_EQ.bands[1].freq))),
-              gain: valueToEqGain(getValue(processorParams.eqBand2Gain, 500)),
-              q: valueToEqQ(getValue(processorParams.eqBand2Q, 100)),
-            },
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(processorParams.eqBand3Freq, frequencyToRawValue(DEFAULT_EQ.bands[2].freq))),
-              gain: valueToEqGain(getValue(processorParams.eqBand3Gain, 500)),
-              q: valueToEqQ(getValue(processorParams.eqBand3Q, 100)),
-            },
-            {
-              enabled: true,
-              freq: valueToFrequency(getValue(processorParams.eqBand4Freq, frequencyToRawValue(DEFAULT_EQ.bands[3].freq))),
-              gain: valueToEqGain(getValue(processorParams.eqBand4Gain, 500)),
-              q: valueToEqQ(getValue(processorParams.eqBand4Q, 100)),
-            },
+            current.eq.bands[0]?.enabled === false
+              ? current.eq.bands[0]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(processorParams.eqBand1Freq, frequencyToRawValue(DEFAULT_EQ.bands[0].freq))),
+                  gain: valueToEqGain(getValue(processorParams.eqBand1Gain, 500)),
+                  q: valueToEqQ(getValue(processorParams.eqBand1Q, 100)),
+                },
+            current.eq.bands[1]?.enabled === false
+              ? current.eq.bands[1]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(processorParams.eqBand2Freq, frequencyToRawValue(DEFAULT_EQ.bands[1].freq))),
+                  gain: valueToEqGain(getValue(processorParams.eqBand2Gain, 500)),
+                  q: valueToEqQ(getValue(processorParams.eqBand2Q, 100)),
+                },
+            current.eq.bands[2]?.enabled === false
+              ? current.eq.bands[2]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(processorParams.eqBand3Freq, frequencyToRawValue(DEFAULT_EQ.bands[2].freq))),
+                  gain: valueToEqGain(getValue(processorParams.eqBand3Gain, 500)),
+                  q: valueToEqQ(getValue(processorParams.eqBand3Q, 100)),
+                },
+            current.eq.bands[3]?.enabled === false
+              ? current.eq.bands[3]
+              : {
+                  enabled: true,
+                  freq: valueToFrequency(getValue(processorParams.eqBand4Freq, frequencyToRawValue(DEFAULT_EQ.bands[3].freq))),
+                  gain: valueToEqGain(getValue(processorParams.eqBand4Gain, 500)),
+                  q: valueToEqQ(getValue(processorParams.eqBand4Q, 100)),
+                },
           ],
         },
       };
@@ -9477,16 +9554,48 @@ function App() {
 
   async function handleRefreshLicenseStatus() {
     setLicenseDevicesLoading(true);
+    const effectiveKey = licenseKeyInput.trim() || (localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "");
     try {
-      const snapshot = await requestLicenseStatus(true);
+      let snapshot: LicenseSnapshot | null = null;
+
+      // Try PHP status endpoint first; fall back to native validate on failure (e.g. 403).
+      try {
+        snapshot = await requestLicenseStatus(true, effectiveKey || undefined);
+      } catch {
+        // status.php failed — fall through to native validate
+      }
+
+      if (!snapshot && effectiveKey && installationId) {
+        try {
+          const response = await invoke<{ statusCode: number; body: Record<string, unknown> }>("validate_license", {
+            payload: {
+              licenseKey: effectiveKey,
+              series: effectiveKey,
+              deviceId: installationId,
+              deviceName: "",
+              platform: "",
+              appVersion: APP_VERSION,
+            },
+          });
+          console.debug("[AX] validate_license response:", response.statusCode, JSON.stringify(response.body).slice(0, 200));
+          if (response.statusCode < 400) {
+            const payload = normalizeLicenseApiPayload(response.body ?? {});
+            snapshot = parseLicenseSnapshot(payload);
+          }
+        } catch (invokeErr) {
+          console.error("[AX] validate_license invoke failed:", invokeErr);
+        }
+      }
+
       if (!snapshot) {
-        setLicenseValidationMessage({ kind: "error", text: "Status indisponível. Configure a URL da API de licença." });
+        setLicenseValidationMessage({ kind: "error", text: "Não foi possível consultar o status da licença." });
         return;
       }
 
-      applyLicenseSnapshot(snapshot, licenseKeyInput.trim(), snapshot.message || "Status atualizado.");
+      applyLicenseSnapshot(snapshot, effectiveKey, snapshot.message || "Status atualizado.");
       setLicenseValidationMessage({ kind: "success", text: snapshot.message || "Status atualizado." });
-    } catch {
+    } catch (err) {
+      console.error("[AX] handleRefreshLicenseStatus failed:", err);
       setLicenseValidationMessage({ kind: "error", text: "Falha ao consultar o status da licença." });
     } finally {
       setLicenseDevicesLoading(false);
@@ -10199,6 +10308,144 @@ function App() {
     setLicenseModalOpen(false);
   }
 
+  function stopPixPolling() {
+    if (pixPollingRef.current !== null) {
+      clearInterval(pixPollingRef.current);
+      pixPollingRef.current = null;
+    }
+  }
+
+  async function handlePixPaymentApproved(licenseKey: string) {
+    stopPixPolling();
+    setPixPayment({ stage: "confirmed" });
+    localStorage.setItem(LICENSE_KEY_STORAGE_KEY, licenseKey);
+    localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+    setHasLicenseActivatedOnce(true);
+    setLicenseKeyInput(licenseKey);
+
+    localStorage.removeItem("ax_pending_pix_payment_id");
+    // Guard flag: prevents background revalidation from downgrading to trial
+    // before the server confirms the purchased status.
+    localStorage.setItem("ax_pix_purchase_confirmed", licenseKey);
+
+    // Apply purchased state immediately so the UI never reverts to trial.
+    const syntheticSnapshot: LicenseSnapshot = {
+      code: "LICENSE_VALID",
+      valid: true,
+      active: true,
+      status: "active",
+      message: "Licença ativada com sucesso!",
+      licenseType: "purchased",
+      licenseSeries: "",
+      trialExpiryAt: null,
+      installationUuid: installationId ?? "",
+      nextRevalidationAt: null,
+      activeDevices: null,
+      remainingActivations: null,
+      unlimitedActivations: false,
+      linkedUserType: "user",
+      devices: [],
+    };
+    applyLicenseSnapshot(syntheticSnapshot, licenseKey, "Licença ativada com sucesso!");
+
+    // Confirm with the admin via native validate (correct endpoint + app key).
+    // Only update if admin confirms purchased; otherwise keep the synthetic snapshot.
+    void invoke<{ statusCode: number; body: Record<string, unknown> }>("validate_license", {
+      payload: {
+        licenseKey,
+        series: licenseKey,
+        deviceId: installationId ?? "",
+        deviceName: "",
+        platform: "",
+        appVersion: APP_VERSION,
+      },
+    }).then((response) => {
+      if (response.statusCode < 400) {
+        const payload = normalizeLicenseApiPayload(response.body ?? {});
+        const snapshot = parseLicenseSnapshot(payload);
+        if (snapshot.licenseType === "purchased") {
+          localStorage.removeItem("ax_pix_purchase_confirmed");
+          applyLicenseSnapshot(snapshot, licenseKey, "Licença ativada com sucesso!");
+        }
+      }
+    }).catch(() => { /* keep synthetic */ });
+
+    window.setTimeout(() => {
+      setLicenseModalOpen(false);
+      setLicenseModalMandatory(false);
+      setLicenseModalMode("settings");
+      setPixPayment({ stage: "idle" });
+      void runBackgroundLicenseRevalidation(true);
+    }, 2500);
+  }
+
+  function startPixPolling(paymentId: string) {
+    stopPixPolling();
+    let noKeyRetries = 0;
+
+    pixPollingRef.current = setInterval(() => {
+      if (!installationId) return;
+
+      void apiCheckPixStatus(
+        "https://www.axcontrol.com.br",
+        PIX_STATUS_PATH,
+        paymentId,
+        installationId,
+        AX_APP_KEY
+      ).then((result) => {
+        console.debug("[AX] pix status poll:", JSON.stringify(result));
+        if (result.status === "approved") {
+          if (result.license_key) {
+            void handlePixPaymentApproved(result.license_key);
+          } else {
+            noKeyRetries += 1;
+            if (noKeyRetries > 8) {
+              stopPixPolling();
+              setPixPayment({ stage: "failed", reason: "network" });
+            }
+          }
+        } else if (result.status === "rejected" || result.status === "cancelled") {
+          stopPixPolling();
+          setPixPayment({ stage: "failed", reason: result.status });
+        }
+      }).catch((err: unknown) => {
+        console.debug("[AX] pix status poll error:", err);
+        if (err && typeof err === "object" && "isInvalid" in err) {
+          stopPixPolling();
+          setPixPayment({ stage: "failed", reason: "expired" });
+        }
+        // network hiccup — keep polling
+      });
+    }, 4000);
+  }
+
+  async function startPixPayment() {
+    if (!installationId) return;
+    setPixPayment({ stage: "creating" });
+    try {
+      const result = await apiCreatePixPayment(
+        "https://www.axcontrol.com.br",
+        PIX_CREATE_PATH,
+        installationId,
+        PIX_AMOUNT_BRL,
+        "Licença AX Control",
+        AX_APP_KEY
+      );
+      setPixPayment({
+        stage: "awaiting",
+        paymentId: result.payment_id,
+        qrCode: result.qr_code,
+        qrCodeBase64: result.qr_code_base64,
+        expiresAt: result.expires_at,
+      });
+      localStorage.setItem("ax_pending_pix_payment_id", result.payment_id);
+      startPixPolling(result.payment_id);
+    } catch (err) {
+      console.error("[AX] startPixPayment failed:", err);
+      setPixPayment({ stage: "failed", reason: "network" });
+    }
+  }
+
   async function handleCopyInstallationId() {
     if (!installationId) return;
     try {
@@ -10332,9 +10579,22 @@ function App() {
     lastBackgroundRevalidationAtRef.current = now;
 
     try {
+      const pixPurchaseConfirmedKey = localStorage.getItem("ax_pix_purchase_confirmed");
+      const pixPurchaseGuardActive = Boolean(pixPurchaseConfirmedKey);
+
       if (LICENSE_API_BASE_URL) {
         const statusSnapshot = await requestLicenseStatus(false, licenseValue);
         if (statusSnapshot) {
+          // If a Pix purchase was recently confirmed, don't downgrade to trial
+          // until the backend explicitly confirms purchased status.
+          if (pixPurchaseGuardActive && statusSnapshot.licenseType !== "purchased") {
+            backgroundLicenseRevalidationBusyRef.current = false;
+            return true;
+          }
+          if (statusSnapshot.licenseType === "purchased") {
+            localStorage.removeItem("ax_pix_purchase_confirmed");
+          }
+
           const formalState = resolveLicenseFormalState({
             snapshot: statusSnapshot,
             warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
@@ -10379,6 +10639,16 @@ function App() {
 
       const payload = normalizeLicenseApiPayload(response.body ?? {});
       const snapshot = parseLicenseSnapshot(payload);
+
+      // Same guard: don't downgrade from purchased to trial if payment was recently confirmed.
+      if (pixPurchaseGuardActive && snapshot.licenseType !== "purchased") {
+        backgroundLicenseRevalidationBusyRef.current = false;
+        return true;
+      }
+      if (snapshot.licenseType === "purchased") {
+        localStorage.removeItem("ax_pix_purchase_confirmed");
+      }
+
       const formalState = resolveLicenseFormalState({
         snapshot,
         warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
@@ -13847,6 +14117,11 @@ function App() {
               clippedL={mainMasterMeter.leftClipUntil > Date.now()}
               clippedR={mainMasterMeter.rightClipUntil > Date.now()}
               disabled={!isConnected}
+              muteGroups={getMuteIdsForActiveProfile().map((id) => ({
+                id,
+                active: muteGroups[id - 1]?.active ?? false,
+              }))}
+              onToggleMuteGroup={(id) => handleMuteGroupToggleActive(id as MuteGroupId)}
               onToggleMainMute={toggleMainMasterMute}
               onToggleMainSolo={toggleMainMasterSolo}
               onToggleLeftMute={toggleMasterLeftMute}
@@ -14361,6 +14636,11 @@ function App() {
         clippedL={masterClipL}
         clippedR={masterClipR}
         disabled={!isConnected}
+        muteGroups={getMuteIdsForActiveProfile().map((id) => ({
+          id,
+          active: muteGroups[id - 1]?.active ?? false,
+        }))}
+        onToggleMuteGroup={(id) => handleMuteGroupToggleActive(id as MuteGroupId)}
         onToggleMainMute={toggleMainMasterMute}
         onToggleMainSolo={toggleMainMasterSolo}
         onToggleLeftMute={toggleMasterLeftMute}
@@ -14903,89 +15183,212 @@ function App() {
 
         {licenseModalMode === "upgrade" && (
           <div className="settings-modal__upgrade">
-            <div className="settings-modal__upgrade-hero">
-              <span className="settings-modal__upgrade-badge">{upgradeBadgeLabel}</span>
-              <div className="settings-modal__upgrade-hero-copy">
-                <h3>{upgradeHeadline}</h3>
-                <p>{upgradeDescription}</p>
-              </div>
-              <div className="settings-modal__upgrade-visual" aria-hidden="true">
-                <img
-                  className="settings-modal__upgrade-product"
-                  src={productAxios24}
-                  alt=""
-                />
-                <div className="settings-modal__upgrade-appicon">
-                  <svg viewBox="0 0 132 94" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M14 0H47.091L66.0001 22.8485H32.1213L14 0Z" fill="#15B2E8" />
-                    <path d="M118 0H84.909L65.9999 22.8485H99.8787L118 0Z" fill="#15B2E8" />
-                    <path d="M98.3218 66.7083L33.6785 66.7082L66.0001 27.2916L98.3218 66.7083Z" fill="#72CFEF" />
-                    <path d="M14 94.0002H47.091L66.0001 71.1517H32.1213L14 94.0002Z" fill="#39C5EC" />
-                    <path d="M118 94.0002H84.909L65.9999 71.1517H99.8787L118 94.0002Z" fill="#39C5EC" />
-                  </svg>
+            {pixPayment.stage === "idle" && (
+              <>
+                <div className="settings-modal__upgrade-hero">
+                  <span className="settings-modal__upgrade-badge">{upgradeBadgeLabel}</span>
+                  <div className="settings-modal__upgrade-hero-copy">
+                    <h3>{upgradeHeadline}</h3>
+                    <p>{upgradeDescription}</p>
+                  </div>
+                  <div className="settings-modal__upgrade-visual" aria-hidden="true">
+                    <img
+                      className="settings-modal__upgrade-product"
+                      src={productAxios24}
+                      alt=""
+                    />
+                    <div className="settings-modal__upgrade-appicon">
+                      <svg viewBox="0 0 132 94" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M14 0H47.091L66.0001 22.8485H32.1213L14 0Z" fill="#15B2E8" />
+                        <path d="M118 0H84.909L65.9999 22.8485H99.8787L118 0Z" fill="#15B2E8" />
+                        <path d="M98.3218 66.7083L33.6785 66.7082L66.0001 27.2916L98.3218 66.7083Z" fill="#72CFEF" />
+                        <path d="M14 94.0002H47.091L66.0001 71.1517H32.1213L14 94.0002Z" fill="#39C5EC" />
+                        <path d="M118 94.0002H84.909L65.9999 71.1517H99.8787L118 94.0002Z" fill="#39C5EC" />
+                      </svg>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            <div className="settings-modal__upgrade-card">
-              <div className="settings-modal__upgrade-price-block">
-                <div className="settings-modal__upgrade-price">{UPGRADE_PRICE_LABEL}</div>
-                <div className="settings-modal__upgrade-copy">
-                  <strong>Acesso completo ao AX Control</strong>
-                  <span>Licença permanente para o AX Control.</span>
+                <div className="settings-modal__upgrade-card">
+                  <div className="settings-modal__upgrade-price-block">
+                    <div className="settings-modal__upgrade-price">{UPGRADE_PRICE_LABEL}</div>
+                    <div className="settings-modal__upgrade-copy">
+                      <strong>Acesso completo ao AX Control</strong>
+                      <span>Licença permanente para o AX Control.</span>
+                    </div>
+                  </div>
+                  <div className="settings-modal__upgrade-benefits">
+                    <div className="settings-modal__upgrade-benefit">
+                      <ShieldCheck size={18} className="settings-modal__upgrade-benefit-icon" aria-hidden="true" />
+                      <strong>Acesso completo</strong>
+                    </div>
+                    <div className="settings-modal__upgrade-benefit">
+                      <Zap size={18} className="settings-modal__upgrade-benefit-icon" aria-hidden="true" />
+                      <strong>Sem limitações</strong>
+                    </div>
+                    <div className="settings-modal__upgrade-benefit">
+                      <Monitor size={18} className="settings-modal__upgrade-benefit-icon" aria-hidden="true" />
+                      <strong>Atualizações incluídas</strong>
+                    </div>
+                    <div className="settings-modal__upgrade-benefit">
+                      <Phone size={18} className="settings-modal__upgrade-benefit-icon" aria-hidden="true" />
+                      <strong>Suporte no WhatsApp</strong>
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="settings-modal__upgrade-benefits">
-                <div className="settings-modal__upgrade-benefit">
-                  <ShieldCheck size={18} className="settings-modal__upgrade-benefit-icon" aria-hidden="true" />
-                  <strong>Acesso completo</strong>
-                </div>
-                <div className="settings-modal__upgrade-benefit">
-                  <Zap size={18} className="settings-modal__upgrade-benefit-icon" aria-hidden="true" />
-                  <strong>Sem limitações</strong>
-                </div>
-                <div className="settings-modal__upgrade-benefit">
-                  <Monitor size={18} className="settings-modal__upgrade-benefit-icon" aria-hidden="true" />
-                  <strong>Atualizações incluídas</strong>
-                </div>
-                <div className="settings-modal__upgrade-benefit">
-                  <Phone size={18} className="settings-modal__upgrade-benefit-icon" aria-hidden="true" />
-                  <strong>Suporte no WhatsApp</strong>
-                </div>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              className="startup-button settings-modal__upgrade-button settings-modal__upgrade-button--whatsapp"
-              onClick={() => {
-                void handleContactForUpgrade();
-              }}
-            >
-              <span className="settings-modal__upgrade-button-label">Comprar pelo WhatsApp</span>
-              <span className="settings-modal__upgrade-button-hint">Atendimento direto para pagamento e ativação</span>
-            </button>
-
-            {trialIsActive && (
-              <button
-                type="button"
-                className="startup-button startup-button--secondary settings-modal__upgrade-trial"
-                onClick={() => {
-                  if (pendingDiscoveryMixer) {
-                    handleContinueTrialConnection();
-                    return;
-                  }
-
-                  closeLicenseModal();
-                }}
-              >
-                Continuar com o teste grátis
-              </button>
+              </>
             )}
 
-            <div className="settings-modal__upgrade-footer">
-              Compra segura • Suporte via WhatsApp
-            </div>
+            {pixPayment.stage !== "idle" && (
+              <div className="pix-payment__header-compact">
+                <div className="pix-payment__header-brand">
+                  <div className="pix-payment__header-icon" aria-hidden="true">
+                    <svg viewBox="0 0 132 94" fill="none" xmlns="http://www.w3.org/2000/svg" width="32" height="23">
+                      <path d="M14 0H47.091L66.0001 22.8485H32.1213L14 0Z" fill="#15B2E8" />
+                      <path d="M118 0H84.909L65.9999 22.8485H99.8787L118 0Z" fill="#15B2E8" />
+                      <path d="M98.3218 66.7083L33.6785 66.7082L66.0001 27.2916L98.3218 66.7083Z" fill="#72CFEF" />
+                      <path d="M14 94.0002H47.091L66.0001 71.1517H32.1213L14 94.0002Z" fill="#39C5EC" />
+                      <path d="M118 94.0002H84.909L65.9999 71.1517H99.8787L118 94.0002Z" fill="#39C5EC" />
+                    </svg>
+                  </div>
+                  <div className="pix-payment__header-text">
+                    <span className="pix-payment__header-appname">AX Control</span>
+                    <span className="pix-payment__header-sublabel">Licença permanente</span>
+                  </div>
+                  <span className="pix-payment__header-price">{UPGRADE_PRICE_LABEL}</span>
+                </div>
+                {trialIsActive && trialDaysRemaining !== null && (
+                  <span className="settings-modal__upgrade-badge" style={{ alignSelf: "center" }}>
+                    {upgradeBadgeLabel}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {pixPayment.stage === "idle" && (
+              <>
+                <button
+                  type="button"
+                  className="startup-button settings-modal__upgrade-button settings-modal__upgrade-button--pix"
+                  onClick={() => { void startPixPayment(); }}
+                >
+                  <span className="settings-modal__upgrade-button-label">Comprar via Pix</span>
+                  <span className="settings-modal__upgrade-button-hint">Pagamento instantâneo • Ativação automática</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="startup-button settings-modal__upgrade-button settings-modal__upgrade-button--whatsapp"
+                  onClick={() => { void handleContactForUpgrade(); }}
+                >
+                  <span className="settings-modal__upgrade-button-label">Comprar pelo WhatsApp</span>
+                  <span className="settings-modal__upgrade-button-hint">Atendimento direto para pagamento e ativação</span>
+                </button>
+
+                {trialIsActive && (
+                  <button
+                    type="button"
+                    className="startup-button startup-button--secondary settings-modal__upgrade-trial"
+                    onClick={() => {
+                      if (pendingDiscoveryMixer) { handleContinueTrialConnection(); return; }
+                      closeLicenseModal();
+                    }}
+                  >
+                    Continuar com o teste grátis
+                  </button>
+                )}
+
+                <div className="settings-modal__upgrade-footer">
+                  Compra segura • Pix instantâneo • Suporte via WhatsApp
+                </div>
+              </>
+            )}
+
+            {pixPayment.stage === "creating" && (
+              <div className="pix-payment pix-payment--loading">
+                <div className="pix-payment__spinner" />
+                <p className="pix-payment__label">Gerando QR Code Pix...</p>
+              </div>
+            )}
+
+            {pixPayment.stage === "awaiting" && (
+              <div className="pix-payment">
+                <p className="pix-payment__title">Escaneie o QR Code ou copie o código Pix</p>
+                <div className="pix-payment__qr-wrap">
+                  <img
+                    className="pix-payment__qr"
+                    src={`data:image/png;base64,${pixPayment.qrCodeBase64}`}
+                    alt="QR Code Pix"
+                    width={180}
+                    height={180}
+                  />
+                </div>
+                <div className="pix-payment__code-row">
+                  <code className="pix-payment__code">
+                    {pixPayment.qrCode.slice(0, 44)}…
+                  </code>
+                  <button
+                    type="button"
+                    className="startup-button startup-button--ghost pix-payment__copy-btn"
+                    onClick={() => { void navigator.clipboard.writeText(pixPayment.qrCode); }}
+                  >
+                    Copiar
+                  </button>
+                </div>
+                <p className="pix-payment__status">
+                  <span className="pix-payment__status-dot" />
+                  Aguardando pagamento...
+                </p>
+                <button
+                  type="button"
+                  className="startup-button startup-button--ghost pix-payment__cancel-btn"
+                  onClick={() => { stopPixPolling(); setPixPayment({ stage: "idle" }); }}
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+
+            {pixPayment.stage === "confirmed" && (
+              <div className="pix-payment pix-payment--confirmed">
+                <div className="pix-payment__check" aria-hidden="true">✓</div>
+                <p className="pix-payment__title">Pagamento confirmado!</p>
+                <p className="pix-payment__label">Sua licença está sendo ativada...</p>
+              </div>
+            )}
+
+            {pixPayment.stage === "failed" && (
+              <div className="pix-payment pix-payment--failed">
+                <p className="pix-payment__title">
+                  {pixPayment.reason === "rejected" && "Pagamento recusado."}
+                  {pixPayment.reason === "cancelled" && "Pagamento cancelado."}
+                  {pixPayment.reason === "expired" && "QR Code expirado."}
+                  {pixPayment.reason === "network" && "Erro de conexão."}
+                </p>
+                <p className="pix-payment__label">Tente novamente ou use o WhatsApp.</p>
+                <button
+                  type="button"
+                  className="startup-button startup-button--primary"
+                  onClick={() => { void startPixPayment(); }}
+                >
+                  Tentar novamente
+                </button>
+                <button
+                  type="button"
+                  className="startup-button startup-button--ghost"
+                  onClick={() => { void handleContactForUpgrade(); }}
+                >
+                  Comprar pelo WhatsApp
+                </button>
+                <button
+                  type="button"
+                  className="startup-button startup-button--ghost pix-payment__cancel-btn"
+                  onClick={() => { setPixPayment({ stage: "idle" }); }}
+                >
+                  Voltar
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -15059,15 +15462,26 @@ function App() {
                       : isFullLicenseView ? "Trocar licença" : "Aplicar licença"}
                   </button>
                   {isTrialLicense && (
-                    <button
-                      type="button"
-                      className="startup-button startup-button--primary"
-                      onClick={() => {
-                        void handleContactForUpgrade();
-                      }}
-                    >
-                      Comprar por {UPGRADE_PRICE_LABEL}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="startup-button startup-button--primary"
+                        onClick={() => {
+                          setLicenseModalMandatory(false);
+                          setLicenseModalMode("upgrade");
+                          void startPixPayment();
+                        }}
+                      >
+                        Comprar via Pix · {UPGRADE_PRICE_LABEL}
+                      </button>
+                      <button
+                        type="button"
+                        className="startup-button startup-button--secondary"
+                        onClick={() => { void handleContactForUpgrade(); }}
+                      >
+                        Comprar pelo WhatsApp
+                      </button>
+                    </>
                   )}
                 </div>
               </section>

@@ -1394,6 +1394,29 @@ export class Axios16Client {
     this.localParamWriteListeners.forEach((listener) => listener(write));
   }
 
+  sendParamBatch(pairs: Array<{ param: number; value: number }>, chunkSize = 60) {
+    if (!this.ws || this.ws.readyState !== SOCKET_OPEN) {
+      throw new Error("Cliente não conectado.");
+    }
+
+    const now = Date.now();
+
+    for (let i = 0; i < pairs.length; i += chunkSize) {
+      const chunk = pairs.slice(i, i + chunkSize);
+      const payload: number[] = [];
+
+      for (const { param, value } of chunk) {
+        payload.push((param >> 8) & 0xff, param & 0xff, (value >> 8) & 0xff, value & 0xff);
+      }
+
+      this.ws.send(buildRawDuonnPacket(3, payload));
+
+      for (const { param, value } of chunk) {
+        this.localParamWriteListeners.forEach((listener) => listener({ param, value, at: now }));
+      }
+    }
+  }
+
   sendRaw(packet: Uint8Array) {
     if (!this.ws || this.ws.readyState !== SOCKET_OPEN) {
       throw new Error("Cliente não conectado.");

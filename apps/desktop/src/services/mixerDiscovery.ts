@@ -14,6 +14,21 @@ export type DiscoveredMixer = {
   source: MixerSource;
 };
 
+export type ProfileConfidence = "confirmed" | "inferred" | "manual" | "unknown";
+
+export type KnownMixerEntry = {
+  ip: string;
+  port: number;
+  mac?: string;
+  channelCount: 16 | 24 | 32;
+  name?: string;
+  lastSeenAt: number;
+  lastConnectedAt: number;
+  source: "discovery" | "manual" | "cache";
+  confidence: ProfileConfidence;
+  cacheScopeKey: string;
+};
+
 const DEFAULT_MIXER_NAME = "Mixer Axios";
 
 function inferMixerMetadata(name: string) {
@@ -76,6 +91,8 @@ function normalizeMixer(input: Partial<DiscoveredMixer> & { ip: string; name?: s
 const LAST_CONNECTED_MIXER_IP_KEY = "last_connected_mixer_ip";
 const RECENT_CONNECTED_MIXERS_IPS_KEY = "recent_connected_mixer_ips";
 const MAX_RECENT_IPS = 5;
+const KNOWN_MIXERS_STORAGE_KEY = "ax_known_mixers";
+const MAX_KNOWN_MIXERS = 10;
 
 function normalizePrivateIp(ip: string): string | null {
   const normalized = ip.trim();
@@ -132,6 +149,51 @@ function readRememberedMixerIps(): string[] {
   return Array.from(deduped.keys()).slice(0, MAX_RECENT_IPS);
 }
 
+function isKnownMixerEntry(value: unknown): value is KnownMixerEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.ip === "string" &&
+    typeof v.channelCount === "number" &&
+    typeof v.lastConnectedAt === "number" &&
+    typeof v.confidence === "string" &&
+    typeof v.cacheScopeKey === "string"
+  );
+}
+
+export function readKnownMixers(): KnownMixerEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(KNOWN_MIXERS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isKnownMixerEntry);
+  } catch {
+    return [];
+  }
+}
+
+export function saveKnownMixer(entry: KnownMixerEntry): void {
+  if (typeof window === "undefined") return;
+  try {
+    const existing = readKnownMixers().filter((m) => m.ip !== entry.ip);
+    const next = [entry, ...existing].slice(0, MAX_KNOWN_MIXERS);
+    localStorage.setItem(KNOWN_MIXERS_STORAGE_KEY, JSON.stringify(next));
+    // Mantém keys legadas sincronizadas para compatibilidade com readRememberedMixerIps
+    localStorage.setItem(LAST_CONNECTED_MIXER_IP_KEY, entry.ip);
+    const recentIps = next.map((m) => m.ip);
+    localStorage.setItem(RECENT_CONNECTED_MIXERS_IPS_KEY, JSON.stringify(recentIps));
+  } catch {
+    // Ignorar falhas de storage.
+  }
+}
+
+export function readKnownMixerByIp(ip: string): KnownMixerEntry | undefined {
+  const normalized = ip.trim();
+  return readKnownMixers().find((m) => m.ip === normalized);
+}
+
 export function rememberConnectedMixerIp(ip: string) {
   const normalizedIp = normalizePrivateIp(ip);
   if (!normalizedIp) return;
@@ -147,11 +209,21 @@ export function rememberConnectedMixerIp(ip: string) {
   }
 }
 
-export async function discoverMixers(): Promise<DiscoveredMixer[]> {
+export async function discoverMixers(fullScan = false): Promise<DiscoveredMixer[]> {
   try {
-    const preferredIps = readRememberedMixerIps();
+    const legacyIps = readRememberedMixerIps();
+    const knownIps = readKnownMixers().map((m) => m.ip);
+    const seen = new Set<string>();
+    const preferredIps: string[] = [];
+    for (const ip of [...knownIps, ...legacyIps]) {
+      if (!seen.has(ip)) {
+        seen.add(ip);
+        preferredIps.push(ip);
+      }
+    }
     const response = await invoke<DiscoveredMixer[]>("discover_mixers", {
       preferredIps: preferredIps.length > 0 ? preferredIps : undefined,
+      fullScan: fullScan || undefined,
     });
     const deduped = new Map<string, DiscoveredMixer>();
 

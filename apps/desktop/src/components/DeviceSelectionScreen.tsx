@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { DiscoveredMixer } from "../services/mixerDiscovery";
+import type { DiscoveredMixer, ProfileConfidence } from "../services/mixerDiscovery";
 import axControlBrand from "../assets/AX-control-Brand-vert.svg";
 import productAxios16 from "../assets/product-axios16.webp";
 import productAxios24 from "../assets/product-axios24.webp";
@@ -9,6 +9,8 @@ type ManualModelOption = 16 | 24 | 32;
 
 type DeviceSelectionScreenProps = {
   mixers: DiscoveredMixer[];
+  knownMixers: DiscoveredMixer[];
+  hasSearched: boolean;
   discoveryLoading: boolean;
   discoveryError: string | null;
   connectBusy: boolean;
@@ -29,10 +31,6 @@ function DeviceCard({
 }) {
   const modelLabel = resolveMixerModelLabel(mixer);
   const resolvedChannels = resolveMixerChannels(mixer);
-  const channelsLabel =
-    resolvedChannels === undefined
-      ? "canais nao confirmados"
-      : `${resolvedChannels} canais`;
   const previewImage = resolveMixerPreviewImage(mixer);
 
   return (
@@ -46,16 +44,18 @@ function DeviceCard({
           <div className="device-card__identity-text">
             <div className="device-card__title-row">
               <div className="device-card__title">{mixer.name}</div>
-              <span className="device-card__badge">
+              <span
+                className={`device-card__badge${mixer.status !== "online" ? " device-card__badge--pending" : ""}`}
+              >
                 <span className="device-card__badge-dot" aria-hidden="true" />
-                <span>Online</span>
+                <span>{mixer.status === "online" ? "Online" : "Verificando..."}</span>
               </span>
             </div>
 
             <div className="device-card__subtitle">
               <span>IP: {mixer.ip}</span>
               <span className="device-card__separator">|</span>
-              <span>{channelsLabel}</span>
+              <span>{resolvedChannels} canais</span>
             </div>
           </div>
         </div>
@@ -87,6 +87,28 @@ function resolveMixerChannels(mixer: DiscoveredMixer) {
   return parsed;
 }
 
+function extractChannelsFromName(mixer: DiscoveredMixer): number | null {
+  const text = `${mixer.model ?? ""} ${mixer.name}`.toUpperCase();
+  const match = text.match(/AXIOS\s*(16|24|32)/i);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function resolveMixerDiscoveryConfidence(mixer: DiscoveredMixer): ProfileConfidence {
+  const probeChannels =
+    typeof mixer.channels === "number" && Number.isFinite(mixer.channels)
+      ? Math.max(1, Math.round(mixer.channels))
+      : null;
+  const nameChannels = extractChannelsFromName(mixer);
+
+  if (probeChannels === null && nameChannels === null) return "unknown";
+  if (probeChannels === null) return "inferred"; // nome aponta modelo mas probe não confirmou
+  if (nameChannels === null) return "confirmed"; // só probe, sem nome para contradizer
+  if (probeChannels === nameChannels) return "confirmed"; // probe e nome concordam
+  return "inferred"; // probe e nome divergem — não listar
+}
+
 function resolveMixerModelLabel(mixer: DiscoveredMixer) {
   const channels = resolveMixerChannels(mixer);
   if (channels === 32) return "AXIOS 32";
@@ -113,8 +135,60 @@ function isValidIpv4(value: string) {
   });
 }
 
+function KnownDeviceCard({
+  mixer,
+  connectBusy,
+  onConnect,
+}: {
+  mixer: DiscoveredMixer;
+  connectBusy: boolean;
+  onConnect: (mixer: DiscoveredMixer) => void;
+}) {
+  const modelLabel = resolveMixerModelLabel(mixer);
+  const resolvedChannels = resolveMixerChannels(mixer);
+  const channelsLabel =
+    resolvedChannels === undefined ? "canais nao confirmados" : `${resolvedChannels} canais`;
+  const previewImage = resolveMixerPreviewImage(mixer);
+
+  return (
+    <article className="device-card device-card--known">
+      <div className="device-card__header">
+        <div className="device-card__identity">
+          <div className="device-card__preview-wrap">
+            <img className="device-card__preview" src={previewImage} alt={modelLabel} />
+          </div>
+          <div className="device-card__identity-text">
+            <div className="device-card__title-row">
+              <div className="device-card__title">{mixer.name}</div>
+              <span className="device-card__badge device-card__badge--cached">
+                <span className="device-card__badge-dot" aria-hidden="true" />
+                <span>Ultima sessao</span>
+              </span>
+            </div>
+            <div className="device-card__subtitle">
+              <span>IP: {mixer.ip}</span>
+              <span className="device-card__separator">|</span>
+              <span>{channelsLabel}</span>
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="startup-button startup-button--secondary"
+          disabled={connectBusy}
+          onClick={() => onConnect(mixer)}
+        >
+          Conectar
+        </button>
+      </div>
+    </article>
+  );
+}
+
 export function DeviceSelectionScreen({
   mixers,
+  knownMixers,
+  hasSearched,
   discoveryLoading,
   discoveryError,
   connectBusy,
@@ -125,10 +199,28 @@ export function DeviceSelectionScreen({
   const [manualIp, setManualIp] = useState("");
   const [manualModel, setManualModel] = useState<ManualModelOption>(16);
 
-  const hasAnyMixer = mixers.length > 0;
+  const visibleMixers = useMemo(
+    () => mixers.filter((m) => resolveMixerDiscoveryConfidence(m) === "confirmed"),
+    [mixers]
+  );
+  const hiddenMixers = useMemo(
+    () => mixers.filter((m) => resolveMixerDiscoveryConfidence(m) !== "confirmed"),
+    [mixers]
+  );
+
+  const discoveredIps = useMemo(() => new Set(mixers.map((m) => m.ip)), [mixers]);
+  const fallbackKnownMixers = useMemo(
+    () => knownMixers.filter((m) => !discoveredIps.has(m.ip)),
+    [knownMixers, discoveredIps]
+  );
+  const showKnownFallback = hasSearched && visibleMixers.length === 0 && fallbackKnownMixers.length > 0;
+
+  const hasAnyMixer = visibleMixers.length > 0 || showKnownFallback;
   const showEmptyState = !discoveryLoading && !hasAnyMixer;
-  const showInitialSearchingState = discoveryLoading && !hasAnyMixer;
-  const isActiveForegroundSearch = discoveryLoading && !hasAnyMixer;
+  // Placeholder de busca: só durante a primeira busca, antes de qualquer resultado
+  const showInitialSearchingState = discoveryLoading && !hasSearched;
+  // Botão "Buscando...": sempre que há uma busca em andamento (inclusive refreshes)
+  const isActiveForegroundSearch = discoveryLoading;
 
   const manualIpTrimmed = manualIp.trim();
   const manualIpValid = useMemo(() => isValidIpv4(manualIpTrimmed), [manualIpTrimmed]);
@@ -185,7 +277,7 @@ export function DeviceSelectionScreen({
                   {isActiveForegroundSearch
                     ? "Buscando"
                     : hasAnyMixer
-                      ? `${mixers.length} encontrada(s)`
+                      ? `${visibleMixers.length} encontrada(s)`
                       : "Sem resultado"}
                 </div>
               </div>
@@ -198,7 +290,7 @@ export function DeviceSelectionScreen({
                   </article>
                 ) : null}
 
-                {mixers.map((mixer) => (
+                {visibleMixers.map((mixer) => (
                   <DeviceCard
                     key={mixer.id}
                     mixer={mixer}
@@ -207,6 +299,17 @@ export function DeviceSelectionScreen({
                   />
                 ))}
 
+                {showKnownFallback
+                  ? fallbackKnownMixers.map((mixer) => (
+                      <KnownDeviceCard
+                        key={mixer.id}
+                        mixer={mixer}
+                        connectBusy={connectBusy}
+                        onConnect={onConnectMixer}
+                      />
+                    ))
+                  : null}
+
                 {showEmptyState ? (
                   <article className="device-empty-state">
                     <h3>Nenhuma mesa encontrada</h3>
@@ -214,6 +317,14 @@ export function DeviceSelectionScreen({
                 ) : null}
               </div>
 
+              {hiddenMixers.length > 0 && !showInitialSearchingState && (
+                <div className="device-inline-message device-inline-message--warning">
+                  {hiddenMixers.length === 1
+                    ? `Mesa em ${hiddenMixers[0].ip} não pôde ser identificada com segurança.`
+                    : `${hiddenMixers.length} mesas não identificadas com segurança (${hiddenMixers.map((m) => m.ip).join(", ")}).`
+                  }{" "}Use Conexão Manual com o IP correspondente.
+                </div>
+              )}
               {discoveryError ? <div className="device-inline-message device-inline-message--warning">{discoveryError}</div> : null}
               {connectionError ? <div className="device-inline-message device-inline-message--danger">{connectionError}</div> : null}
             </section>

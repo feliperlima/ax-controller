@@ -5,6 +5,11 @@ import type { UniversalRawParamStore } from "../lib/universalRawParamStore";
 import type { DomainSelectors } from "../lib/domainSelectors";
 import { useRawParamSelector } from "../hooks/useRawParamSelector";
 
+type MuteGroupButton = {
+  id: number;
+  active: boolean;
+};
+
 type MasterBusProps = {
   name?: string;
   leftColorId?: number;
@@ -27,6 +32,8 @@ type MasterBusProps = {
   clippedL: boolean;
   clippedR: boolean;
   disabled?: boolean;
+  muteGroups?: MuteGroupButton[];
+  onToggleMuteGroup?: (id: number) => void;
   onToggleMainMute?: () => void;
   onToggleMainSolo?: () => void;
   onToggleLeftMute?: () => void;
@@ -93,6 +100,8 @@ export function MasterBus({
   clippedL = false,
   clippedR = false,
   disabled = false,
+  muteGroups,
+  onToggleMuteGroup,
   onToggleMainMute,
   onToggleMainSolo,
   onToggleLeftMute,
@@ -141,12 +150,12 @@ export function MasterBus({
   const effectiveToggleMute = onToggleMainMute ?? onToggleMute ?? (() => undefined);
   void detailSide;
   const effectiveToggleSolo = onToggleMainSolo ?? onToggleSolo ?? (() => undefined);
-  const displayDb = linked ? activeLeftFaderDb : activeRightFaderDb;
+  void (linked ? activeLeftFaderDb : activeRightFaderDb);
 
-  void onToggleLeftMute;
-  void onToggleLeftSolo;
-  void onToggleRightMute;
-  void onToggleRightSolo;
+  const leftToggleMute = onToggleLeftMute ?? onToggleMainMute ?? onToggleMute ?? (() => undefined);
+  const leftToggleSolo = onToggleLeftSolo ?? onToggleMainSolo ?? onToggleSolo ?? (() => undefined);
+  const rightToggleMute = onToggleRightMute ?? onToggleMainMute ?? onToggleMute ?? (() => undefined);
+  const rightToggleSolo = onToggleRightSolo ?? onToggleMainSolo ?? onToggleSolo ?? (() => undefined);
 
   return (
     <div
@@ -172,7 +181,7 @@ export function MasterBus({
           minHeight: 0,
           display: "flex",
           flexDirection: "column",
-          padding: "8px 4px 8px",
+          padding: "8px 4px 6px",
           boxSizing: "border-box",
         }}
       >
@@ -187,6 +196,58 @@ export function MasterBus({
           gap: 8,
         }}
       >
+        {/* Mute Groups */}
+        {muteGroups && muteGroups.length > 0 && (
+          <>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{
+                textAlign: "center",
+                fontSize: 9,
+                fontWeight: 600,
+                letterSpacing: "0.8px",
+                color: "var(--text-secondary)",
+                textTransform: "uppercase",
+              }}>
+                Mute Groups
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, width: "100%" }}>
+                {muteGroups.map((group) => (
+                  <button
+                    key={group.id}
+                    disabled={disabled}
+                    onClick={(e) => { e.stopPropagation(); onToggleMuteGroup?.(group.id); }}
+                    style={{
+                      width: "100%",
+                      height: 32,
+                      borderRadius: 8,
+                      border: group.active
+                        ? "2px solid var(--button-mute-border)"
+                        : "1px solid var(--button-default-border)",
+                      background: group.active
+                        ? "var(--button-mute-bg)"
+                        : "var(--button-default-bg)",
+                      color: group.active
+                        ? "var(--button-mute-text)"
+                        : "var(--button-default-text)",
+                      fontSize: 10,
+                      lineHeight: "12px",
+                      fontWeight: 700,
+                      letterSpacing: "1.2px",
+                      padding: "8px 4px",
+                      boxSizing: "border-box",
+                      cursor: disabled ? "not-allowed" : "pointer",
+                      opacity: disabled ? 0.5 : 1,
+                      boxShadow: group.active ? "var(--button-mute-glow)" : "none",
+                    }}
+                  >
+                    MUTE G{group.id}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ height: 1, background: "var(--border-subtle, rgba(255,255,255,0.08))", marginTop: 8, marginBottom: 4 }} />
+          </>
+        )}
         {/* Row 1: STEREO LINK */}
         <button
           disabled={disabled}
@@ -219,61 +280,120 @@ export function MasterBus({
         >
           STEREO LINK
         </button>
-        {/* Row 2: MUTE + SOLO */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, width: "100%" }}>
-          <button
-            disabled={disabled}
-            onClick={(e) => { e.stopPropagation(); effectiveToggleMute(); }}
-            style={{
-              width: "100%",
-              height: 32,
-              borderRadius: 8,
-              border: effectiveMuted ? "2px solid var(--button-mute-border)" : "1px solid var(--button-default-border)",
-              background: effectiveMuted ? "var(--button-mute-bg)" : "var(--button-default-bg)",
-              color: effectiveMuted ? "var(--button-mute-text)" : "var(--button-default-text)",
-              fontSize: 10,
-              lineHeight: "12px",
-              fontWeight: 700,
-              letterSpacing: "1.2px",
-              padding: "8px 14px",
-              boxSizing: "border-box",
-              cursor: disabled ? "not-allowed" : "pointer",
-              opacity: disabled ? 0.5 : 1,
-              boxShadow: effectiveMuted ? "var(--button-mute-glow)" : "none",
-            }}
-          >
-            MUTE
-          </button>
-          <button
-            disabled={disabled}
-            onClick={(e) => { e.stopPropagation(); effectiveToggleSolo(); }}
-            style={{
-              width: "100%",
-              height: 32,
-              borderRadius: 8,
-              border: effectiveSoloOn ? "2px solid var(--button-solo-border)" : "1px solid var(--button-default-border)",
-              background: effectiveSoloOn ? "var(--button-solo-bg)" : "var(--button-default-bg)",
-              color: effectiveSoloOn ? "var(--button-solo-text)" : "var(--button-default-text)",
-              fontSize: 10,
-              lineHeight: "12px",
-              fontWeight: 700,
-              letterSpacing: "1.2px",
-              padding: "8px 14px",
-              boxSizing: "border-box",
-              cursor: disabled ? "not-allowed" : "pointer",
-              opacity: disabled ? 0.5 : 1,
-              boxShadow: effectiveSoloOn ? "var(--button-solo-glow)" : "none",
-            }}
-          >
-            SOLO
-          </button>
-        </div>
+        {/* Row 2: MUTE + SOLO (linked) or L/R individual (unlinked) */}
+        {isLinked ? (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, width: "100%" }}>
+            <button
+              disabled={disabled}
+              onClick={(e) => { e.stopPropagation(); effectiveToggleMute(); }}
+              style={{
+                width: "100%", height: 32, borderRadius: 8,
+                border: effectiveMuted ? "2px solid var(--button-mute-border)" : "1px solid var(--button-default-border)",
+                background: effectiveMuted ? "var(--button-mute-bg)" : "var(--button-default-bg)",
+                color: effectiveMuted ? "var(--button-mute-text)" : "var(--button-default-text)",
+                fontSize: 10, lineHeight: "12px", fontWeight: 700, letterSpacing: "1.2px",
+                padding: "8px 14px", boxSizing: "border-box",
+                cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1,
+                boxShadow: effectiveMuted ? "var(--button-mute-glow)" : "none",
+              }}
+            >
+              MUTE
+            </button>
+            <button
+              disabled={disabled}
+              onClick={(e) => { e.stopPropagation(); effectiveToggleSolo(); }}
+              style={{
+                width: "100%", height: 32, borderRadius: 8,
+                border: effectiveSoloOn ? "2px solid var(--button-solo-border)" : "1px solid var(--button-default-border)",
+                background: effectiveSoloOn ? "var(--button-solo-bg)" : "var(--button-default-bg)",
+                color: effectiveSoloOn ? "var(--button-solo-text)" : "var(--button-default-text)",
+                fontSize: 10, lineHeight: "12px", fontWeight: 700, letterSpacing: "1.2px",
+                padding: "8px 14px", boxSizing: "border-box",
+                cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1,
+                boxShadow: effectiveSoloOn ? "var(--button-solo-glow)" : "none",
+              }}
+            >
+              SOLO
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
+              <button
+                disabled={disabled}
+                onClick={(e) => { e.stopPropagation(); leftToggleMute(); }}
+                style={{
+                  width: "100%", height: 32, borderRadius: 8,
+                  border: (activeLeftMuted ?? false) ? "2px solid var(--button-mute-border)" : "1px solid var(--button-default-border)",
+                  background: (activeLeftMuted ?? false) ? "var(--button-mute-bg)" : "var(--button-default-bg)",
+                  color: (activeLeftMuted ?? false) ? "var(--button-mute-text)" : "var(--button-default-text)",
+                  fontSize: 10, lineHeight: "12px", fontWeight: 700, letterSpacing: "1.2px",
+                  padding: "8px 4px", boxSizing: "border-box",
+                  cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1,
+                  boxShadow: (activeLeftMuted ?? false) ? "var(--button-mute-glow)" : "none",
+                }}
+              >
+                L MUTE
+              </button>
+              <button
+                disabled={disabled}
+                onClick={(e) => { e.stopPropagation(); leftToggleSolo(); }}
+                style={{
+                  width: "100%", height: 32, borderRadius: 8,
+                  border: (leftSoloOn ?? false) ? "2px solid var(--button-solo-border)" : "1px solid var(--button-default-border)",
+                  background: (leftSoloOn ?? false) ? "var(--button-solo-bg)" : "var(--button-default-bg)",
+                  color: (leftSoloOn ?? false) ? "var(--button-solo-text)" : "var(--button-default-text)",
+                  fontSize: 10, lineHeight: "12px", fontWeight: 700, letterSpacing: "1.2px",
+                  padding: "8px 4px", boxSizing: "border-box",
+                  cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1,
+                  boxShadow: (leftSoloOn ?? false) ? "var(--button-solo-glow)" : "none",
+                }}
+              >
+                L SOLO
+              </button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
+              <button
+                disabled={disabled}
+                onClick={(e) => { e.stopPropagation(); rightToggleMute(); }}
+                style={{
+                  width: "100%", height: 32, borderRadius: 8,
+                  border: (activeRightMuted ?? false) ? "2px solid var(--button-mute-border)" : "1px solid var(--button-default-border)",
+                  background: (activeRightMuted ?? false) ? "var(--button-mute-bg)" : "var(--button-default-bg)",
+                  color: (activeRightMuted ?? false) ? "var(--button-mute-text)" : "var(--button-default-text)",
+                  fontSize: 10, lineHeight: "12px", fontWeight: 700, letterSpacing: "1.2px",
+                  padding: "8px 4px", boxSizing: "border-box",
+                  cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1,
+                  boxShadow: (activeRightMuted ?? false) ? "var(--button-mute-glow)" : "none",
+                }}
+              >
+                R MUTE
+              </button>
+              <button
+                disabled={disabled}
+                onClick={(e) => { e.stopPropagation(); rightToggleSolo(); }}
+                style={{
+                  width: "100%", height: 32, borderRadius: 8,
+                  border: (rightSoloOn ?? false) ? "2px solid var(--button-solo-border)" : "1px solid var(--button-default-border)",
+                  background: (rightSoloOn ?? false) ? "var(--button-solo-bg)" : "var(--button-default-bg)",
+                  color: (rightSoloOn ?? false) ? "var(--button-solo-text)" : "var(--button-default-text)",
+                  fontSize: 10, lineHeight: "12px", fontWeight: 700, letterSpacing: "1.2px",
+                  padding: "8px 4px", boxSizing: "border-box",
+                  cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1,
+                  boxShadow: (rightSoloOn ?? false) ? "var(--button-solo-glow)" : "none",
+                }}
+              >
+                R SOLO
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Fader + Meter area: 24px below buttons */}
+      {/* Fader + Meter area */}
       <div
         style={{
-          marginTop: 24,
+          marginTop: 8,
           paddingLeft: 0,
           paddingRight: 0,
           paddingBottom: 0,
@@ -355,29 +475,76 @@ export function MasterBus({
           )}
         </div>
 
-        {/* dB display: fills the strip content width */}
-        <div
-          style={{
-            marginTop: 8,
-            height: 36,
-            width: "100%",
-            alignSelf: "stretch",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            backgroundColor: "rgba(0,0,0,0.8)",
-            borderRadius: 4,
-            padding: "11px 29px",
-            boxSizing: "border-box",
-            fontSize: 13,
-            lineHeight: 1,
-            fontWeight: 400,
-            color: effectiveMuted ? "var(--text-muted)" : "var(--text-primary)",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {faderDbLabel(displayDb)}
-        </div>
+        {/* dB display */}
+        {isLinked ? (
+          <div
+            style={{
+              marginTop: 8,
+              height: 36,
+              width: "100%",
+              alignSelf: "stretch",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: "rgba(0,0,0,0.8)",
+              borderRadius: 4,
+              padding: "11px 29px",
+              boxSizing: "border-box",
+              fontSize: 13,
+              lineHeight: 1,
+              fontWeight: 400,
+              color: effectiveMuted ? "var(--text-muted)" : "var(--text-primary)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {faderDbLabel(activeLeftFaderDb)}
+          </div>
+        ) : (
+          <div style={{ marginTop: 8, display: "flex", gap: 4, width: "100%" }}>
+            <div
+              style={{
+                flex: 1,
+                height: 36,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: "rgba(0,0,0,0.8)",
+                borderRadius: 4,
+                boxSizing: "border-box",
+                fontSize: 11,
+                lineHeight: 1,
+                fontWeight: 400,
+                color: (activeLeftMuted ?? false) ? "var(--text-muted)" : "var(--text-primary)",
+                gap: 2,
+              }}
+            >
+              <span style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.5px", color: "var(--text-secondary)", lineHeight: 1 }}>L</span>
+              {faderDbLabel(activeLeftFaderDb)}
+            </div>
+            <div
+              style={{
+                flex: 1,
+                height: 36,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: "rgba(0,0,0,0.8)",
+                borderRadius: 4,
+                boxSizing: "border-box",
+                fontSize: 11,
+                lineHeight: 1,
+                fontWeight: 400,
+                color: (activeRightMuted ?? false) ? "var(--text-muted)" : "var(--text-primary)",
+                gap: 2,
+              }}
+            >
+              <span style={{ fontSize: 8, fontWeight: 600, letterSpacing: "0.5px", color: "var(--text-secondary)", lineHeight: 1 }}>R</span>
+              {faderDbLabel(activeRightFaderDb)}
+            </div>
+          </div>
+        )}
       </div>
       </div>
 

@@ -1,22 +1,43 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { discoverMixers, type DiscoveredMixer } from "../services/mixerDiscovery";
+import { discoverMixers, readKnownMixers, type DiscoveredMixer, type KnownMixerEntry } from "../services/mixerDiscovery";
+
+function knownEntryToDiscovered(entry: KnownMixerEntry): DiscoveredMixer {
+  return {
+    id: `cache:${entry.ip}`,
+    name: entry.name ?? `AXIOS${entry.channelCount}`,
+    ip: entry.ip,
+    macAddress: entry.mac,
+    model: `AXIOS${entry.channelCount}`,
+    channels: entry.channelCount,
+    status: "unknown",
+    source: "finder",
+  };
+}
 
 type UseMixerDiscoveryResult = {
   mixers: DiscoveredMixer[];
+  knownMixers: DiscoveredMixer[];
+  hasSearched: boolean;
   isLoading: boolean;
   error: string | null;
-  refresh: () => Promise<void>;
+  refresh: (fullScan?: boolean) => Promise<void>;
 };
 
 export function useMixerDiscovery(enabled: boolean): UseMixerDiscoveryResult {
   const [mixers, setMixers] = useState<DiscoveredMixer[]>([]);
+  const [knownMixers] = useState<DiscoveredMixer[]>(() =>
+    readKnownMixers().map(knownEntryToDiscovered)
+  );
+  const [hasSearched, setHasSearched] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const autoLoadedRef = useRef(false);
   const refreshInFlightRef = useRef(false);
 
-  const refresh = useCallback(async (silent = false) => {
-    if (refreshInFlightRef.current) return;
+  const refresh = useCallback(async (silent = false, fullScan = false) => {
+    // Refreshes silenciosos (periódicos) não começam se outro já está rodando.
+    // Refreshes manuais sempre executam, mesmo se um silencioso está em andamento.
+    if (silent && refreshInFlightRef.current) return;
     refreshInFlightRef.current = true;
     if (!silent) {
       setIsLoading(true);
@@ -24,7 +45,7 @@ export function useMixerDiscovery(enabled: boolean): UseMixerDiscoveryResult {
     }
 
     try {
-      const discovered = await discoverMixers();
+      const discovered = await discoverMixers(fullScan);
       setMixers((current) => {
         const merged = new Map<string, DiscoveredMixer>();
         current.forEach((mixer) => merged.set(mixer.ip, mixer));
@@ -59,6 +80,7 @@ export function useMixerDiscovery(enabled: boolean): UseMixerDiscoveryResult {
       refreshInFlightRef.current = false;
       if (!silent) {
         setIsLoading(false);
+        setHasSearched(true);
       }
     }
   }, []);
@@ -98,10 +120,17 @@ export function useMixerDiscovery(enabled: boolean): UseMixerDiscoveryResult {
     };
   }, [enabled, refresh]);
 
+  const manualRefresh = useCallback(
+    (fullScan = false) => refresh(false, fullScan),
+    [refresh]
+  );
+
   return {
     mixers,
+    knownMixers,
+    hasSearched,
     isLoading,
     error,
-    refresh,
+    refresh: manualRefresh,
   };
 }

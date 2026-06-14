@@ -1278,16 +1278,6 @@ function CompressorGainReductionMeterBar({
   );
 }
 
-function getSvgPoint(svg: SVGSVGElement, clientX: number, clientY: number) {
-  const point = svg.createSVGPoint();
-  point.x = clientX;
-  point.y = clientY;
-
-  const matrix = svg.getScreenCTM();
-  if (!matrix) return { x: 0, y: 0 };
-
-  return point.matrixTransform(matrix.inverse());
-}
 
 function ControlButton({
   active,
@@ -1360,6 +1350,10 @@ function EditableKnob({
   disabled = false,
   compact = false,
   allowTextEdit = true,
+  textValue,
+  textMin,
+  textMax,
+  onTextCommit,
   onChange,
 }: {
   label: string;
@@ -1382,21 +1376,36 @@ function EditableKnob({
   disabled?: boolean;
   compact?: boolean;
   allowTextEdit?: boolean;
+  /** Human-readable value for the text input (defaults to `value`). Use when the knob internal scale differs from the human unit (e.g. knob in log-position, text in Hz). */
+  textValue?: number;
+  /** Clamp min for text input (defaults to `min`). */
+  textMin?: number;
+  /** Clamp max for text input (defaults to `max`). */
+  textMax?: number;
+  /** Called on text commit instead of `onChange`. Receives the clamped human value. */
+  onTextCommit?: (value: number) => void;
   onChange: (value: number) => void;
 }) {
+  const effectiveTextValue = textValue ?? value;
   const [isEditing, setIsEditing] = useState(false);
-  const [draft, setDraft] = useState(String(value));
+  const [draft, setDraft] = useState(String(effectiveTextValue));
 
   useEffect(() => {
-    if (!isEditing) setDraft(String(value));
-  }, [isEditing, value]);
+    if (!isEditing) setDraft(String(textValue ?? value));
+  }, [isEditing, value, textValue]);
 
   function commit() {
     const parsed = Number(draft);
-    const nextValue = Number.isFinite(parsed) ? clamp(parsed, min, max) : value;
+    const tMin = textMin ?? min;
+    const tMax = textMax ?? max;
+    const nextValue = Number.isFinite(parsed) ? clamp(parsed, tMin, tMax) : effectiveTextValue;
     setDraft(String(nextValue));
     setIsEditing(false);
-    onChange(nextValue);
+    if (onTextCommit) {
+      onTextCommit(nextValue);
+    } else {
+      onChange(nextValue);
+    }
   }
 
   return (
@@ -1642,6 +1651,13 @@ function GateGraph({
 }) {
   const graphFrameRef = useRef<HTMLDivElement | null>(null);
   const [responsiveSize, setResponsiveSize] = useState({ width: 560, height: 270 });
+  const gateDragRef = useRef<{
+    svgRect: DOMRect | null;
+    kind: "threshold" | "attack" | null;
+    pendingClientX: number;
+    pendingClientY: number;
+    rafId: number | null;
+  }>({ svgRect: null, kind: null, pendingClientX: 0, pendingClientY: 0, rafId: null });
 
   useEffect(() => {
     const node = graphFrameRef.current;
@@ -1676,6 +1692,13 @@ function GateGraph({
     observer.observe(node);
 
     return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const ref = gateDragRef.current;
+      if (ref.rafId !== null) { cancelAnimationFrame(ref.rafId); ref.rafId = null; }
+    };
   }, []);
 
   const width = Math.max(360, responsiveSize.width);
@@ -1719,25 +1742,31 @@ function GateGraph({
     `L ${decayEndX} ${bottomY}`,
   ].join(" ");
 
-  function updateFromEvent(clientX: number, clientY: number, svg: SVGSVGElement) {
-    const point = getSvgPoint(svg, clientX, clientY);
-    const y = clamp(point.y - graphY, 0, graphHeight);
-    const db = -Math.round((y / graphHeight) * 80);
-
-    onThresholdChange(db);
+  function updateThresholdFromRect(clientY: number) {
+    const rect = gateDragRef.current.svgRect;
+    if (!rect) return;
+    const y = clamp((clientY - rect.top) * (height / rect.height) - graphY, 0, graphHeight);
+    onThresholdChange(-Math.round((y / graphHeight) * 80));
   }
 
-  function updateAttackFromEvent(clientX: number, svg: SVGSVGElement) {
-    const point = getSvgPoint(svg, clientX, 0);
-    const nextHandleX = clamp(point.x, envelopeStartX + 20, envelopeStartX + 128);
-    const width = nextHandleX - envelopeStartX;
-    const attack = clamp(
-      Math.round(3 + ((width - 20) / 108) * (200 - 3)),
-      3,
-      200
-    );
+  function updateAttackFromRect(clientX: number) {
+    const rect = gateDragRef.current.svgRect;
+    if (!rect) return;
+    const svgX = (clientX - rect.left) * (width / rect.width);
+    const nextHandleX = clamp(svgX, envelopeStartX + 20, envelopeStartX + 128);
+    const w = nextHandleX - envelopeStartX;
+    onAttackChange(clamp(Math.round(3 + ((w - 20) / 108) * (200 - 3)), 3, 200));
+  }
 
-    onAttackChange(attack);
+  function scheduleGateUpdate() {
+    const ref = gateDragRef.current;
+    if (ref.rafId !== null) return;
+    ref.rafId = requestAnimationFrame(() => {
+      ref.rafId = null;
+      if (!ref.svgRect) return;
+      if (ref.kind === "threshold") updateThresholdFromRect(ref.pendingClientY);
+      else if (ref.kind === "attack") updateAttackFromRect(ref.pendingClientX);
+    });
   }
 
   return (
@@ -1851,21 +1880,28 @@ function GateGraph({
           event.preventDefault();
           event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);
-          updateAttackFromEvent(event.clientX, event.currentTarget.ownerSVGElement as SVGSVGElement);
+          gateDragRef.current.svgRect = (event.currentTarget.ownerSVGElement as SVGSVGElement).getBoundingClientRect();
+          gateDragRef.current.kind = "attack";
+          gateDragRef.current.pendingClientX = event.clientX;
+          updateAttackFromRect(event.clientX);
         }}
         onPointerMove={(event) => {
           if (disabled || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
           event.preventDefault();
           event.stopPropagation();
-          updateAttackFromEvent(event.clientX, event.currentTarget.ownerSVGElement as SVGSVGElement);
+          gateDragRef.current.kind = "attack";
+          gateDragRef.current.pendingClientX = event.clientX;
+          scheduleGateUpdate();
         }}
         onPointerUp={(event) => {
           event.preventDefault();
           event.stopPropagation();
           if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          gateDragRef.current.svgRect = null;
         }}
         onPointerCancel={(event) => {
           if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          gateDragRef.current.svgRect = null;
         }}
       >
         <circle cx={decayHandleX} cy={thresholdY} r={12} fill="none" stroke={HANDLE_THEME.ratio} strokeWidth="1.8" opacity={0.5} />
@@ -1882,21 +1918,28 @@ function GateGraph({
           event.preventDefault();
           event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);
-          updateFromEvent(event.clientX, event.clientY, event.currentTarget.ownerSVGElement as SVGSVGElement);
+          gateDragRef.current.svgRect = (event.currentTarget.ownerSVGElement as SVGSVGElement).getBoundingClientRect();
+          gateDragRef.current.kind = "threshold";
+          gateDragRef.current.pendingClientY = event.clientY;
+          updateThresholdFromRect(event.clientY);
         }}
         onPointerMove={(event) => {
           if (disabled || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
           event.preventDefault();
           event.stopPropagation();
-          updateFromEvent(event.clientX, event.clientY, event.currentTarget.ownerSVGElement as SVGSVGElement);
+          gateDragRef.current.kind = "threshold";
+          gateDragRef.current.pendingClientY = event.clientY;
+          scheduleGateUpdate();
         }}
         onPointerUp={(event) => {
           event.preventDefault();
           event.stopPropagation();
           if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          gateDragRef.current.svgRect = null;
         }}
         onPointerCancel={(event) => {
           if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          gateDragRef.current.svgRect = null;
         }}
       >
         <circle cx={thresholdHandleX} cy={thresholdY} r={17} fill="none" stroke={GATE_THEME.primarySoft} strokeWidth="2" opacity={gate.enabled ? 0.45 : 0.15} />
@@ -1922,6 +1965,13 @@ function CompressorGraph({
   const graphFrameRef = useRef<HTMLDivElement | null>(null);
   const [responsiveSize, setResponsiveSize] = useState({ width: 560, height: 270 });
   const [selectedHandle, setSelectedHandle] = useState<"threshold" | "ratio" | null>(null);
+  const compDragRef = useRef<{
+    svgRect: DOMRect | null;
+    kind: "threshold" | "ratio" | null;
+    pendingClientX: number;
+    pendingClientY: number;
+    rafId: number | null;
+  }>({ svgRect: null, kind: null, pendingClientX: 0, pendingClientY: 0, rafId: null });
 
   useEffect(() => {
     const node = graphFrameRef.current;
@@ -1956,6 +2006,13 @@ function CompressorGraph({
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    return () => {
+      const ref = compDragRef.current;
+      if (ref.rafId !== null) { cancelAnimationFrame(ref.rafId); ref.rafId = null; }
+    };
+  }, []);
+
   const width = Math.max(360, responsiveSize.width);
   const height = Math.max(180, responsiveSize.height);
   const graphX = PROCESSOR_GRAPH_RECT.left;
@@ -1979,28 +2036,34 @@ function CompressorGraph({
   const path = `M ${graphX} ${graphY + graphHeight} L ${thresholdX} ${thresholdY} L ${graphX + graphWidth} ${endY}`;
   const fillPath = `${path} L ${graphX + graphWidth} ${graphY + graphHeight} L ${graphX} ${graphY + graphHeight} Z`;
 
-  function updateThresholdFromEvent(clientX: number, svg: SVGSVGElement) {
-    const point = getSvgPoint(svg, clientX, 0);
-    const x = clamp(point.x - graphX, 0, graphWidth);
+  function updateThresholdFromRect(clientX: number) {
+    const rect = compDragRef.current.svgRect;
+    if (!rect) return;
+    const x = clamp((clientX - rect.left) * (width / rect.width) - graphX, 0, graphWidth);
     const threshold = snapCompressorThreshold((x / graphWidth) * 80 - 80);
-
-    if (snappedRatio >= 40) {
-      onChange({ threshold, ratio: 40 });
-      return;
-    }
-
+    if (snappedRatio >= 40) { onChange({ threshold, ratio: 40 }); return; }
     onChange({ threshold });
   }
 
-  function updateRatioFromEvent(clientY: number, svg: SVGSVGElement) {
-    const point = getSvgPoint(svg, 0, clientY);
-    const y = clamp(point.y - graphY, 0, graphHeight);
+  function updateRatioFromRect(clientY: number) {
+    const rect = compDragRef.current.svgRect;
+    if (!rect) return;
+    const y = clamp((clientY - rect.top) * (height / rect.height) - graphY, 0, graphHeight);
     const outDb = -Math.round((y / graphHeight) * 80);
     const inputDelta = Math.max(0.5, 0 - snappedThreshold);
     const outputDelta = Math.max(0.5, outDb - snappedThreshold);
-    const rawRatio = inputDelta / outputDelta;
-    const ratio = snapCompressorRatio(rawRatio);
-    onChange({ ratio });
+    onChange({ ratio: snapCompressorRatio(inputDelta / outputDelta) });
+  }
+
+  function scheduleCompUpdate() {
+    const ref = compDragRef.current;
+    if (ref.rafId !== null) return;
+    ref.rafId = requestAnimationFrame(() => {
+      ref.rafId = null;
+      if (!ref.svgRect) return;
+      if (ref.kind === "threshold") updateThresholdFromRect(ref.pendingClientX);
+      else if (ref.kind === "ratio") updateRatioFromRect(ref.pendingClientY);
+    });
   }
 
   return (
@@ -2121,21 +2184,28 @@ function CompressorGraph({
           event.preventDefault();
           event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);
-          updateRatioFromEvent(event.clientY, event.currentTarget.ownerSVGElement as SVGSVGElement);
+          compDragRef.current.svgRect = (event.currentTarget.ownerSVGElement as SVGSVGElement).getBoundingClientRect();
+          compDragRef.current.kind = "ratio";
+          compDragRef.current.pendingClientY = event.clientY;
+          updateRatioFromRect(event.clientY);
         }}
         onPointerMove={(event) => {
           if (disabled || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
           event.preventDefault();
           event.stopPropagation();
-          updateRatioFromEvent(event.clientY, event.currentTarget.ownerSVGElement as SVGSVGElement);
+          compDragRef.current.kind = "ratio";
+          compDragRef.current.pendingClientY = event.clientY;
+          scheduleCompUpdate();
         }}
         onPointerUp={(event) => {
           event.preventDefault();
           event.stopPropagation();
           if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          compDragRef.current.svgRect = null;
         }}
         onPointerCancel={(event) => {
           if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          compDragRef.current.svgRect = null;
         }}
       >
         <circle
@@ -2171,21 +2241,28 @@ function CompressorGraph({
           event.preventDefault();
           event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);
-          updateThresholdFromEvent(event.clientX, event.currentTarget.ownerSVGElement as SVGSVGElement);
+          compDragRef.current.svgRect = (event.currentTarget.ownerSVGElement as SVGSVGElement).getBoundingClientRect();
+          compDragRef.current.kind = "threshold";
+          compDragRef.current.pendingClientX = event.clientX;
+          updateThresholdFromRect(event.clientX);
         }}
         onPointerMove={(event) => {
           if (disabled || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
           event.preventDefault();
           event.stopPropagation();
-          updateThresholdFromEvent(event.clientX, event.currentTarget.ownerSVGElement as SVGSVGElement);
+          compDragRef.current.kind = "threshold";
+          compDragRef.current.pendingClientX = event.clientX;
+          scheduleCompUpdate();
         }}
         onPointerUp={(event) => {
           event.preventDefault();
           event.stopPropagation();
           if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          compDragRef.current.svgRect = null;
         }}
         onPointerCancel={(event) => {
           if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+          compDragRef.current.svgRect = null;
         }}
       >
         <circle
@@ -2327,6 +2404,14 @@ function EqGraph({
 }) {
   const graphFrameRef = useRef<HTMLDivElement | null>(null);
   const [responsiveSize, setResponsiveSize] = useState({ width: 846, height: 236 });
+  const eqDragRef = useRef<{
+    svgRect: DOMRect | null;
+    pendingX: number;
+    pendingY: number;
+    pendingBandIndex: number | null;
+    pendingFilter: "hpf" | "lpf" | null;
+    rafId: number | null;
+  }>({ svgRect: null, pendingX: 0, pendingY: 0, pendingBandIndex: null, pendingFilter: null, rafId: null });
 
   useEffect(() => {
     const node = graphFrameRef.current;
@@ -2361,6 +2446,16 @@ function EqGraph({
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    return () => {
+      const ref = eqDragRef.current;
+      if (ref.rafId !== null) {
+        cancelAnimationFrame(ref.rafId);
+        ref.rafId = null;
+      }
+    };
+  }, []);
+
   const width = Math.max(360, responsiveSize.width);
   const height = Math.max(180, responsiveSize.height);
   const graphX = PROCESSOR_GRAPH_RECT.left;
@@ -2382,81 +2477,88 @@ function EqGraph({
   const gainForY = (y: number) =>
     maxGraphDb -
     (clamp(y, 0, graphHeight) / graphHeight) * (maxGraphDb - minGraphDb);
-  const points = Array.from({ length: 160 }, (_, index) => {
-    const freq = xToDisplayFreq((graphWidth / 159) * index, graphWidth);
-    const gain = eqMagnitudeDb(freq, eq);
-
-    return `${graphX + (graphWidth / 159) * index},${yForGain(gain)}`;
-  }).join(" ");
+  const points = useMemo(() => {
+    const _yForGain = (gain: number) =>
+      graphY + ((maxGraphDb - clamp(gain, minGraphDb, maxGraphDb)) / (maxGraphDb - minGraphDb)) * graphHeight;
+    return Array.from({ length: 160 }, (_, index) => {
+      const freq = xToDisplayFreq((graphWidth / 159) * index, graphWidth);
+      const gain = eqMagnitudeDb(freq, eq);
+      return `${graphX + (graphWidth / 159) * index},${_yForGain(gain)}`;
+    }).join(" ");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eq, graphX, graphY, graphWidth, graphHeight]);
   const zeroLineY = yForGain(0);
   const eqFillBaseY = Math.min(graphY + graphHeight, zeroLineY + 1.5);
-  const bandOverlays = eq.bands
-    .map((band, index) => {
-      if (!eq.enabled || !band.enabled || Math.abs(band.gain) < 0.05) {
-        return null;
-      }
-
-      const overlayPoints = Array.from({ length: 120 }, (_, pointIndex) => {
-        const x = (graphWidth / 119) * pointIndex;
-        const freq = xToDisplayFreq(x, graphWidth);
-        const gain = clamp(peakingEqMagnitudeDb(freq, band), -24, 18);
-
+  const bandOverlays = useMemo(() => {
+    const _yForGain = (gain: number) =>
+      graphY + ((maxGraphDb - clamp(gain, minGraphDb, maxGraphDb)) / (maxGraphDb - minGraphDb)) * graphHeight;
+    const _zeroLineY = _yForGain(0);
+    return eq.bands
+      .map((band, index) => {
+        if (!eq.enabled || !band.enabled || Math.abs(band.gain) < 0.05) return null;
+        const overlayPoints = Array.from({ length: 120 }, (_, pointIndex) => {
+          const x = (graphWidth / 119) * pointIndex;
+          const freq = xToDisplayFreq(x, graphWidth);
+          const gain = clamp(peakingEqMagnitudeDb(freq, band), -24, 18);
+          return { x: graphX + x, y: _yForGain(gain) };
+        });
+        const polylinePoints = overlayPoints.map((point) => `${point.x},${point.y}`).join(" ");
+        const fillPoints = [
+          `${overlayPoints[0].x},${_zeroLineY}`,
+          ...overlayPoints.map((point) => `${point.x},${point.y}`),
+          `${overlayPoints[overlayPoints.length - 1].x},${_zeroLineY}`,
+        ].join(" ");
         return {
-          x: graphX + x,
-          y: yForGain(gain),
+          key: `band-overlay-${index}`,
+          color: getEqBandColor(index),
+          polylinePoints,
+          fillPoints,
+          fillOpacity: band.gain >= 0 ? 0.12 : 0.08,
+          strokeOpacity: band.gain >= 0 ? 0.52 : 0.4,
         };
-      });
+      })
+      .filter((overlay): overlay is NonNullable<typeof overlay> => overlay !== null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eq, graphX, graphY, graphWidth, graphHeight]);
 
-      const polylinePoints = overlayPoints.map((point) => `${point.x},${point.y}`).join(" ");
-      const fillPoints = [
-        `${overlayPoints[0].x},${zeroLineY}`,
-        ...overlayPoints.map((point) => `${point.x},${point.y}`),
-        `${overlayPoints[overlayPoints.length - 1].x},${zeroLineY}`,
-      ].join(" ");
-
-      return {
-        key: `band-overlay-${index}`,
-        color: getEqBandColor(index),
-        polylinePoints,
-        fillPoints,
-        fillOpacity: band.gain >= 0 ? 0.12 : 0.08,
-        strokeOpacity: band.gain >= 0 ? 0.52 : 0.4,
-      };
-    })
-    .filter((overlay): overlay is NonNullable<typeof overlay> => overlay !== null);
-
-  function updateBandFromEvent(bandIndex: number, clientX: number, clientY: number, svg: SVGSVGElement) {
-    const point = getSvgPoint(svg, clientX, clientY);
-    const x = clamp(point.x - graphX, 0, graphWidth);
-    const y = clamp(point.y - graphY, 0, graphHeight);
-
+  function updateBandFromRect(bandIndex: number, clientX: number, clientY: number) {
+    const rect = eqDragRef.current.svgRect;
+    if (!rect) return;
+    const scaleX = width / rect.width;
+    const scaleY = height / rect.height;
+    const x = clamp((clientX - rect.left) * scaleX - graphX, 0, graphWidth);
+    const y = clamp((clientY - rect.top) * scaleY - graphY, 0, graphHeight);
     onBandChange(bandIndex + 1, {
       freq: xToActiveFreq(x, graphWidth),
       gain: Math.round(gainForY(y) * 10) / 10,
     });
   }
 
-  function updateFilterFromEvent(
-    filter: "hpf" | "lpf",
-    clientX: number,
-    clientY: number,
-    svg: SVGSVGElement
-  ) {
-    const point = getSvgPoint(svg, clientX, clientY);
-    const x = clamp(point.x - graphX, 0, graphWidth);
+  function updateFilterFromRect(filter: "hpf" | "lpf", clientX: number, _clientY: number) {
+    const rect = eqDragRef.current.svgRect;
+    if (!rect) return;
+    const scaleX = width / rect.width;
+    const x = clamp((clientX - rect.left) * scaleX - graphX, 0, graphWidth);
     const freq = xToActiveFreq(x, graphWidth);
-
     if (filter === "hpf") {
-      onEqChange({
-        hpfEnabled: true,
-        hpfFreq: clamp(Math.min(freq, eq.lpfFreq - 10), EQ_ACTIVE_MIN_FREQ, EQ_ACTIVE_MAX_FREQ),
-      });
+      onEqChange({ hpfEnabled: true, hpfFreq: clamp(Math.min(freq, eq.lpfFreq - 10), EQ_ACTIVE_MIN_FREQ, EQ_ACTIVE_MAX_FREQ) });
     } else {
-      onEqChange({
-        lpfEnabled: true,
-        lpfFreq: clamp(Math.max(freq, eq.hpfFreq + 10), EQ_ACTIVE_MIN_FREQ, EQ_ACTIVE_MAX_FREQ),
-      });
+      onEqChange({ lpfEnabled: true, lpfFreq: clamp(Math.max(freq, eq.hpfFreq + 10), EQ_ACTIVE_MIN_FREQ, EQ_ACTIVE_MAX_FREQ) });
     }
+  }
+
+  function scheduleEqUpdate() {
+    const ref = eqDragRef.current;
+    if (ref.rafId !== null) return;
+    ref.rafId = requestAnimationFrame(() => {
+      ref.rafId = null;
+      if (!ref.svgRect) return;
+      if (ref.pendingBandIndex !== null) {
+        updateBandFromRect(ref.pendingBandIndex, ref.pendingX, ref.pendingY);
+      } else if (ref.pendingFilter !== null) {
+        updateFilterFromRect(ref.pendingFilter, ref.pendingX, ref.pendingY);
+      }
+    });
   }
 
   return (
@@ -2607,21 +2709,31 @@ function EqGraph({
               event.stopPropagation();
               onSelect(filter);
               event.currentTarget.setPointerCapture(event.pointerId);
-              updateFilterFromEvent(filter, event.clientX, event.clientY, event.currentTarget.ownerSVGElement as SVGSVGElement);
+              eqDragRef.current.svgRect = (event.currentTarget.ownerSVGElement as SVGSVGElement).getBoundingClientRect();
+              eqDragRef.current.pendingFilter = filter;
+              eqDragRef.current.pendingBandIndex = null;
+              eqDragRef.current.pendingX = event.clientX;
+              eqDragRef.current.pendingY = event.clientY;
+              updateFilterFromRect(filter, event.clientX, event.clientY);
             }}
             onPointerMove={(event) => {
               if (disabled || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
               event.preventDefault();
               event.stopPropagation();
-              updateFilterFromEvent(filter, event.clientX, event.clientY, event.currentTarget.ownerSVGElement as SVGSVGElement);
+              eqDragRef.current.pendingFilter = filter;
+              eqDragRef.current.pendingX = event.clientX;
+              eqDragRef.current.pendingY = event.clientY;
+              scheduleEqUpdate();
             }}
             onPointerUp={(event) => {
               event.preventDefault();
               event.stopPropagation();
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+              eqDragRef.current.svgRect = null;
             }}
             onPointerCancel={(event) => {
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+              eqDragRef.current.svgRect = null;
             }}
             style={{ cursor: disabled ? "not-allowed" : "ew-resize" }}
           >
@@ -2658,21 +2770,31 @@ function EqGraph({
               event.stopPropagation();
               onSelect(index + 1);
               event.currentTarget.setPointerCapture(event.pointerId);
-              updateBandFromEvent(index, event.clientX, event.clientY, event.currentTarget.ownerSVGElement as SVGSVGElement);
+              eqDragRef.current.svgRect = (event.currentTarget.ownerSVGElement as SVGSVGElement).getBoundingClientRect();
+              eqDragRef.current.pendingBandIndex = index;
+              eqDragRef.current.pendingFilter = null;
+              eqDragRef.current.pendingX = event.clientX;
+              eqDragRef.current.pendingY = event.clientY;
+              updateBandFromRect(index, event.clientX, event.clientY);
             }}
             onPointerMove={(event) => {
               if (disabled || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
               event.preventDefault();
               event.stopPropagation();
-              updateBandFromEvent(index, event.clientX, event.clientY, event.currentTarget.ownerSVGElement as SVGSVGElement);
+              eqDragRef.current.pendingBandIndex = index;
+              eqDragRef.current.pendingX = event.clientX;
+              eqDragRef.current.pendingY = event.clientY;
+              scheduleEqUpdate();
             }}
             onPointerUp={(event) => {
               event.preventDefault();
               event.stopPropagation();
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+              eqDragRef.current.svgRect = null;
             }}
             onPointerCancel={(event) => {
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+              eqDragRef.current.svgRect = null;
             }}
             style={{ cursor: disabled ? "not-allowed" : "grab" }}
           >
@@ -2861,6 +2983,10 @@ function GateEditor({
               disabled={controllersDisabled}
               accentColor={MODULE_ACCENTS.gate.color}
               glowColor={MODULE_ACCENTS.gate.glow}
+              textValue={gate.threshold}
+              textMin={-80}
+              textMax={0}
+              onTextCommit={(db) => onChange({ threshold: clamp(db, -80, 0) })}
               onChange={(thresholdHalfSteps) => onChange({ threshold: clamp(thresholdHalfSteps / 2, -80, 0) })}
             />
           </div>
@@ -3097,6 +3223,14 @@ function CompressorEditor({
               disabled={controllersDisabled}
               accentColor={MODULE_ACCENTS.comp.color}
               glowColor={MODULE_ACCENTS.comp.glow}
+              textValue={snapCompressorThreshold(comp.threshold)}
+              textMin={-80}
+              textMax={0}
+              onTextCommit={(db) => {
+                const threshold = snapCompressorThreshold(db);
+                if (snapCompressorRatio(comp.ratio) >= 40) { onChange({ threshold, ratio: 40 }); return; }
+                onChange({ threshold });
+              }}
               onChange={(thresholdHalfSteps) => {
                 const threshold = snapCompressorThreshold(thresholdHalfSteps / 2);
 
@@ -3161,6 +3295,7 @@ function CompressorEditor({
               disabled={controllersDisabled}
               accentColor={MODULE_ACCENTS.comp.color}
               glowColor={MODULE_ACCENTS.comp.glow}
+              onTextCommit={(ms) => onChange({ release: clamp(Math.round(ms), 10, 1000) })}
               onChange={(releasePosition) =>
                 onChange({ release: Math.round(logPositionToValue(releasePosition, 10, 1000)) })
               }
@@ -3446,6 +3581,16 @@ function EqEditor({
                   disabled={disabled}
                   accentColor="var(--semantic-danger-base)"
                   glowColor="var(--alpha-red-60)"
+                  textValue={selectedFilter === "hpf" ? eq.hpfFreq : eq.lpfFreq}
+                  textMin={20}
+                  textMax={20000}
+                  onTextCommit={(hz) =>
+                    onChange(
+                      selectedFilter === "hpf"
+                        ? { hpfFreq: snapEqFrequency(Math.min(hz, eq.lpfFreq - 10)) }
+                        : { lpfFreq: snapEqFrequency(Math.max(hz, eq.hpfFreq + 10)) }
+                    )
+                  }
                   onChange={(freqPosition) =>
                     onChange(
                       selectedFilter === "hpf"
@@ -3530,6 +3675,10 @@ function EqEditor({
                   disabled={disabled || selectedNode === null}
                   accentColor="var(--semantic-danger-base)"
                   glowColor="var(--alpha-red-60)"
+                  textValue={band.freq}
+                  textMin={20}
+                  textMax={20000}
+                  onTextCommit={(hz) => onBandChange(selectedBand, { freq: snapEqFrequency(hz) })}
                   onChange={(freqPosition) =>
                     onBandChange(selectedBand, {
                       freq: snapEqFrequency(logPositionToValue(freqPosition, 20, 20000)),
@@ -3566,6 +3715,10 @@ function EqEditor({
                   disabled={disabled || selectedNode === null}
                   accentColor="var(--semantic-danger-base)"
                   glowColor="var(--alpha-red-60)"
+                  textValue={band.q}
+                  textMin={0.6}
+                  textMax={28.1}
+                  onTextCommit={(q) => onBandChange(selectedBand, { q: clamp(q, 0.6, 28.08) })}
                   onChange={(q) => onBandChange(selectedBand, { q: q / 10 })}
                 />
                 </div>

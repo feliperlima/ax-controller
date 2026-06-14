@@ -18,7 +18,7 @@ type GateMetersResult = {
 
 const IDLE_INPUT_DB = -75;
 const MAX_GAIN_REDUCTION_DB = 30;
-const METER_SMOOTHING_INTERVAL_MS = 50;
+const METER_SMOOTHING_INTERVAL_MS = 33;
 
 // Gate decay on this mixer is stepped (2,4,6,8,16,32). We map it to close-time constants.
 const GATE_DECAY_CLOSE_MS: Record<number, number> = {

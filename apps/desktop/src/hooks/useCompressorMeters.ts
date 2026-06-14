@@ -23,8 +23,8 @@ type CompressorMetersResult = {
 
 const IDLE_INPUT_DB = -75;
 const MAX_GAIN_REDUCTION_DB = 30;
-const METER_SMOOTHING_INTERVAL_MS = 50;
-const GAIN_REDUCTION_ZERO_SNAP_DB = 0.75;
+const METER_SMOOTHING_INTERVAL_MS = 33;
+const GAIN_REDUCTION_ZERO_SNAP_DB = 0.3;
 
 function clamp(value: number, min: number, max: number) {
 	return Math.min(max, Math.max(min, value));
