@@ -326,8 +326,12 @@ fn resolve_mac_from_arp(_ip: &str) -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn resolve_mac_from_arp(ip: &str) -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     let output = Command::new("arp")
         .args(["-a", ip])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
 
@@ -371,8 +375,12 @@ fn resolve_finder_ip() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn resolve_finder_ip() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
     let output = Command::new("ping")
         .args(["-n", "1", "findmixer.local"])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
 

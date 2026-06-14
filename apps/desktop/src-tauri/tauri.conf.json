@@ -31,7 +31,8 @@
     "active": true,
     "targets": "all",
     "macOS": {
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "signingIdentity": "Apple Development: feliperlima35@gmail.com (5FA5C4H95J)"
     },
     "iOS": {
       "infoPlist": "Info.ios.plist"
