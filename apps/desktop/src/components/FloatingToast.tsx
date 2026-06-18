@@ -33,7 +33,7 @@ function BellIcon() {
 function ToastList({ toasts }: { toasts: ToastItem[] }) {
   if (toasts.length === 0) return null;
   return createPortal(
-    <div className="ax-toast-container">
+    <div className="ax-toast-container" role="region" aria-live="polite" aria-label="Notificações">
       {toasts.map((t) => (
         <div key={t.id} className="ax-toast">
           <div className="ax-toast__icon"><BellIcon /></div>

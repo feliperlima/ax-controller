@@ -1006,6 +1006,8 @@ const LICENSE_RUNTIME_CACHE_STORAGE_KEY = "ax_license_runtime_cache_v2";
 const LICENSE_KEY_STORAGE_KEY = "ax_license_key_last";
 const LICENSE_DEVICES_CACHE_STORAGE_KEY = "ax_license_devices_cache";
 const PENDING_TRIAL_ACTIVATION_STORAGE_KEY = "ax_pending_trial_activation";
+const PIX_PENDING_PAYMENT_STORAGE_KEY = "ax_pending_pix_payment_id";
+const PIX_PURCHASE_CONFIRMED_STORAGE_KEY = "ax_pix_purchase_confirmed";
 const TRIAL_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const TRIAL_UPGRADE_PROMPT_DATE_KEY = "ax_trial_upgrade_prompt_date";
 const USER_NAME_STORAGE_KEY = "ax_user_name";
@@ -3035,7 +3037,20 @@ function App() {
     }
 
     setBootstrapFeatureFlags(boot.feature_flags);
-    setBootstrapMessages(boot.messages);
+
+    const messages = [...boot.messages];
+    if (boot.maintenance?.active && !messages.find((m) => m.key === "maintenance_active" && m.channel === "banner")) {
+      messages.unshift({
+        key: "maintenance_active",
+        title: "Manutenção em andamento",
+        body: boot.maintenance.message ?? "O serviço está em manutenção. Algumas funções podem estar indisponíveis.",
+        severity: "warning",
+        channel: "banner",
+        cta_label: null,
+        cta_url: null,
+      });
+    }
+    setBootstrapMessages(messages);
     if (boot.version) setBootstrapVersionInfo(boot.version);
 
     if (showToasts) {
@@ -3199,6 +3214,17 @@ function App() {
     void runBootstrapRef.current(installationId, { showToasts: true });
   }, [isLicenseValidated, installationId]);
 
+  // For free/anonymous users (no license key, isLicenseValidated never fires):
+  // run bootstrap once to load feature flags and messages without user data.
+  const bootstrapRanAnonymousRef = useRef(false);
+  useEffect(() => {
+    if (!installationId || bootstrapRanAnonymousRef.current) return;
+    const licenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    if (licenseKey) return; // will be handled by the validated path
+    bootstrapRanAnonymousRef.current = true;
+    void runBootstrapRef.current(installationId);
+  }, [installationId]);
+
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
@@ -3326,6 +3352,7 @@ function App() {
     if (licenseModalOpen) return;
     stopPixPolling();
     setPixPayment({ stage: "idle" });
+    setLicenseValidationMessage({ kind: "idle", text: "" });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [licenseModalOpen]);
 
@@ -3334,7 +3361,7 @@ function App() {
     if (!isOnline || !installationId) return;
     if (licenseFormalState !== "TRIAL_ACTIVE" && licenseFormalState !== "TRIAL_EXPIRED") return;
 
-    const pendingPaymentId = localStorage.getItem("ax_pending_pix_payment_id");
+    const pendingPaymentId = localStorage.getItem(PIX_PENDING_PAYMENT_STORAGE_KEY);
     if (!pendingPaymentId) return;
 
     void apiCheckPixStatus(
@@ -3347,7 +3374,7 @@ function App() {
       if (result.status === "approved" && result.license_key) {
         void handlePixPaymentApproved(result.license_key);
       } else if (result.status === "rejected" || result.status === "cancelled") {
-        localStorage.removeItem("ax_pending_pix_payment_id");
+        localStorage.removeItem(PIX_PENDING_PAYMENT_STORAGE_KEY);
       }
     }).catch(() => { /* network unavailable — will retry on next boot */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -9651,7 +9678,7 @@ function App() {
       }
 
       if (response.statusCode === 404) {
-        setLicenseValidationMessage({ kind: "error", text: "Endpoint não encontrado. Verifique a configuração da API." });
+        setLicenseValidationMessage({ kind: "error", text: "Serviço indisponível no momento. Tente novamente em instantes." });
         return;
       }
 
@@ -10064,7 +10091,7 @@ function App() {
       if (!loginResult) {
         setLicenseValidationMessage({
           kind: "error",
-          text: "Não foi possível iniciar sessão. Verifique a configuração da API de licença.",
+          text: "Não foi possível conectar ao serviço de licença. Tente novamente.",
         });
         return;
       }
@@ -10339,10 +10366,10 @@ function App() {
     setHasLicenseActivatedOnce(true);
     setLicenseKeyInput(licenseKey);
 
-    localStorage.removeItem("ax_pending_pix_payment_id");
+    localStorage.removeItem(PIX_PENDING_PAYMENT_STORAGE_KEY);
     // Guard flag: prevents background revalidation from downgrading to trial
     // before the server confirms the purchased status.
-    localStorage.setItem("ax_pix_purchase_confirmed", licenseKey);
+    localStorage.setItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY, licenseKey);
 
     // Apply purchased state immediately so the UI never reverts to trial.
     const syntheticSnapshot: LicenseSnapshot = {
@@ -10380,7 +10407,7 @@ function App() {
         const payload = normalizeLicenseApiPayload(response.body ?? {});
         const snapshot = parseLicenseSnapshot(payload);
         if (snapshot.licenseType === "purchased") {
-          localStorage.removeItem("ax_pix_purchase_confirmed");
+          localStorage.removeItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
           applyLicenseSnapshot(snapshot, licenseKey, "Licença ativada com sucesso!");
         }
       }
@@ -10454,7 +10481,7 @@ function App() {
         qrCodeBase64: result.qr_code_base64,
         expiresAt: result.expires_at,
       });
-      localStorage.setItem("ax_pending_pix_payment_id", result.payment_id);
+      localStorage.setItem(PIX_PENDING_PAYMENT_STORAGE_KEY, result.payment_id);
       startPixPolling(result.payment_id);
     } catch (err) {
       console.error("[AX] startPixPayment failed:", err);
@@ -10590,7 +10617,7 @@ function App() {
     lastBackgroundRevalidationAtRef.current = now;
 
     try {
-      const pixPurchaseConfirmedKey = localStorage.getItem("ax_pix_purchase_confirmed");
+      const pixPurchaseConfirmedKey = localStorage.getItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
       const pixPurchaseGuardActive = Boolean(pixPurchaseConfirmedKey);
 
       if (LICENSE_API_BASE_URL) {
@@ -10603,7 +10630,7 @@ function App() {
             return true;
           }
           if (statusSnapshot.licenseType === "purchased") {
-            localStorage.removeItem("ax_pix_purchase_confirmed");
+            localStorage.removeItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
           }
 
           const formalState = resolveLicenseFormalState({
@@ -10657,7 +10684,7 @@ function App() {
         return true;
       }
       if (snapshot.licenseType === "purchased") {
-        localStorage.removeItem("ax_pix_purchase_confirmed");
+        localStorage.removeItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
       }
 
       const formalState = resolveLicenseFormalState({

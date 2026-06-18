@@ -386,8 +386,6 @@ export function buildLocalhostApiCandidates(fileName: string) {
   return [
     `https://www.axcontrol.com.br/api/${fileName}`,
     `https://www.axcontrol.com.br/${fileName}`,
-    `http://www.axcontrol.com.br/api/${fileName}`,
-    `http://www.axcontrol.com.br/${fileName}`,
     `/api/${fileName}`,
     `api/${fileName}`,
     fileName,
