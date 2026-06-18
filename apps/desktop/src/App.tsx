@@ -15202,12 +15202,6 @@ function App() {
       ? `Teste ativo · ${trialDaysRemaining} dias`
       : "Teste ativo"
     : "Teste encerrado";
-  const upgradeHeadline = trialIsActive
-    ? "Continue usando o AX Control"
-    : "Ative seu acesso ao AX Control";
-  const upgradeDescription = trialIsActive
-    ? "Adquira sua licença e continue controlando sua Mesa Axios sem interrupções."
-    : "Finalize a compra pelo WhatsApp e volte a usar o AX Control sem interrupções.";
 
   const licenseModalNode = licenseModalOpen ? (
     <div
