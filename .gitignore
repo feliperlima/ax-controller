@@ -13,6 +13,18 @@ target/
 *.so
 *.dylib
 
+# Release binaries (distribuir via GitHub Releases)
+*.apk
+*.idsig
+*.dmg
+*.ipa
+*.msi
+*.AppImage
+
+# Android signing (sensível — nunca commitar)
+*.keystore
+*.jks
+
 # Rust
 Cargo.lock
 target/
