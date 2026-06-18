@@ -247,6 +247,7 @@ export function resolveLicenseFormalState(input: {
   const statusLower = snapshot.status.toLowerCase();
 
   if (codeUpper === "LICENSE_NOT_FOUND") return "LICENSE_NOT_FOUND";
+  if (codeUpper === "LICENSE_FREE") return "LICENSE_NOT_FOUND";
   if (codeUpper === "LICENSE_EXPIRED") return "TRIAL_EXPIRED";
   if (codeUpper === "LICENSE_INACTIVE") return "LICENSE_BLOCKED";
   if (codeUpper === "LICENSE_PENDING") return "LICENSE_BLOCKED";

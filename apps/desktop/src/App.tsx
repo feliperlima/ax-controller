@@ -61,6 +61,7 @@ import { LicensePanel } from "./screens/LicensePanel";
 import { DevicesPanel } from "./screens/DevicesPanel";
 import { SettingsPanel } from "./screens/SettingsPanel";
 import { UpgradeModal } from "./screens/UpgradeModal";
+import { TrialActivatedModal } from "./screens/TrialActivatedModal";
 import { MixerTabs, type MixerTabDefinition } from "./components/MixerTabs";
 import axControlBrand from "./assets/AX-control-Brand-vert.svg";
 import productAxios24 from "./assets/product-axios24.webp";
@@ -77,7 +78,6 @@ import {
   apiCheckPixStatus,
   PIX_CREATE_PATH,
   PIX_STATUS_PATH,
-  PIX_AMOUNT_BRL,
 } from "./services/paymentService";
 import {
   LICENSE_API_BASE_URL,
@@ -1017,7 +1017,8 @@ const LICENSE_REVALIDATE_INTERVAL_DAYS = 30;
 const LICENSE_REVALIDATE_WARNING_DAYS = 5;
 const LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS = 2 * 60 * 1000;
 const LICENSE_STRICT_SERVER_VALIDATION = true;
-const UPGRADE_PRICE_LABEL = (import.meta.env.VITE_UPGRADE_PRICE_LABEL ?? "R$99,90").trim();
+const FOUNDER_PRICE_LABEL = "R$99,90";
+const REGULAR_PRICE_LABEL = "R$189,90";
 const SUPPORT_WHATSAPP = (import.meta.env.VITE_SUPPORT_WHATSAPP ?? "+5592993361237").trim();
 const SUPPORT_EMAIL = (import.meta.env.VITE_SUPPORT_EMAIL ?? "").trim();
 
@@ -2637,7 +2638,7 @@ function App() {
   >({ stage: "idle" });
   const [installationId, setInstallationId] = useState("");
   const [licenseKeyInput, setLicenseKeyInput] = useState("");
-  const [licenseValidationBusy, setLicenseValidationBusy] = useState(false);
+  const [licenseValidationBusy] = useState(false);
   const [licenseValidationMessage, setLicenseValidationMessage] = useState<{ kind: "idle" | "success" | "error"; text: string }>({
     kind: "idle",
     text: "",
@@ -2655,10 +2656,14 @@ function App() {
   const [licenseDeviceActionBusy, setLicenseDeviceActionBusy] = useState<string | null>(null);
   const [licenseUserName, setLicenseUserName] = useState(() => localStorage.getItem(USER_NAME_STORAGE_KEY) ?? "");
   const [licenseUserEmail, setLicenseUserEmail] = useState(() => localStorage.getItem(USER_EMAIL_STORAGE_KEY) ?? "");
+  const [isFounder, setIsFounder] = useState<boolean | null>(null);
   const [bootstrapFeatureFlags, setBootstrapFeatureFlags] = useState<Record<string, boolean>>({});
   const [bootstrapMessages, setBootstrapMessages] = useState<import("./services/bootstrapService").BootstrapMessage[]>([]);
   const [bootstrapVersionInfo, setBootstrapVersionInfo] = useState<import("./services/bootstrapService").BootstrapVersionInfo | null>(null);
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
+  const [upgradeModalFeature, setUpgradeModalFeature] = useState<import("./screens/UpgradeModal").PaywallFeatureKey | undefined>(undefined);
+  const [trialActivatedModalOpen, setTrialActivatedModalOpen] = useState(false);
+  const [trialActivatedFromFeature, setTrialActivatedFromFeature] = useState<import("./screens/UpgradeModal").PaywallFeatureKey | undefined>(undefined);
   const [licenseRegisterBusy, setLicenseRegisterBusy] = useState(false);
   const [licenseRegisterWantsUpgrade] = useState(false);
   const [licenseRegisterName, setLicenseRegisterName] = useState("");
@@ -3011,7 +3016,12 @@ function App() {
       installationId: id,
       appVersion: APP_VERSION,
       licenseKey,
-    }).catch(() => null);
+    }).catch((err: unknown) => {
+      if (err instanceof Error && (err as { isUnauthenticated?: boolean }).isUnauthenticated) {
+        handleLogout();
+      }
+      return null;
+    });
     if (!boot) return;
 
     if (boot.user) {
@@ -3023,6 +3033,7 @@ function App() {
         localStorage.setItem(USER_EMAIL_STORAGE_KEY, boot.user.email);
         setLicenseUserEmail(boot.user.email);
       }
+      setIsFounder(boot.user.is_founder);
     }
 
     if (boot.public_key && boot.certificate?.sig_v != null) {
@@ -3057,6 +3068,39 @@ function App() {
       boot.messages
         .filter((m) => m.channel === "toast")
         .forEach((m) => showToast(m.body, m.title ?? undefined));
+    }
+
+    // Update license state from bootstrap — server is always source of truth when online.
+    console.log("[AX bootstrap] license from server:", boot.license, "flags:", boot.feature_flags);
+    if (boot.license && !isConnectedRef.current) {
+      const { status, plan, trial_expires_at } = boot.license;
+      let formalState: LicenseFormalState;
+      if (status === "trial_active") {
+        formalState = "TRIAL_ACTIVE";
+      } else if (status === "trial_expired") {
+        formalState = "TRIAL_EXPIRED";
+      } else if (status === "licensed") {
+        formalState = plan === "founder" ? "PURCHASED_ACTIVE" : "PURCHASED_ACTIVE";
+      } else {
+        formalState = "LICENSE_NOT_FOUND";
+      }
+
+      setLicenseFormalState(formalState);
+      setLicenseTrialExpiryAt(trial_expires_at ?? null);
+      setIsLicenseValidated(!isLicenseStateBlocked(formalState));
+
+      // Persist to runtime cache so offline usage reflects latest server state.
+      const nowIso = new Date().toISOString();
+      const licenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+      writeRuntimeLicenseCache({
+        installationUuid: id,
+        licenseKey,
+        licenseType: plan === "trial" ? "trial" : plan === "free" ? "unknown" : "purchased",
+        trialExpiryAt: trial_expires_at ?? null,
+        lastValidatedAt: nowIso,
+        nextRevalidationAt: null,
+        cachedState: formalState,
+      });
     }
   }
   const runBootstrapRef = useRef(runBootstrap);
@@ -3123,16 +3167,31 @@ function App() {
       .then(async () => { await validateCertificate().catch(() => {}); })
       .catch(() => {});
 
-    // On focus: re-run bootstrap whenever the app has internet, so flags/messages
-    // stay current even after long offline sessions. Guard prevents concurrent runs.
-    let bootstrapRunning = false;
+    // On focus: re-run bootstrap and silently revalidate license when online.
+    // This ensures plan changes made in the admin (e.g. trial → purchased) are
+    // picked up automatically without the user needing to restart the app.
+    let focusRunning = false;
     function handleFocus() {
-      if (!navigator.onLine || bootstrapRunning) return;
-      bootstrapRunning = true;
-      void runBootstrapRef.current(nextInstallationId).finally(() => { bootstrapRunning = false; });
+      if (!navigator.onLine || focusRunning) return;
+      focusRunning = true;
+      const storedKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+      Promise.all([
+        runBootstrapRef.current(nextInstallationId),
+        storedKey ? runBackgroundLicenseRevalidation(false, false) : Promise.resolve(),
+      ]).finally(() => { focusRunning = false; });
     }
     window.addEventListener("focus", handleFocus);
-    return () => window.removeEventListener("focus", handleFocus);
+
+    const bootstrapInterval = window.setInterval(() => {
+      if (!navigator.onLine) return;
+      void runBootstrapRef.current(nextInstallationId);
+      void runBackgroundLicenseRevalidation(false, false);
+    }, 15 * 60 * 1000);
+
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      window.clearInterval(bootstrapInterval);
+    };
   }, []);
 
   useEffect(() => {
@@ -3310,10 +3369,19 @@ function App() {
     };
 
     checkExpiryFromCache();
-    const timer = window.setInterval(checkExpiryFromCache, 60 * 1000);
+
+    // Schedule a single timeout to fire exactly when the license expires,
+    // instead of polling every 60s. Falls back to no-op if already expired or no expiry.
+    const runtimeCacheNow = readRuntimeLicenseCache();
+    const expiryIso = runtimeCacheNow?.trialExpiryAt ?? readCachedLicenseStatus()?.expiryDate ?? null;
+    const msUntilExpiry = expiryIso ? Date.parse(expiryIso) - Date.now() : -1;
+    let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+    if (msUntilExpiry > 0) {
+      expiryTimer = window.setTimeout(checkExpiryFromCache, msUntilExpiry);
+    }
 
     return () => {
-      window.clearInterval(timer);
+      if (expiryTimer !== null) window.clearTimeout(expiryTimer);
     };
   }, [installationId]);
 
@@ -4098,8 +4166,9 @@ function App() {
     };
   }, [assignableMemberIds, isConnected, isSyncing, mainView]);
 
-  function requirePlus(action: () => void) {
+  function requirePlus(action: () => void, feature?: import("./screens/UpgradeModal").PaywallFeatureKey) {
     if (isFreeTier(licenseFormalState)) {
+      setUpgradeModalFeature(feature);
       setUpgradeModalOpen(true);
     } else {
       action();
@@ -9898,7 +9967,8 @@ function App() {
       return;
     }
 
-    const activated = await apiActivateTrial(installationId);
+    const userEmail = localStorage.getItem(USER_EMAIL_STORAGE_KEY)?.trim() ?? "";
+    const activated = await apiActivateTrial(installationId, userEmail);
     if (!activated || activated.httpStatus >= 400 || !activated.success) {
       // Endpoint missing/unreachable/rejected — keep the trial running locally and
       // let the background sync effect retry once the backend side is ready.
@@ -10470,7 +10540,7 @@ function App() {
         "https://www.axcontrol.com.br",
         PIX_CREATE_PATH,
         installationId,
-        PIX_AMOUNT_BRL,
+        pixAmountBRL,
         "Licença AX Control",
         AX_APP_KEY
       );
@@ -10486,90 +10556,6 @@ function App() {
     } catch (err) {
       console.error("[AX] startPixPayment failed:", err);
       setPixPayment({ stage: "failed", reason: "network" });
-    }
-  }
-
-  async function handleCopyInstallationId() {
-    if (!installationId) return;
-    try {
-      await navigator.clipboard.writeText(installationId);
-      setLicenseValidationMessage({ kind: "success", text: "UUID copiado para a área de transferência." });
-    } catch {
-      setLicenseValidationMessage({ kind: "error", text: "Não foi possível copiar o UUID." });
-    }
-  }
-
-  async function handleValidateLicense() {
-    const licenseValue = licenseKeyInput.trim();
-
-    if (!licenseValue) {
-      setLicenseValidationMessage({ kind: "error", text: "Informe a chave da licença." });
-      return;
-    }
-
-    if (!installationId) {
-      setLicenseValidationMessage({ kind: "error", text: "UUID da instalação indisponível." });
-      return;
-    }
-
-    localStorage.setItem(LICENSE_KEY_STORAGE_KEY, licenseValue);
-
-    setLicenseValidationBusy(true);
-    setLicenseValidationMessage({ kind: "idle", text: "" });
-
-    try {
-      let snapshot = await requestLicenseValidateApi(licenseValue);
-      if (!snapshot) {
-        const response = await invoke<{ statusCode: number; body: Record<string, unknown> }>("validate_license", {
-          payload: {
-            licenseKey: licenseValue,
-            series: licenseValue,
-            deviceId: installationId,
-            deviceName: getDeviceNameLabel(),
-            platform: getPlatformLabel(),
-            appVersion: APP_VERSION,
-          },
-        });
-        if (response.statusCode === 403) {
-          throw Object.assign(new Error("APP_KEY_UNAUTHORIZED"), { isAppKeyError: true });
-        }
-        const payload = normalizeLicenseApiPayload(response.body ?? {});
-        snapshot = parseLicenseSnapshot(payload);
-      }
-
-      const formalState = resolveLicenseFormalState({
-        snapshot,
-        warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
-        fallbackTrialExpiryAt: licenseTrialExpiryAt,
-        fallbackNextRevalidationAt: licenseNextRevalidationAt,
-      });
-
-      applyLicenseSnapshot(snapshot, licenseValue, snapshot.message || "Licença validada.");
-
-      if (!isLicenseStateBlocked(formalState)) {
-        localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
-        localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
-        setHasLicenseActivatedOnce(true);
-        setLicenseModalOpen(false);
-        setLicenseModalMandatory(false);
-        setLicenseModalMode("onboarding");
-        setLicenseValidationMessage({ kind: "success", text: snapshot.message || "Licença validada com sucesso." });
-        return;
-      }
-
-      localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
-      localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
-      clearRuntimeLicenseCache();
-      setIsLicenseValidated(false);
-      setLicenseValidationMessage({
-        kind: "error",
-        text: snapshot.message || "Licença bloqueada. Revalide para continuar.",
-      });
-    } catch (err) {
-      const text = licenseApiErrorText(err) ?? "Não foi possível verificar a licença. Tente novamente.";
-      setLicenseValidationMessage({ kind: "error", text });
-    } finally {
-      setLicenseValidationBusy(false);
     }
   }
 
@@ -12461,6 +12447,7 @@ function App() {
 
   function goToDetailChannel(channelNumber: number, options?: { preserveActiveModule?: boolean }) {
     if (isFreeTier(licenseFormalState)) {
+      setUpgradeModalFeature("details");
       setUpgradeModalOpen(true);
       return;
     }
@@ -12496,6 +12483,7 @@ function App() {
 
   function goToDetailAux(auxNumber: number, options?: { preserveActiveModule?: boolean }) {
     if (isFreeTier(licenseFormalState)) {
+      setUpgradeModalFeature("auxSends");
       setUpgradeModalOpen(true);
       return;
     }
@@ -12532,6 +12520,7 @@ function App() {
 
   function goToDetailFx(fxNumber: number) {
     if (isFreeTier(licenseFormalState)) {
+      setUpgradeModalFeature("fxSends");
       setUpgradeModalOpen(true);
       return;
     }
@@ -12638,6 +12627,7 @@ function App() {
 
   function goToDetailMaster() {
     if (isFreeTier(licenseFormalState)) {
+      setUpgradeModalFeature("details");
       setUpgradeModalOpen(true);
       return;
     }
@@ -15162,6 +15152,10 @@ function App() {
     });
   }, [detailView, isConnected]);
 
+  // null = bootstrap ainda não chegou → usar preço founder (nunca cobrar a mais por incerteza)
+  const UPGRADE_PRICE_LABEL = isFounder === false ? REGULAR_PRICE_LABEL : FOUNDER_PRICE_LABEL;
+  const pixAmountBRL = isFounder === false ? 189.90 : 99.90;
+
   const trialDaysRemaining = getTrialRemainingDays(licenseTrialExpiryAt);
   const trialIsActive = licenseFormalState === "TRIAL_ACTIVE";
   const trialIsExpired = licenseFormalState === "TRIAL_EXPIRED";
@@ -15231,7 +15225,7 @@ function App() {
         aria-label="Licença"
         onClick={(event) => event.stopPropagation()}
       >
-        {!licenseModalMandatory && (
+        {licenseModalMode !== "upgrade" && !licenseModalMandatory && pixPayment.stage === "idle" && (
           <button
             type="button"
             className="settings-modal__close"
@@ -15286,19 +15280,46 @@ function App() {
           <div className="settings-modal__upgrade">
             {pixPayment.stage === "idle" && (
               <>
-                <div className="settings-modal__upgrade-hero">
-                  <span className="settings-modal__upgrade-badge">{upgradeBadgeLabel}</span>
-                  <div className="settings-modal__upgrade-hero-copy">
-                    <h3>{upgradeHeadline}</h3>
-                    <p>{upgradeDescription}</p>
+                <div className="pix-payment__header">
+                  <div className="pix-payment__header-left">
+                    <svg viewBox="0 0 132 94" fill="none" xmlns="http://www.w3.org/2000/svg" width="28" height="20" aria-hidden="true">
+                      <path d="M14 0H47.091L66.0001 22.8485H32.1213L14 0Z" fill="#15B2E8" />
+                      <path d="M118 0H84.909L65.9999 22.8485H99.8787L118 0Z" fill="#15B2E8" />
+                      <path d="M98.3218 66.7083L33.6785 66.7082L66.0001 27.2916L98.3218 66.7083Z" fill="#72CFEF" />
+                      <path d="M14 94.0002H47.091L66.0001 71.1517H32.1213L14 94.0002Z" fill="#39C5EC" />
+                      <path d="M118 94.0002H84.909L65.9999 71.1517H99.8787L118 94.0002Z" fill="#39C5EC" />
+                    </svg>
+                    <div>
+                      <span className="pix-payment__header-appname">AX Control+</span>
+                      <span className="pix-payment__header-sublabel">Acesso permanente</span>
+                    </div>
                   </div>
-                  <div className="settings-modal__upgrade-visual" aria-hidden="true">
-                    <img
-                      className="settings-modal__upgrade-product"
-                      src={productAxios24}
-                      alt=""
-                    />
-                    <div className="settings-modal__upgrade-appicon">
+                  <div className="pix-payment__header-right">
+                    <span className="pix-payment__header-price">{UPGRADE_PRICE_LABEL}</span>
+                    <span className="pix-payment__header-sublabel">Pagamento único</span>
+                  </div>
+                  {!licenseModalMandatory && (
+                    <button type="button" className="pix-payment__header-close" onClick={closeLicenseModal} aria-label="Fechar">
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+
+                <div className="upgrade-hero">
+                  <div className="upgrade-hero__copy">
+                    <span className="settings-modal__upgrade-badge">{upgradeBadgeLabel}</span>
+                    <h3 className="upgrade-hero__title">
+                      {trialIsActive ? "Seu teste está acabando" : "Seu teste encerrou"}
+                    </h3>
+                    <p className="upgrade-hero__desc">
+                      {trialIsActive
+                        ? "Adquira sua licença para manter acesso a todas as funcionalidades."
+                        : "Adquira sua licença para voltar a ter acesso a todas as funcionalidades."}
+                    </p>
+                  </div>
+                  <div className="upgrade-hero__visual" aria-hidden="true">
+                    <img className="upgrade-hero__product" src={productAxios24} alt="" />
+                    <div className="upgrade-hero__appicon">
                       <svg viewBox="0 0 132 94" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <path d="M14 0H47.091L66.0001 22.8485H32.1213L14 0Z" fill="#15B2E8" />
                         <path d="M118 0H84.909L65.9999 22.8485H99.8787L118 0Z" fill="#15B2E8" />
@@ -15309,59 +15330,37 @@ function App() {
                     </div>
                   </div>
                 </div>
-
-                <div className="settings-modal__upgrade-card">
-                  <div className="settings-modal__upgrade-price-block">
-                    <div className="settings-modal__upgrade-price">{UPGRADE_PRICE_LABEL}</div>
-                    <div className="settings-modal__upgrade-copy">
-                      <strong>Acesso completo ao AX Control</strong>
-                      <span>Licença permanente para o AX Control.</span>
-                    </div>
-                  </div>
-                  <div className="settings-modal__upgrade-benefits">
-                    <div className="settings-modal__upgrade-benefit">
-                      <ShieldCheck size={18} className="settings-modal__upgrade-benefit-icon" aria-hidden="true" />
-                      <strong>Acesso completo</strong>
-                    </div>
-                    <div className="settings-modal__upgrade-benefit">
-                      <Zap size={18} className="settings-modal__upgrade-benefit-icon" aria-hidden="true" />
-                      <strong>Sem limitações</strong>
-                    </div>
-                    <div className="settings-modal__upgrade-benefit">
-                      <Monitor size={18} className="settings-modal__upgrade-benefit-icon" aria-hidden="true" />
-                      <strong>Atualizações incluídas</strong>
-                    </div>
-                    <div className="settings-modal__upgrade-benefit">
-                      <Phone size={18} className="settings-modal__upgrade-benefit-icon" aria-hidden="true" />
-                      <strong>Suporte no WhatsApp</strong>
-                    </div>
-                  </div>
-                </div>
               </>
             )}
 
             {pixPayment.stage !== "idle" && (
-              <div className="pix-payment__header-compact">
-                <div className="pix-payment__header-brand">
-                  <div className="pix-payment__header-icon" aria-hidden="true">
-                    <svg viewBox="0 0 132 94" fill="none" xmlns="http://www.w3.org/2000/svg" width="32" height="23">
-                      <path d="M14 0H47.091L66.0001 22.8485H32.1213L14 0Z" fill="#15B2E8" />
-                      <path d="M118 0H84.909L65.9999 22.8485H99.8787L118 0Z" fill="#15B2E8" />
-                      <path d="M98.3218 66.7083L33.6785 66.7082L66.0001 27.2916L98.3218 66.7083Z" fill="#72CFEF" />
-                      <path d="M14 94.0002H47.091L66.0001 71.1517H32.1213L14 94.0002Z" fill="#39C5EC" />
-                      <path d="M118 94.0002H84.909L65.9999 71.1517H99.8787L118 94.0002Z" fill="#39C5EC" />
-                    </svg>
+              <div className="pix-payment__header">
+                <div className="pix-payment__header-left">
+                  <svg viewBox="0 0 132 94" fill="none" xmlns="http://www.w3.org/2000/svg" width="28" height="20" aria-hidden="true">
+                    <path d="M14 0H47.091L66.0001 22.8485H32.1213L14 0Z" fill="#15B2E8" />
+                    <path d="M118 0H84.909L65.9999 22.8485H99.8787L118 0Z" fill="#15B2E8" />
+                    <path d="M98.3218 66.7083L33.6785 66.7082L66.0001 27.2916L98.3218 66.7083Z" fill="#72CFEF" />
+                    <path d="M14 94.0002H47.091L66.0001 71.1517H32.1213L14 94.0002Z" fill="#39C5EC" />
+                    <path d="M118 94.0002H84.909L65.9999 71.1517H99.8787L118 94.0002Z" fill="#39C5EC" />
+                  </svg>
+                  <div>
+                    <span className="pix-payment__header-appname">AX Control+</span>
+                    <span className="pix-payment__header-sublabel">Acesso permanente</span>
                   </div>
-                  <div className="pix-payment__header-text">
-                    <span className="pix-payment__header-appname">AX Control</span>
-                    <span className="pix-payment__header-sublabel">Licença permanente</span>
-                  </div>
-                  <span className="pix-payment__header-price">{UPGRADE_PRICE_LABEL}</span>
                 </div>
-                {trialIsActive && trialDaysRemaining !== null && (
-                  <span className="settings-modal__upgrade-badge" style={{ alignSelf: "center" }}>
-                    {upgradeBadgeLabel}
-                  </span>
+                <div className="pix-payment__header-right">
+                  <span className="pix-payment__header-price">{UPGRADE_PRICE_LABEL}</span>
+                  <span className="pix-payment__header-sublabel">Pagamento único</span>
+                </div>
+                {!licenseModalMandatory && (
+                  <button
+                    type="button"
+                    className="pix-payment__header-close"
+                    onClick={closeLicenseModal}
+                    aria-label="Fechar"
+                  >
+                    <X size={14} />
+                  </button>
                 )}
               </div>
             )}
@@ -15419,38 +15418,41 @@ function App() {
 
             {pixPayment.stage === "awaiting" && (
               <div className="pix-payment">
-                <p className="pix-payment__title">Escaneie o QR Code ou copie o código Pix</p>
                 <div className="pix-payment__qr-wrap">
                   <img
                     className="pix-payment__qr"
                     src={`data:image/png;base64,${pixPayment.qrCodeBase64}`}
                     alt="QR Code Pix"
-                    width={180}
-                    height={180}
+                    width={160}
+                    height={160}
                   />
                 </div>
+
                 <div className="pix-payment__code-row">
-                  <code className="pix-payment__code">
-                    {pixPayment.qrCode.slice(0, 44)}…
-                  </code>
+                  <code className="pix-payment__code">{pixPayment.qrCode.slice(0, 36)}…</code>
                   <button
                     type="button"
-                    className="startup-button startup-button--ghost pix-payment__copy-btn"
-                    onClick={() => { void navigator.clipboard.writeText(pixPayment.qrCode); }}
+                    className="pix-payment__copy-btn"
+                    onClick={() => { void navigator.clipboard.writeText(pixPayment.qrCode); showToast("Código Pix copiado!"); }}
                   >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                     Copiar
                   </button>
                 </div>
-                <p className="pix-payment__status">
-                  <span className="pix-payment__status-dot" />
-                  Aguardando pagamento...
-                </p>
+
+                <div className="pix-payment__waiting">
+                  <span className="pix-payment__waiting-dots">
+                    <span /><span /><span />
+                  </span>
+                  <span>Aguardando confirmação do pagamento…</span>
+                </div>
+
                 <button
                   type="button"
-                  className="startup-button startup-button--ghost pix-payment__cancel-btn"
+                  className="pix-payment__cancel-btn"
                   onClick={() => { stopPixPolling(); setPixPayment({ stage: "idle" }); }}
                 >
-                  Cancelar
+                  Pagar depois
                 </button>
               </div>
             )}
@@ -15616,6 +15618,7 @@ function App() {
                       className="settings-modal__input"
                       value={licenseSignInPassword}
                       onChange={(event) => setLicenseSignInPassword(event.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter" && !licenseSignInBusy) void handleRecoverLicenseByCredentials(); }}
                       placeholder="Senha"
                       type={licenseSignInShowPassword ? "text" : "password"}
                       autoComplete="current-password"
@@ -15741,6 +15744,7 @@ function App() {
           licenseFormalState={licenseFormalState}
           licenseTrialExpiryAt={licenseTrialExpiryAt}
           hasActivatedOnce={hasLicenseActivatedOnce}
+          isFounder={isFounder}
           userName={licenseUserName || (localStorage.getItem(USER_NAME_STORAGE_KEY) ?? "")}
           userEmail={licenseUserEmail || (localStorage.getItem(USER_EMAIL_STORAGE_KEY) ?? "")}
           messages={bootstrapMessages}
@@ -15758,6 +15762,13 @@ function App() {
             setLicenseModalMode("upgrade");
             setLicenseModalMandatory(false);
             setLicenseModalOpen(true);
+          }}
+          onStartTrial={() => {
+            setTrialActivatedFromFeature(undefined);
+            void startTrialNow().then(() => {
+              showToast("Teste grátis ativado com sucesso.");
+              setTrialActivatedModalOpen(true);
+            });
           }}
           mainContent={(() => {
             if (homeSubView === "connect") {
@@ -15785,16 +15796,15 @@ function App() {
                   licenseTrialExpiryAt={licenseTrialExpiryAt}
                   licenseNextRevalidationAt={licenseNextRevalidationAt}
                   licenseRevalidationHint={licenseRevalidationHint}
-                  installationId={installationId}
-                  onCopyInstallationId={handleCopyInstallationId}
-                  licenseKeyInput={licenseKeyInput}
-                  onLicenseKeyInputChange={setLicenseKeyInput}
-                  onValidateLicense={() => void handleValidateLicense()}
                   licenseValidationBusy={licenseValidationBusy}
-                  licenseValidationMessage={licenseValidationMessage}
                   upgradePriceLabel={UPGRADE_PRICE_LABEL}
                   isOnline={isOnline}
-                  onStartPixPayment={() => void startPixPayment()}
+                  onStartPixPayment={() => {
+                    setLicenseModalMode("upgrade");
+                    setLicenseModalMandatory(false);
+                    setLicenseModalOpen(true);
+                    void startPixPayment();
+                  }}
                   onContactForUpgrade={() => void handleContactForUpgrade()}
                   onStartTrial={() => void startTrialNow()}
                 />
@@ -15888,7 +15898,7 @@ function App() {
                 setMainView("auxSends");
                 setDetailView(null);
                 setSettingsDropdownOpen(false);
-              });
+              }, "auxSends");
             }}
             data-node-id="73:572"
           >
@@ -15902,7 +15912,7 @@ function App() {
                 setMainView("fxSends");
                 setDetailView(null);
                 setSettingsDropdownOpen(false);
-              });
+              }, "fxSends");
             }}
             data-node-id="73:576"
           >
@@ -15916,7 +15926,7 @@ function App() {
                 setMainView("muteGroups");
                 setDetailView(null);
                 setSettingsDropdownOpen(false);
-              });
+              }, "muteGroups");
             }}
           >
             MUTE GROUPS
@@ -15929,7 +15939,7 @@ function App() {
                 setMainView("dcaGroups");
                 setDetailView(null);
                 setSettingsDropdownOpen(false);
-              });
+              }, "dcaGroups");
             }}
             data-node-id="73:2725"
           >
@@ -15974,7 +15984,7 @@ function App() {
                       setMainView("patching");
                       setDetailView(null);
                       setSettingsDropdownOpen(false);
-                    });
+                    }, "patching");
                   }}
                 >
                   Patching
@@ -15987,7 +15997,7 @@ function App() {
                       setMainView("scenes");
                       setDetailView(null);
                       setSettingsDropdownOpen(false);
-                    });
+                    }, "scenes");
                   }}
                 >
                   Scenes
@@ -16064,6 +16074,7 @@ function App() {
 
       {upgradeModalOpen && (
         <UpgradeModal
+          featureKey={upgradeModalFeature}
           canStartTrial={licenseFormalState === "LICENSE_NOT_FOUND"}
           onUpgrade={() => {
             setUpgradeModalOpen(false);
@@ -16072,9 +16083,42 @@ function App() {
           }}
           onStartTrial={() => {
             setUpgradeModalOpen(false);
-            void startTrialNow();
+            setTrialActivatedFromFeature(upgradeModalFeature);
+            void startTrialNow().then(() => {
+              showToast("Teste grátis ativado com sucesso.");
+              setTrialActivatedModalOpen(true);
+            });
           }}
           onClose={() => setUpgradeModalOpen(false)}
+        />
+      )}
+
+      {trialActivatedModalOpen && (
+        <TrialActivatedModal
+          trialExpiryAt={licenseTrialExpiryAt}
+          originFeature={trialActivatedFromFeature}
+          onContinue={() => {
+            setTrialActivatedModalOpen(false);
+            setLicenseModalMode("upgrade");
+            setLicenseModalMandatory(false);
+            setLicenseModalOpen(true);
+            void startPixPayment();
+          }}
+          onDismiss={() => {
+            setTrialActivatedModalOpen(false);
+            if (trialActivatedFromFeature) {
+              const featureToView: Record<import("./screens/UpgradeModal").PaywallFeatureKey, MainView> = {
+                auxSends:   "auxSends",
+                fxSends:    "fxSends",
+                dcaGroups:  "dcaGroups",
+                muteGroups: "muteGroups",
+                scenes:     "scenes",
+                patching:   "patching",
+                details:    "mixer",
+              };
+              setMainView(featureToView[trialActivatedFromFeature]);
+            }
+          }}
         />
       )}
 

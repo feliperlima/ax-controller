@@ -765,7 +765,7 @@ export async function apiGetMe(installationId: string, licenseKey?: string): Pro
 // Activates the 7-day trial for an account that already exists (registration already
 // happened, online, separately). Endpoint not yet implemented backend-side — see
 // app-backend-contract-v1.1.0.md.
-export async function apiActivateTrial(installationId: string): Promise<AuthApiResult | null> {
+export async function apiActivateTrial(installationId: string, email = ""): Promise<AuthApiResult | null> {
   const endpoint = resolveLicenseEndpointUrl(
     ACTIVATE_TRIAL_ENDPOINT_URL,
     ACTIVATE_TRIAL_ENDPOINT_PATH,
@@ -775,6 +775,7 @@ export async function apiActivateTrial(installationId: string): Promise<AuthApiR
 
   const response = await requestLicenseApiViaNative("POST", endpoint, {
     device_id: installationId,
+    ...(email ? { email } : {}),
   });
   if (!response) return null;
 
