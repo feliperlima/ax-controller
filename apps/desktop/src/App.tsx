@@ -2626,8 +2626,12 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [licenseModalOpen, setLicenseModalOpen] = useState(false);
-  const [licenseModalMandatory, setLicenseModalMandatory] = useState(false);
+  // Open login immediately on fresh install — no effect/race needed.
+  // v1.0.0 → v1.1.0 upgrades have ax_license_key_last stored so modal stays closed.
+  const _freshInstall = !localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() &&
+    localStorage.getItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY) !== "1";
+  const [licenseModalOpen, setLicenseModalOpen] = useState(_freshInstall);
+  const [licenseModalMandatory, setLicenseModalMandatory] = useState(_freshInstall);
   const [licenseModalMode, setLicenseModalMode] = useState<"onboarding" | "upgrade">("onboarding");
   const [pixPayment, setPixPayment] = useState<
     | { stage: "idle" }
