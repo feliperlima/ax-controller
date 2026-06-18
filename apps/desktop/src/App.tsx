@@ -105,7 +105,10 @@ import {
   issueCertificateAndStore,
   renewCertificateAndStore,
   validateCertificate,
+  storeCertificate,
+  cachePublicKey,
 } from "./services/certificateService";
+import { fetchBootstrap } from "./services/bootstrapService";
 import {
   decodeGroupMembers,
   getBitmaskProtocolProfile,
@@ -991,7 +994,7 @@ const DEFAULT_FX_COLOR_ID = 7;
 const MASTER_FIXED_COLOR_ID = 10;
 const DEFAULT_MIXER_IP = "";
 const SPLASH_MIN_DURATION_MS = 2000;
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 const INSTALLATION_ID_STORAGE_KEY = "ax_installation_id";
 const LICENSE_VALIDATED_STORAGE_KEY = "ax_license_validated";
 const DCA_NAMES_STORAGE_KEY_BASE = "ax_dca_group_names";
@@ -2649,6 +2652,10 @@ function App() {
   const [licenseDeviceActionBusy, setLicenseDeviceActionBusy] = useState<string | null>(null);
   const [licenseUserName, setLicenseUserName] = useState(() => localStorage.getItem(USER_NAME_STORAGE_KEY) ?? "");
   const [licenseUserEmail, setLicenseUserEmail] = useState(() => localStorage.getItem(USER_EMAIL_STORAGE_KEY) ?? "");
+  const [bootstrapFeatureFlags, setBootstrapFeatureFlags] = useState<Record<string, boolean>>({});
+  const [bootstrapMessages, setBootstrapMessages] = useState<import("./services/bootstrapService").BootstrapMessage[]>([]);
+  const [bootstrapVersionInfo, setBootstrapVersionInfo] = useState<import("./services/bootstrapService").BootstrapVersionInfo | null>(null);
+  void bootstrapFeatureFlags; void bootstrapMessages; void bootstrapVersionInfo;
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [licenseRegisterBusy, setLicenseRegisterBusy] = useState(false);
   const [licenseRegisterWantsUpgrade] = useState(false);
@@ -3053,25 +3060,51 @@ function App() {
       setLicenseRevalidationHint("");
     }
 
-    // Migrate installationId to Rust secure storage (background, non-blocking).
+    // Migrate installationId to Rust secure storage, then run bootstrap (background, non-blocking).
     void getOrCreateDeviceId(nextInstallationId)
-      .then(() => validateCertificate())
-      .catch(() => { /* non-critical — certificate layer is additive */ });
+      .then(async () => {
+        // Validate local certificate first (fast, offline-capable).
+        await validateCertificate().catch(() => {});
 
-    // Sync user profile from backend on startup (background, non-blocking).
-    if (storedLicenseKey && navigator.onLine) {
-      void apiGetMe(nextInstallationId, storedLicenseKey).then((meResult) => {
-        if (!meResult || meResult.httpStatus >= 400) return;
-        if (meResult.returnedUserName) {
-          localStorage.setItem(USER_NAME_STORAGE_KEY, meResult.returnedUserName);
-          setLicenseUserName(meResult.returnedUserName);
+        // Bootstrap: single call that syncs user, license, certificate, flags, messages, version.
+        if (!navigator.onLine) return;
+        const boot = await fetchBootstrap({
+          installationId: nextInstallationId,
+          appVersion: APP_VERSION,
+        }).catch(() => null);
+        if (!boot) return;
+
+        // User profile
+        if (boot.user) {
+          if (boot.user.name) {
+            localStorage.setItem(USER_NAME_STORAGE_KEY, boot.user.name);
+            setLicenseUserName(boot.user.name);
+          }
+          if (boot.user.email) {
+            localStorage.setItem(USER_EMAIL_STORAGE_KEY, boot.user.email);
+            setLicenseUserEmail(boot.user.email);
+          }
         }
-        if (meResult.returnedUserEmail) {
-          localStorage.setItem(USER_EMAIL_STORAGE_KEY, meResult.returnedUserEmail);
-          setLicenseUserEmail(meResult.returnedUserEmail);
+
+        // Cache public key for offline certificate validation
+        if (boot.public_key && boot.certificate?.sig_v != null) {
+          await cachePublicKey(boot.certificate.sig_v, boot.public_key).catch(() => {});
         }
-      }).catch(() => {});
-    }
+
+        // Store new/renewed certificate token
+        if (boot.certificate?.token) {
+          await storeCertificate(boot.certificate.token).catch(() => {});
+          await validateCertificate(
+            boot.server_time ? Math.floor(new Date(boot.server_time).getTime() / 1000) : null
+          ).catch(() => {});
+        }
+
+        // Remote feature flags, messages and version info
+        setBootstrapFeatureFlags(boot.feature_flags);
+        setBootstrapMessages(boot.messages);
+        if (boot.version) setBootstrapVersionInfo(boot.version);
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
