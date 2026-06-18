@@ -90,6 +90,9 @@ export async function fetchBootstrap(params: {
 
   try {
     const res = await requestLicenseApiViaNative("GET", url, undefined, { skipSessionExpiredThrow: true });
+    if (res?.statusCode === 401 && res.body["code"] === "UNAUTHENTICATED") {
+      throw Object.assign(new Error("UNAUTHENTICATED"), { isUnauthenticated: true });
+    }
     if (!res || res.statusCode >= 400 || !res.body["success"]) return null;
 
     const b = res.body as Record<string, unknown>;

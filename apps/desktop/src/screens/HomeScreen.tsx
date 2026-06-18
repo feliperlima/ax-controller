@@ -62,14 +62,6 @@ function IconSettings() {
   );
 }
 
-function IconStar({ size = 32 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: "var(--primitive-amber-500)" }}>
-      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-    </svg>
-  );
-}
-
 function IconHeadphones({ size = 24 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -294,6 +286,7 @@ type HomeScreenProps = {
   licenseFormalState: LicenseFormalState;
   licenseTrialExpiryAt: string | null;
   hasActivatedOnce: boolean;
+  isFounder?: boolean | null;
   userName?: string;
   userEmail?: string;
   activeNav?: HomeNavView;
@@ -308,11 +301,13 @@ type HomeScreenProps = {
   onDemo?: () => void;
   onLogout?: () => void;
   onUpgrade?: () => void;
+  onStartTrial?: () => void;
 };
 
 export function HomeScreen({
   licenseFormalState,
   licenseTrialExpiryAt,
+  isFounder = null,
   userName = "",
   userEmail = "",
   activeNav = "home",
@@ -327,13 +322,11 @@ export function HomeScreen({
   onDemo,
   onLogout,
   onUpgrade,
+  onStartTrial,
 }: HomeScreenProps) {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [dismissedBanners, setDismissedBanners] = useState<Set<string>>(new Set());
   const badge = resolveBadge(licenseFormalState, licenseTrialExpiryAt);
-  const isPurchased =
-    licenseFormalState === "PURCHASED_ACTIVE" ||
-    licenseFormalState === "PURCHASED_REVALIDATION_DUE";
   const initials = getInitials(userName);
   const firstName = userName.trim().split(/\s+/)[0] ?? "";
 
@@ -363,19 +356,59 @@ export function HomeScreen({
           <NavItem icon={<IconSettings />} label="Configurações" active={activeNav === "settings"} onClick={activeNav !== "settings" ? onNavSettings : undefined} />
         </nav>
 
-        {!isPurchased && (
+        {licenseFormalState === "TRIAL_ACTIVE" && (() => {
+          const daysRemaining = licenseTrialExpiryAt
+            ? Math.max(0, Math.ceil((Date.parse(licenseTrialExpiryAt) - Date.now()) / 86_400_000))
+            : 7;
+          const isUrgent = daysRemaining <= 2;
+          return (
+            <div className="hs-upgrade-card">
+              <div className="hs-upgrade-card__icon" aria-hidden="true">✦</div>
+              <div className="hs-upgrade-card__text">
+                <p className="hs-upgrade-card__title">
+                  {isUrgent
+                    ? `Seu teste termina em ${daysRemaining} dia${daysRemaining === 1 ? "" : "s"}`
+                    : "Você está testando o AX Control+"}
+                </p>
+                <p className="hs-upgrade-card__desc">
+                  {isUrgent
+                    ? "Ative o AX Control+ para continuar usando todos os recursos sem interrupção."
+                    : `Aproveite o controle completo da mesa por mais ${daysRemaining} dias.`}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="hs-upgrade-card__btn"
+                onClick={isUrgent ? onUpgrade : onNavLicense}
+              >
+                {isUrgent ? "Manter acesso" : "Explorar recursos"}
+              </button>
+            </div>
+          );
+        })()}
+
+        {licenseFormalState === "LICENSE_NOT_FOUND" && (
           <div className="hs-upgrade-card">
-            <IconStar size={32} />
+            <div className="hs-upgrade-card__icon" aria-hidden="true">✦</div>
             <div className="hs-upgrade-card__text">
-              <p className="hs-upgrade-card__title">
-                Desbloqueie<br />todo o potencial!
-              </p>
-              <p className="hs-upgrade-card__desc">
-                Usuários AX Control+ têm acesso a todos os recursos avançados.
-              </p>
+              <p className="hs-upgrade-card__title">Experimente o AX Control+</p>
+              <p className="hs-upgrade-card__desc">Teste o controle completo da mesa por 7 dias, sem compromisso.</p>
+            </div>
+            <button type="button" className="hs-upgrade-card__btn" onClick={onStartTrial ?? onNavLicense}>
+              Iniciar teste grátis
+            </button>
+          </div>
+        )}
+
+        {licenseFormalState === "TRIAL_EXPIRED" && (
+          <div className="hs-upgrade-card">
+            <div className="hs-upgrade-card__icon" aria-hidden="true">✦</div>
+            <div className="hs-upgrade-card__text">
+              <p className="hs-upgrade-card__title">Seu teste terminou</p>
+              <p className="hs-upgrade-card__desc">Ative o AX Control+ para voltar ao controle completo da mesa.</p>
             </div>
             <button type="button" className="hs-upgrade-card__btn" onClick={onUpgrade ?? onNavLicense}>
-              Adquirir o Plus
+              Ativar Plus
             </button>
           </div>
         )}
@@ -431,9 +464,14 @@ export function HomeScreen({
         ) : (
           <>
             <div className="hs-content__header">
-              <h1 className="hs-content__title">
-                {firstName ? `Bem-vindo, ${firstName}` : "Bem-vindo"}
-              </h1>
+              <div className="hs-content__header-left">
+                <h1 className="hs-content__title">
+                  {firstName ? `Bem-vindo, ${firstName}` : "Bem-vindo"}
+                </h1>
+                {isFounder && (
+                  <span className="hs-founder-badge">Membro Fundador</span>
+                )}
+              </div>
               <LicenseBadgeTag badge={badge} />
             </div>
 
