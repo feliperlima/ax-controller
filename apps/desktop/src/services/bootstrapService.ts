@@ -71,8 +71,9 @@ export async function fetchBootstrap(params: {
   installationId: string;
   appVersion: string;
   buildNumber?: string;
+  licenseKey?: string;
 }): Promise<BootstrapResult | null> {
-  const { installationId, appVersion, buildNumber = "" } = params;
+  const { installationId, appVersion, buildNumber = "", licenseKey = "" } = params;
 
   const platform = getPlatformLabel();
   const base = buildLicenseApiUrl(BOOTSTRAP_PATH);
@@ -82,12 +83,13 @@ export async function fetchBootstrap(params: {
     platform,
     version: appVersion,
     ...(buildNumber ? { build_number: buildNumber } : {}),
+    ...(licenseKey ? { license_key: licenseKey } : {}),
   });
 
   const url = `${base}?${qs.toString()}`;
 
   try {
-    const res = await requestLicenseApiViaNative("GET", url);
+    const res = await requestLicenseApiViaNative("GET", url, undefined, { skipSessionExpiredThrow: true });
     if (!res || res.statusCode >= 400 || !res.body["success"]) return null;
 
     const b = res.body as Record<string, unknown>;

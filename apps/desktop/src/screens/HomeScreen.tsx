@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import axControlBrand from "../assets/AX-control-Brand-vert.svg";
 import type { LicenseFormalState } from "../lib/licenseState";
 import type { BootstrapMessage, BootstrapVersionInfo } from "../services/bootstrapService";
+import { useFeatureFlag } from "../services/featureFlags";
 
 // ── Inline SVG icons ──────────────────────────────────────────────────────────
 
@@ -306,6 +307,7 @@ type HomeScreenProps = {
   onNavSettings?: () => void;
   onDemo?: () => void;
   onLogout?: () => void;
+  onUpgrade?: () => void;
 };
 
 export function HomeScreen({
@@ -324,6 +326,7 @@ export function HomeScreen({
   onNavSettings,
   onDemo,
   onLogout,
+  onUpgrade,
 }: HomeScreenProps) {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [dismissedBanners, setDismissedBanners] = useState<Set<string>>(new Set());
@@ -333,6 +336,8 @@ export function HomeScreen({
     licenseFormalState === "PURCHASED_REVALIDATION_DUE";
   const initials = getInitials(userName);
   const firstName = userName.trim().split(/\s+/)[0] ?? "";
+
+  const showIemBanner = useFeatureFlag("feature_iem_banner");
 
   const visibleMessages = messages.filter((m) => !dismissedBanners.has(m.key));
 
@@ -369,7 +374,7 @@ export function HomeScreen({
                 Usuários AX Control+ têm acesso a todos os recursos avançados.
               </p>
             </div>
-            <button type="button" className="hs-upgrade-card__btn" onClick={onNavLicense}>
+            <button type="button" className="hs-upgrade-card__btn" onClick={onUpgrade ?? onNavLicense}>
               Adquirir o Plus
             </button>
           </div>
@@ -449,15 +454,17 @@ export function HomeScreen({
                 buttonLabel="Ver demonstração"
                 onClick={onDemo}
               />
-              <ActionCard
-                variant="purple"
-                icon={<IconHeadphones size={24} />}
-                title="Monitor Pessoal (IEM)"
-                description="Cada músico no controle da sua própria mix de fone de ouvido."
-                buttonLabel="Avise-me"
-                buttonIcon={<IconBell size={16} />}
-                badge="Em breve"
-              />
+              {showIemBanner && (
+                <ActionCard
+                  variant="purple"
+                  icon={<IconHeadphones size={24} />}
+                  title="Monitor Pessoal (IEM)"
+                  description="Cada músico no controle da sua própria mix de fone de ouvido."
+                  buttonLabel="Avise-me"
+                  buttonIcon={<IconBell size={16} />}
+                  badge="Em breve"
+                />
+              )}
             </div>
           </>
         )}

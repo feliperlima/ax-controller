@@ -109,6 +109,7 @@ import {
   cachePublicKey,
 } from "./services/certificateService";
 import { fetchBootstrap } from "./services/bootstrapService";
+import { FeatureFlagsContext } from "./services/featureFlags";
 import {
   decodeGroupMembers,
   getBitmaskProtocolProfile,
@@ -192,7 +193,7 @@ import {
   type ChannelValueDecoder,
   type DomainSelectors,
 } from "./lib/domainSelectors";
-import { useToast } from "./components/FloatingToast";
+import { showToast, ToastRenderer } from "./components/FloatingToast";
 import { useMixerClipboard } from "./hooks/useMixerClipboard";
 import {
   buildChannelSnapshot,
@@ -2655,7 +2656,6 @@ function App() {
   const [bootstrapFeatureFlags, setBootstrapFeatureFlags] = useState<Record<string, boolean>>({});
   const [bootstrapMessages, setBootstrapMessages] = useState<import("./services/bootstrapService").BootstrapMessage[]>([]);
   const [bootstrapVersionInfo, setBootstrapVersionInfo] = useState<import("./services/bootstrapService").BootstrapVersionInfo | null>(null);
-  void bootstrapFeatureFlags;
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [licenseRegisterBusy, setLicenseRegisterBusy] = useState(false);
   const [licenseRegisterWantsUpgrade] = useState(false);
@@ -2785,7 +2785,6 @@ function App() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const pixPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const { showToast, ToastRenderer } = useToast();
   const { snapshot: clipboardSnapshot, saveSnapshot: saveClipboardSnapshot } = useMixerClipboard();
   const activeDcaIds = getDcaIdsForChannelCount(channelCount);
   const [dcaColorIds, setDcaColorIds] = useState<number[]>(() =>
@@ -3003,6 +3002,51 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appStage, isConnected]);
 
+  async function runBootstrap(id: string, { showToasts = false } = {}) {
+    if (!navigator.onLine) return;
+    const licenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    const boot = await fetchBootstrap({
+      installationId: id,
+      appVersion: APP_VERSION,
+      licenseKey,
+    }).catch(() => null);
+    if (!boot) return;
+
+    if (boot.user) {
+      if (boot.user.name) {
+        localStorage.setItem(USER_NAME_STORAGE_KEY, boot.user.name);
+        setLicenseUserName(boot.user.name);
+      }
+      if (boot.user.email) {
+        localStorage.setItem(USER_EMAIL_STORAGE_KEY, boot.user.email);
+        setLicenseUserEmail(boot.user.email);
+      }
+    }
+
+    if (boot.public_key && boot.certificate?.sig_v != null) {
+      await cachePublicKey(boot.certificate.sig_v, boot.public_key).catch(() => {});
+    }
+
+    if (boot.certificate?.token) {
+      await storeCertificate(boot.certificate.token).catch(() => {});
+      await validateCertificate(
+        boot.server_time ? Math.floor(new Date(boot.server_time).getTime() / 1000) : null
+      ).catch(() => {});
+    }
+
+    setBootstrapFeatureFlags(boot.feature_flags);
+    setBootstrapMessages(boot.messages);
+    if (boot.version) setBootstrapVersionInfo(boot.version);
+
+    if (showToasts) {
+      boot.messages
+        .filter((m) => m.channel === "toast")
+        .forEach((m) => showToast(m.body, m.title ?? undefined));
+    }
+  }
+  const runBootstrapRef = useRef(runBootstrap);
+  useEffect(() => { runBootstrapRef.current = runBootstrap; });
+
   useEffect(() => {
     const storedInstallationId = localStorage.getItem(INSTALLATION_ID_STORAGE_KEY);
     const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY);
@@ -3060,56 +3104,20 @@ function App() {
       setLicenseRevalidationHint("");
     }
 
-    // Migrate installationId to Rust secure storage, then run bootstrap (background, non-blocking).
     void getOrCreateDeviceId(nextInstallationId)
-      .then(async () => {
-        // Validate local certificate first (fast, offline-capable).
-        await validateCertificate().catch(() => {});
-
-        // Bootstrap: single call that syncs user, license, certificate, flags, messages, version.
-        if (!navigator.onLine) return;
-        const boot = await fetchBootstrap({
-          installationId: nextInstallationId,
-          appVersion: APP_VERSION,
-        }).catch(() => null);
-        if (!boot) return;
-
-        // User profile
-        if (boot.user) {
-          if (boot.user.name) {
-            localStorage.setItem(USER_NAME_STORAGE_KEY, boot.user.name);
-            setLicenseUserName(boot.user.name);
-          }
-          if (boot.user.email) {
-            localStorage.setItem(USER_EMAIL_STORAGE_KEY, boot.user.email);
-            setLicenseUserEmail(boot.user.email);
-          }
-        }
-
-        // Cache public key for offline certificate validation
-        if (boot.public_key && boot.certificate?.sig_v != null) {
-          await cachePublicKey(boot.certificate.sig_v, boot.public_key).catch(() => {});
-        }
-
-        // Store new/renewed certificate token
-        if (boot.certificate?.token) {
-          await storeCertificate(boot.certificate.token).catch(() => {});
-          await validateCertificate(
-            boot.server_time ? Math.floor(new Date(boot.server_time).getTime() / 1000) : null
-          ).catch(() => {});
-        }
-
-        // Remote feature flags, messages and version info
-        setBootstrapFeatureFlags(boot.feature_flags);
-        setBootstrapMessages(boot.messages);
-        if (boot.version) setBootstrapVersionInfo(boot.version);
-
-        // Fire toast-channel messages immediately
-        boot.messages
-          .filter((m) => m.channel === "toast")
-          .forEach((m) => showToast(m.title ? `${m.title}: ${m.body}` : m.body));
-      })
+      .then(async () => { await validateCertificate().catch(() => {}); })
       .catch(() => {});
+
+    // On focus: re-run bootstrap whenever the app has internet, so flags/messages
+    // stay current even after long offline sessions. Guard prevents concurrent runs.
+    let bootstrapRunning = false;
+    function handleFocus() {
+      if (!navigator.onLine || bootstrapRunning) return;
+      bootstrapRunning = true;
+      void runBootstrapRef.current(nextInstallationId).finally(() => { bootstrapRunning = false; });
+    }
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
   }, []);
 
   useEffect(() => {
@@ -3182,6 +3190,14 @@ function App() {
     strictStartupValidationDoneRef.current = true;
     void runBackgroundLicenseRevalidation(true, true);
   }, [installationId, isOnline]);
+
+  // Run bootstrap once the license is validated — session is guaranteed active at this point.
+  const bootstrapRanAfterValidationRef = useRef(false);
+  useEffect(() => {
+    if (!isLicenseValidated || !installationId || bootstrapRanAfterValidationRef.current) return;
+    bootstrapRanAfterValidationRef.current = true;
+    void runBootstrapRef.current(installationId, { showToasts: true });
+  }, [isLicenseValidated, installationId]);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -15706,6 +15722,11 @@ function App() {
           onNavLicense={() => setHomeSubView("license")}
           onNavDevices={() => setHomeSubView("devices")}
           onNavSettings={() => setHomeSubView("settings")}
+          onUpgrade={() => {
+            setLicenseModalMode("upgrade");
+            setLicenseModalMandatory(false);
+            setLicenseModalOpen(true);
+          }}
           mainContent={(() => {
             if (homeSubView === "connect") {
               return (
@@ -15777,6 +15798,7 @@ function App() {
           onLogout={handleLogout}
         />
         {licenseModalNode}
+        <ToastRenderer />
       </>
     );
   }
@@ -15787,6 +15809,7 @@ function App() {
     : "Sincronizando mesa...";
 
   return (
+    <FeatureFlagsContext.Provider value={bootstrapFeatureFlags}>
     <main
       key={`scene-ui-refresh-${sceneUiRefreshNonce}`}
       className={`app-shell ${detailView ? "app-shell--detail" : ""} ${isChannelsDragging ? "app-shell--dragging" : ""}`}
@@ -16025,6 +16048,7 @@ function App() {
       {licenseModalNode}
       <ToastRenderer />
     </main>
+    </FeatureFlagsContext.Provider>
   );
 }
 
