@@ -15698,11 +15698,16 @@ function App() {
   ) : null;
 
   if (appStage === "splash") {
-    return <SplashScreen version={APP_VERSION} />;
+    return (
+      <FeatureFlagsContext.Provider value={bootstrapFeatureFlags}>
+        <SplashScreen version={APP_VERSION} />
+      </FeatureFlagsContext.Provider>
+    );
   }
 
   if (appStage === "home") {
     return (
+      <FeatureFlagsContext.Provider value={bootstrapFeatureFlags}>
       <>
         <HomeScreen
           version={APP_VERSION}
@@ -15800,6 +15805,7 @@ function App() {
         {licenseModalNode}
         <ToastRenderer />
       </>
+      </FeatureFlagsContext.Provider>
     );
   }
 
