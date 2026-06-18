@@ -1,4 +1,5 @@
 import type { LicenseFormalState } from "../lib/licenseState";
+import { useFeatureFlag } from "../services/featureFlags";
 
 type LicenseValidationMessage = { kind: "idle" | "success" | "error"; text: string };
 
@@ -87,6 +88,7 @@ export function LicensePanel({
   onContactForUpgrade,
   onStartTrial,
 }: LicensePanelProps) {
+  const pixEnabled = useFeatureFlag("pix_payment_enabled");
   const plan = resolvePlanLabel(licenseFormalState);
   const status = resolveStatusLabel(licenseFormalState);
   const isTrial = licenseFormalState === "TRIAL_ACTIVE" || licenseFormalState === "TRIAL_EXPIRED";
@@ -175,7 +177,7 @@ export function LicensePanel({
             </button>
 
             {canStartTrial && (
-              <button type="button" className="startup-button startup-button--primary" onClick={onStartTrial}>
+              <button type="button" className="startup-button startup-button--primary" onClick={onStartTrial} disabled={licenseValidationBusy}>
                 Iniciar teste grátis de 7 dias
               </button>
             )}
@@ -187,9 +189,11 @@ export function LicensePanel({
                     Sem conexão com a internet. Se você está na rede própria da mesa, troque para uma rede com internet para concluir a compra.
                   </p>
                 )}
-                <button type="button" className="startup-button startup-button--primary" onClick={onStartPixPayment}>
-                  Comprar via Pix · {upgradePriceLabel}
-                </button>
+                {pixEnabled && (
+                  <button type="button" className="startup-button startup-button--primary" onClick={onStartPixPayment} disabled={licenseValidationBusy || !isOnline}>
+                    Comprar via Pix · {upgradePriceLabel}
+                  </button>
+                )}
                 <button type="button" className="startup-button startup-button--secondary" onClick={onContactForUpgrade}>
                   Comprar pelo WhatsApp
                 </button>

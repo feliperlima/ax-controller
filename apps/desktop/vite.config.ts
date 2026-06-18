@@ -28,5 +28,13 @@ export default defineConfig(async () => ({
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+    proxy: {
+      // Proxy /api → axcontrol.com.br para evitar CORS no preview web
+      "/api": {
+        target: "https://axcontrol.com.br",
+        changeOrigin: true,
+        secure: true,
+      },
+    },
   },
 }));

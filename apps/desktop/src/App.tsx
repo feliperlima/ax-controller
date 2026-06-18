@@ -105,7 +105,11 @@ import {
   issueCertificateAndStore,
   renewCertificateAndStore,
   validateCertificate,
+  storeCertificate,
+  cachePublicKey,
 } from "./services/certificateService";
+import { fetchBootstrap } from "./services/bootstrapService";
+import { FeatureFlagsContext } from "./services/featureFlags";
 import {
   decodeGroupMembers,
   getBitmaskProtocolProfile,
@@ -189,7 +193,7 @@ import {
   type ChannelValueDecoder,
   type DomainSelectors,
 } from "./lib/domainSelectors";
-import { useToast } from "./components/FloatingToast";
+import { showToast, ToastRenderer } from "./components/FloatingToast";
 import { useMixerClipboard } from "./hooks/useMixerClipboard";
 import {
   buildChannelSnapshot,
@@ -991,7 +995,7 @@ const DEFAULT_FX_COLOR_ID = 7;
 const MASTER_FIXED_COLOR_ID = 10;
 const DEFAULT_MIXER_IP = "";
 const SPLASH_MIN_DURATION_MS = 2000;
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 const INSTALLATION_ID_STORAGE_KEY = "ax_installation_id";
 const LICENSE_VALIDATED_STORAGE_KEY = "ax_license_validated";
 const DCA_NAMES_STORAGE_KEY_BASE = "ax_dca_group_names";
@@ -1002,6 +1006,8 @@ const LICENSE_RUNTIME_CACHE_STORAGE_KEY = "ax_license_runtime_cache_v2";
 const LICENSE_KEY_STORAGE_KEY = "ax_license_key_last";
 const LICENSE_DEVICES_CACHE_STORAGE_KEY = "ax_license_devices_cache";
 const PENDING_TRIAL_ACTIVATION_STORAGE_KEY = "ax_pending_trial_activation";
+const PIX_PENDING_PAYMENT_STORAGE_KEY = "ax_pending_pix_payment_id";
+const PIX_PURCHASE_CONFIRMED_STORAGE_KEY = "ax_pix_purchase_confirmed";
 const TRIAL_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const TRIAL_UPGRADE_PROMPT_DATE_KEY = "ax_trial_upgrade_prompt_date";
 const USER_NAME_STORAGE_KEY = "ax_user_name";
@@ -2649,6 +2655,9 @@ function App() {
   const [licenseDeviceActionBusy, setLicenseDeviceActionBusy] = useState<string | null>(null);
   const [licenseUserName, setLicenseUserName] = useState(() => localStorage.getItem(USER_NAME_STORAGE_KEY) ?? "");
   const [licenseUserEmail, setLicenseUserEmail] = useState(() => localStorage.getItem(USER_EMAIL_STORAGE_KEY) ?? "");
+  const [bootstrapFeatureFlags, setBootstrapFeatureFlags] = useState<Record<string, boolean>>({});
+  const [bootstrapMessages, setBootstrapMessages] = useState<import("./services/bootstrapService").BootstrapMessage[]>([]);
+  const [bootstrapVersionInfo, setBootstrapVersionInfo] = useState<import("./services/bootstrapService").BootstrapVersionInfo | null>(null);
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [licenseRegisterBusy, setLicenseRegisterBusy] = useState(false);
   const [licenseRegisterWantsUpgrade] = useState(false);
@@ -2778,7 +2787,6 @@ function App() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const pixPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const { showToast, ToastRenderer } = useToast();
   const { snapshot: clipboardSnapshot, saveSnapshot: saveClipboardSnapshot } = useMixerClipboard();
   const activeDcaIds = getDcaIdsForChannelCount(channelCount);
   const [dcaColorIds, setDcaColorIds] = useState<number[]>(() =>
@@ -2996,6 +3004,64 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appStage, isConnected]);
 
+  async function runBootstrap(id: string, { showToasts = false } = {}) {
+    if (!navigator.onLine) return;
+    const licenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    const boot = await fetchBootstrap({
+      installationId: id,
+      appVersion: APP_VERSION,
+      licenseKey,
+    }).catch(() => null);
+    if (!boot) return;
+
+    if (boot.user) {
+      if (boot.user.name) {
+        localStorage.setItem(USER_NAME_STORAGE_KEY, boot.user.name);
+        setLicenseUserName(boot.user.name);
+      }
+      if (boot.user.email) {
+        localStorage.setItem(USER_EMAIL_STORAGE_KEY, boot.user.email);
+        setLicenseUserEmail(boot.user.email);
+      }
+    }
+
+    if (boot.public_key && boot.certificate?.sig_v != null) {
+      await cachePublicKey(boot.certificate.sig_v, boot.public_key).catch(() => {});
+    }
+
+    if (boot.certificate?.token) {
+      await storeCertificate(boot.certificate.token).catch(() => {});
+      await validateCertificate(
+        boot.server_time ? Math.floor(new Date(boot.server_time).getTime() / 1000) : null
+      ).catch(() => {});
+    }
+
+    setBootstrapFeatureFlags(boot.feature_flags);
+
+    const messages = [...boot.messages];
+    if (boot.maintenance?.active && !messages.find((m) => m.key === "maintenance_active" && m.channel === "banner")) {
+      messages.unshift({
+        key: "maintenance_active",
+        title: "Manutenção em andamento",
+        body: boot.maintenance.message ?? "O serviço está em manutenção. Algumas funções podem estar indisponíveis.",
+        severity: "warning",
+        channel: "banner",
+        cta_label: null,
+        cta_url: null,
+      });
+    }
+    setBootstrapMessages(messages);
+    if (boot.version) setBootstrapVersionInfo(boot.version);
+
+    if (showToasts) {
+      boot.messages
+        .filter((m) => m.channel === "toast")
+        .forEach((m) => showToast(m.body, m.title ?? undefined));
+    }
+  }
+  const runBootstrapRef = useRef(runBootstrap);
+  useEffect(() => { runBootstrapRef.current = runBootstrap; });
+
   useEffect(() => {
     const storedInstallationId = localStorage.getItem(INSTALLATION_ID_STORAGE_KEY);
     const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY);
@@ -3053,25 +3119,20 @@ function App() {
       setLicenseRevalidationHint("");
     }
 
-    // Migrate installationId to Rust secure storage (background, non-blocking).
     void getOrCreateDeviceId(nextInstallationId)
-      .then(() => validateCertificate())
-      .catch(() => { /* non-critical — certificate layer is additive */ });
+      .then(async () => { await validateCertificate().catch(() => {}); })
+      .catch(() => {});
 
-    // Sync user profile from backend on startup (background, non-blocking).
-    if (storedLicenseKey && navigator.onLine) {
-      void apiGetMe(nextInstallationId, storedLicenseKey).then((meResult) => {
-        if (!meResult || meResult.httpStatus >= 400) return;
-        if (meResult.returnedUserName) {
-          localStorage.setItem(USER_NAME_STORAGE_KEY, meResult.returnedUserName);
-          setLicenseUserName(meResult.returnedUserName);
-        }
-        if (meResult.returnedUserEmail) {
-          localStorage.setItem(USER_EMAIL_STORAGE_KEY, meResult.returnedUserEmail);
-          setLicenseUserEmail(meResult.returnedUserEmail);
-        }
-      }).catch(() => {});
+    // On focus: re-run bootstrap whenever the app has internet, so flags/messages
+    // stay current even after long offline sessions. Guard prevents concurrent runs.
+    let bootstrapRunning = false;
+    function handleFocus() {
+      if (!navigator.onLine || bootstrapRunning) return;
+      bootstrapRunning = true;
+      void runBootstrapRef.current(nextInstallationId).finally(() => { bootstrapRunning = false; });
     }
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
   }, []);
 
   useEffect(() => {
@@ -3144,6 +3205,25 @@ function App() {
     strictStartupValidationDoneRef.current = true;
     void runBackgroundLicenseRevalidation(true, true);
   }, [installationId, isOnline]);
+
+  // Run bootstrap once the license is validated — session is guaranteed active at this point.
+  const bootstrapRanAfterValidationRef = useRef(false);
+  useEffect(() => {
+    if (!isLicenseValidated || !installationId || bootstrapRanAfterValidationRef.current) return;
+    bootstrapRanAfterValidationRef.current = true;
+    void runBootstrapRef.current(installationId, { showToasts: true });
+  }, [isLicenseValidated, installationId]);
+
+  // For free/anonymous users (no license key, isLicenseValidated never fires):
+  // run bootstrap once to load feature flags and messages without user data.
+  const bootstrapRanAnonymousRef = useRef(false);
+  useEffect(() => {
+    if (!installationId || bootstrapRanAnonymousRef.current) return;
+    const licenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    if (licenseKey) return; // will be handled by the validated path
+    bootstrapRanAnonymousRef.current = true;
+    void runBootstrapRef.current(installationId);
+  }, [installationId]);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -3272,6 +3352,7 @@ function App() {
     if (licenseModalOpen) return;
     stopPixPolling();
     setPixPayment({ stage: "idle" });
+    setLicenseValidationMessage({ kind: "idle", text: "" });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [licenseModalOpen]);
 
@@ -3280,7 +3361,7 @@ function App() {
     if (!isOnline || !installationId) return;
     if (licenseFormalState !== "TRIAL_ACTIVE" && licenseFormalState !== "TRIAL_EXPIRED") return;
 
-    const pendingPaymentId = localStorage.getItem("ax_pending_pix_payment_id");
+    const pendingPaymentId = localStorage.getItem(PIX_PENDING_PAYMENT_STORAGE_KEY);
     if (!pendingPaymentId) return;
 
     void apiCheckPixStatus(
@@ -3293,7 +3374,7 @@ function App() {
       if (result.status === "approved" && result.license_key) {
         void handlePixPaymentApproved(result.license_key);
       } else if (result.status === "rejected" || result.status === "cancelled") {
-        localStorage.removeItem("ax_pending_pix_payment_id");
+        localStorage.removeItem(PIX_PENDING_PAYMENT_STORAGE_KEY);
       }
     }).catch(() => { /* network unavailable — will retry on next boot */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -9597,7 +9678,7 @@ function App() {
       }
 
       if (response.statusCode === 404) {
-        setLicenseValidationMessage({ kind: "error", text: "Endpoint não encontrado. Verifique a configuração da API." });
+        setLicenseValidationMessage({ kind: "error", text: "Serviço indisponível no momento. Tente novamente em instantes." });
         return;
       }
 
@@ -10010,7 +10091,7 @@ function App() {
       if (!loginResult) {
         setLicenseValidationMessage({
           kind: "error",
-          text: "Não foi possível iniciar sessão. Verifique a configuração da API de licença.",
+          text: "Não foi possível conectar ao serviço de licença. Tente novamente.",
         });
         return;
       }
@@ -10285,10 +10366,10 @@ function App() {
     setHasLicenseActivatedOnce(true);
     setLicenseKeyInput(licenseKey);
 
-    localStorage.removeItem("ax_pending_pix_payment_id");
+    localStorage.removeItem(PIX_PENDING_PAYMENT_STORAGE_KEY);
     // Guard flag: prevents background revalidation from downgrading to trial
     // before the server confirms the purchased status.
-    localStorage.setItem("ax_pix_purchase_confirmed", licenseKey);
+    localStorage.setItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY, licenseKey);
 
     // Apply purchased state immediately so the UI never reverts to trial.
     const syntheticSnapshot: LicenseSnapshot = {
@@ -10326,7 +10407,7 @@ function App() {
         const payload = normalizeLicenseApiPayload(response.body ?? {});
         const snapshot = parseLicenseSnapshot(payload);
         if (snapshot.licenseType === "purchased") {
-          localStorage.removeItem("ax_pix_purchase_confirmed");
+          localStorage.removeItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
           applyLicenseSnapshot(snapshot, licenseKey, "Licença ativada com sucesso!");
         }
       }
@@ -10400,7 +10481,7 @@ function App() {
         qrCodeBase64: result.qr_code_base64,
         expiresAt: result.expires_at,
       });
-      localStorage.setItem("ax_pending_pix_payment_id", result.payment_id);
+      localStorage.setItem(PIX_PENDING_PAYMENT_STORAGE_KEY, result.payment_id);
       startPixPolling(result.payment_id);
     } catch (err) {
       console.error("[AX] startPixPayment failed:", err);
@@ -10536,7 +10617,7 @@ function App() {
     lastBackgroundRevalidationAtRef.current = now;
 
     try {
-      const pixPurchaseConfirmedKey = localStorage.getItem("ax_pix_purchase_confirmed");
+      const pixPurchaseConfirmedKey = localStorage.getItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
       const pixPurchaseGuardActive = Boolean(pixPurchaseConfirmedKey);
 
       if (LICENSE_API_BASE_URL) {
@@ -10549,7 +10630,7 @@ function App() {
             return true;
           }
           if (statusSnapshot.licenseType === "purchased") {
-            localStorage.removeItem("ax_pix_purchase_confirmed");
+            localStorage.removeItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
           }
 
           const formalState = resolveLicenseFormalState({
@@ -10603,7 +10684,7 @@ function App() {
         return true;
       }
       if (snapshot.licenseType === "purchased") {
-        localStorage.removeItem("ax_pix_purchase_confirmed");
+        localStorage.removeItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
       }
 
       const formalState = resolveLicenseFormalState({
@@ -15644,11 +15725,16 @@ function App() {
   ) : null;
 
   if (appStage === "splash") {
-    return <SplashScreen version={APP_VERSION} />;
+    return (
+      <FeatureFlagsContext.Provider value={bootstrapFeatureFlags}>
+        <SplashScreen version={APP_VERSION} />
+      </FeatureFlagsContext.Provider>
+    );
   }
 
   if (appStage === "home") {
     return (
+      <FeatureFlagsContext.Provider value={bootstrapFeatureFlags}>
       <>
         <HomeScreen
           version={APP_VERSION}
@@ -15657,6 +15743,8 @@ function App() {
           hasActivatedOnce={hasLicenseActivatedOnce}
           userName={licenseUserName || (localStorage.getItem(USER_NAME_STORAGE_KEY) ?? "")}
           userEmail={licenseUserEmail || (localStorage.getItem(USER_EMAIL_STORAGE_KEY) ?? "")}
+          messages={bootstrapMessages}
+          versionInfo={bootstrapVersionInfo}
           activeNav={homeSubView}
           onNavHome={() => setHomeSubView("home")}
           onConnectMixer={() => {
@@ -15666,6 +15754,11 @@ function App() {
           onNavLicense={() => setHomeSubView("license")}
           onNavDevices={() => setHomeSubView("devices")}
           onNavSettings={() => setHomeSubView("settings")}
+          onUpgrade={() => {
+            setLicenseModalMode("upgrade");
+            setLicenseModalMandatory(false);
+            setLicenseModalOpen(true);
+          }}
           mainContent={(() => {
             if (homeSubView === "connect") {
               return (
@@ -15737,7 +15830,9 @@ function App() {
           onLogout={handleLogout}
         />
         {licenseModalNode}
+        <ToastRenderer />
       </>
+      </FeatureFlagsContext.Provider>
     );
   }
 
@@ -15747,6 +15842,7 @@ function App() {
     : "Sincronizando mesa...";
 
   return (
+    <FeatureFlagsContext.Provider value={bootstrapFeatureFlags}>
     <main
       key={`scene-ui-refresh-${sceneUiRefreshNonce}`}
       className={`app-shell ${detailView ? "app-shell--detail" : ""} ${isChannelsDragging ? "app-shell--dragging" : ""}`}
@@ -15985,6 +16081,7 @@ function App() {
       {licenseModalNode}
       <ToastRenderer />
     </main>
+    </FeatureFlagsContext.Provider>
   );
 }
 

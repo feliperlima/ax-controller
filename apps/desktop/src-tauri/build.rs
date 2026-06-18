@@ -11,8 +11,17 @@ fn main() {
     if !key.is_empty() {
         println!("cargo:rustc-env=AX_API_KEY={}", key);
     }
+
+    let cert_pub_key = std::env::var("AX_CERT_PUBLIC_KEY_V1")
+        .or_else(|_| read_dotenv_var("AX_CERT_PUBLIC_KEY_V1"))
+        .unwrap_or_default();
+    if !cert_pub_key.is_empty() {
+        println!("cargo:rustc-env=AX_CERT_PUBLIC_KEY_V1={}", cert_pub_key);
+    }
+
     println!("cargo:rerun-if-env-changed=AX_API_KEY");
     println!("cargo:rerun-if-env-changed=VITE_AX_APP_KEY");
+    println!("cargo:rerun-if-env-changed=AX_CERT_PUBLIC_KEY_V1");
     println!("cargo:rerun-if-changed=../.env");
 }
 

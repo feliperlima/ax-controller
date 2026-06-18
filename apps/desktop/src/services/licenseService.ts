@@ -386,8 +386,6 @@ export function buildLocalhostApiCandidates(fileName: string) {
   return [
     `https://www.axcontrol.com.br/api/${fileName}`,
     `https://www.axcontrol.com.br/${fileName}`,
-    `http://www.axcontrol.com.br/api/${fileName}`,
-    `http://www.axcontrol.com.br/${fileName}`,
     `/api/${fileName}`,
     `api/${fileName}`,
     fileName,
@@ -408,32 +406,80 @@ export function resolveDeviceEndpointUrl(phpFile: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Native HTTP transport (via Tauri command)
+// HTTP transport — Tauri (invoke) or browser (fetch)
 // ---------------------------------------------------------------------------
 
-export async function requestLicenseApiViaNative(
+function isTauriRuntime(): boolean {
+  if (typeof window === "undefined") return false;
+  return Object.prototype.hasOwnProperty.call(window, "__TAURI_INTERNALS__");
+}
+
+function toBrowserUrl(url: string): string {
+  // In the browser preview the Vite proxy handles /api/** → axcontrol.com.br.
+  // Convert absolute axcontrol.com.br URLs to relative /api/... paths so the
+  // proxy intercepts them (avoids CORS entirely).
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === "axcontrol.com.br" || parsed.hostname === "www.axcontrol.com.br") {
+      return parsed.pathname + parsed.search;
+    }
+  } catch {
+    // already a relative path — fine as-is
+  }
+  return url;
+}
+
+async function fetchLicenseApi(
   method: "GET" | "POST",
   url: string,
   body?: Record<string, unknown>
 ): Promise<{ statusCode: number; body: Record<string, unknown>; rawBody: string } | null> {
+  const proxyUrl = toBrowserUrl(url);
+  const appKey = import.meta.env.VITE_AX_APP_KEY ?? "";
+  const res = await fetch(proxyUrl, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      ...(appKey ? { "X-AX-App-Key": appKey } : {}),
+      "X-App-Version": "1.1.0",
+    },
+    body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
+  });
+  const rawBody = await res.text();
+  let parsed: Record<string, unknown> = {};
+  try { parsed = JSON.parse(rawBody); } catch { /* non-JSON response */ }
+  return { statusCode: res.status, body: parsed, rawBody };
+}
+
+export async function requestLicenseApiViaNative(
+  method: "GET" | "POST",
+  url: string,
+  body?: Record<string, unknown>,
+  options: { skipSessionExpiredThrow?: boolean } = {}
+): Promise<{ statusCode: number; body: Record<string, unknown>; rawBody: string } | null> {
   if (!url) return null;
 
   try {
-    const response = await invoke<{ statusCode: number; body: Record<string, unknown>; rawBody: string }>(
-      "license_api_request",
-      {
+    let response: { statusCode: number; body: Record<string, unknown>; rawBody: string };
+
+    if (isTauriRuntime()) {
+      response = await invoke<typeof response>("license_api_request", {
         payload: {
           method,
           url,
           body: method === "POST" ? (body ?? null) : null,
         },
-      }
-    );
+      });
+    } else {
+      const fetched = await fetchLicenseApi(method, url, body);
+      if (!fetched) return null;
+      response = fetched;
+    }
 
     if (response.statusCode === 403) {
       throw Object.assign(new Error("APP_KEY_UNAUTHORIZED"), { isAppKeyError: true });
     }
-    if (response.statusCode === 401) {
+    if (response.statusCode === 401 && !options.skipSessionExpiredThrow) {
       throw Object.assign(new Error("SESSION_EXPIRED"), { isSessionExpiredError: true });
     }
     if (response.statusCode === 429) {
@@ -484,7 +530,7 @@ export async function apiRegisterLicense(params: RegisterParams): Promise<Regist
 
   for (const endpoint of endpointCandidates) {
     try {
-      const response = await requestLicenseApiViaNative("POST", endpoint, payloadBody);
+      const response = await requestLicenseApiViaNative("POST", endpoint, payloadBody, { skipSessionExpiredThrow: true });
       if (!response) {
         lastAttempt = {
           snapshot: parseLicenseSnapshot(buildRegisterSnapshotPayload({}, params.installationId)),
@@ -586,7 +632,7 @@ export async function apiLoginLicense(
     device_id: installationId,
     device_name: getDeviceNameLabel(),
     device_platform: getPlatformLabel(),
-  });
+  }, { skipSessionExpiredThrow: true });
   if (!response) return null;
 
   const rawText = response.rawBody;
