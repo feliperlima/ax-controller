@@ -291,12 +291,24 @@ export function resolveLicenseFormalState(input: {
 }
 
 export function isLicenseStateBlocked(state: LicenseFormalState): boolean {
+  // TRIAL_EXPIRED and LICENSE_NOT_FOUND are NOT blocked — they map to free tier.
+  // Only hard blocks from server-confirmed revocation/suspension or revalidation failure.
   return [
-    "TRIAL_EXPIRED",
     "PURCHASED_REVALIDATION_EXPIRED",
     "LICENSE_SUSPENDED",
     "LICENSE_REVOKED",
     "LICENSE_BLOCKED",
-    "LICENSE_NOT_FOUND",
   ].includes(state);
+}
+
+export function isFreeTier(state: LicenseFormalState): boolean {
+  return state === "TRIAL_EXPIRED" || state === "LICENSE_NOT_FOUND";
+}
+
+export function isPlusTier(state: LicenseFormalState): boolean {
+  return state === "PURCHASED_ACTIVE" || state === "PURCHASED_REVALIDATION_DUE";
+}
+
+export function isTrialTier(state: LicenseFormalState): boolean {
+  return state === "TRIAL_ACTIVE";
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { DemoMixerAdapter } from "./adapters/DemoMixerAdapter";
 import {
   Axios16Client,
   type LocalParamWrite,
@@ -54,7 +55,12 @@ import { ScenesView } from "./components/ScenesView";
 import { PatchingView } from "./components/PatchingView";
 import { FxPresetGrid, FxPresetControlPanel } from "./components/FxPresetPanel";
 import { SplashScreen } from "./components/SplashScreen";
-import { DeviceSelectionScreen } from "./components/DeviceSelectionScreen";
+import { DeviceSelectionPanel } from "./components/DeviceSelectionScreen";
+import { HomeScreen, type HomeNavView } from "./screens/HomeScreen";
+import { LicensePanel } from "./screens/LicensePanel";
+import { DevicesPanel } from "./screens/DevicesPanel";
+import { SettingsPanel } from "./screens/SettingsPanel";
+import { UpgradeModal } from "./screens/UpgradeModal";
 import { MixerTabs, type MixerTabDefinition } from "./components/MixerTabs";
 import axControlBrand from "./assets/AX-control-Brand-vert.svg";
 import productAxios24 from "./assets/product-axios24.webp";
@@ -66,7 +72,40 @@ import {
   saveKnownMixer,
 } from "./services/mixerDiscovery";
 import { getMixerCompatibility } from "./lib/mixerCompatibility";
-import { apiCreatePixPayment, apiCheckPixStatus } from "./lib/pixPaymentApi";
+import {
+  apiCreatePixPayment,
+  apiCheckPixStatus,
+  PIX_CREATE_PATH,
+  PIX_STATUS_PATH,
+  PIX_AMOUNT_BRL,
+} from "./services/paymentService";
+import {
+  LICENSE_API_BASE_URL,
+  REVOKE_DEVICE_PATH,
+  REACTIVATE_DEVICE_PATH,
+  normalizePhoneDigits,
+  formatPhoneWithDddMask,
+  getPlatformLabel,
+  getDeviceNameLabel,
+  normalizeLicenseApiPayload,
+  buildRegistrationFailureMessage,
+  requestLicenseApiViaNative,
+  licenseApiErrorText,
+  apiRegisterLicense,
+  apiActivateTrial,
+  apiLoginLicense,
+  apiGetMe,
+  apiValidateLicense,
+  apiGetLicenseStatus,
+  apiDeviceAction,
+  type RegisterApiResult,
+} from "./services/licenseService";
+import {
+  getOrCreateDeviceId,
+  issueCertificateAndStore,
+  renewCertificateAndStore,
+  validateCertificate,
+} from "./services/certificateService";
 import {
   decodeGroupMembers,
   getBitmaskProtocolProfile,
@@ -98,6 +137,7 @@ import {
   createInitialDcaState,
   createInitialMuteState,
   DCA_DEFAULT_COLOR_IDS,
+  dcaDbToPosition,
   dcaPositionToValue,
   dcaValueToPosition,
   dcaAccentColorFromId,
@@ -126,6 +166,7 @@ import {
   type LicenseSnapshot,
   type RuntimeLicenseCache,
   isLicenseStateBlocked,
+  isFreeTier,
   parseLicenseSnapshot,
   resolveLicenseFormalState,
 } from "./lib/licenseState";
@@ -136,7 +177,7 @@ import {
   resolveBootDecision,
   writeRuntimeLicenseCacheToStorage,
 } from "./lib/licenseEngine";
-import { Eye, EyeOff, Hash, Laptop2, LockKeyhole, Mail, Monitor, Phone, RefreshCw, ShieldCheck, Smartphone, User, X, Zap } from "lucide-react";
+import { Eye, EyeOff, LockKeyhole, Mail, Monitor, Phone, ShieldCheck, User, X, Zap } from "lucide-react";
 import { UniversalRawParamStore, type RawParamProfileModel, type RawParamSource } from "./lib/universalRawParamStore";
 import {
   ProfileAwareParameterRegistry,
@@ -855,7 +896,7 @@ type DetailView =
   | { type: "fx"; fx: number }
   | { type: "master"; side: "left" | "right" }
   | null;
-type AppStage = "splash" | "device-selection" | "mixer";
+type AppStage = "splash" | "home" | "mixer" | "demo";
 type MainView = "mixer" | "auxSends" | "fxSends" | "dcaGroups" | "muteGroups" | "scenes" | "patching";
 type StripSection = "inputs" | "aux" | "fx";
 type CustomizationSection = StripSection | "dca";
@@ -959,40 +1000,17 @@ const LICENSE_ACTIVATED_ONCE_STORAGE_KEY = "ax_license_activated_once";
 const LICENSE_STATUS_STORAGE_KEY = "ax_license_status";
 const LICENSE_RUNTIME_CACHE_STORAGE_KEY = "ax_license_runtime_cache_v2";
 const LICENSE_KEY_STORAGE_KEY = "ax_license_key_last";
+const LICENSE_DEVICES_CACHE_STORAGE_KEY = "ax_license_devices_cache";
+const PENDING_TRIAL_ACTIVATION_STORAGE_KEY = "ax_pending_trial_activation";
+const TRIAL_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const TRIAL_UPGRADE_PROMPT_DATE_KEY = "ax_trial_upgrade_prompt_date";
-const PIX_CREATE_PATH = (import.meta.env.VITE_PIX_CREATE_PATH ?? "/api/payment/create-pix.php").trim();
-const PIX_STATUS_PATH = (import.meta.env.VITE_PIX_STATUS_PATH ?? "/api/payment/status.php").trim();
-const PIX_AMOUNT_BRL = 99.90;
+const USER_NAME_STORAGE_KEY = "ax_user_name";
+const USER_EMAIL_STORAGE_KEY = "ax_user_email";
 const AX_APP_KEY = (import.meta.env.VITE_AX_APP_KEY ?? "").trim();
 const LICENSE_REVALIDATE_INTERVAL_DAYS = 30;
 const LICENSE_REVALIDATE_WARNING_DAYS = 5;
 const LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS = 2 * 60 * 1000;
 const LICENSE_STRICT_SERVER_VALIDATION = true;
-const LICENSE_API_BASE_URL = (
-  import.meta.env.VITE_LICENSE_API_BASE_URL ?? "https://www.axcontrol.com.br/api"
-).trim();
-const REGISTER_ENDPOINT_URL = (
-  import.meta.env.VITE_LICENSE_REGISTER_URL ?? ""
-).trim();
-const LOGIN_ENDPOINT_URL = (
-  import.meta.env.VITE_LICENSE_LOGIN_URL ?? ""
-).trim();
-const ME_ENDPOINT_URL = (
-  import.meta.env.VITE_LICENSE_ME_URL ?? ""
-).trim();
-const VALIDATE_ENDPOINT_URL = (
-  import.meta.env.VITE_LICENSE_VALIDATE_URL ?? ""
-).trim();
-const STATUS_ENDPOINT_URL = (
-  import.meta.env.VITE_LICENSE_STATUS_URL ?? ""
-).trim();
-const REGISTER_ENDPOINT_PATH = (import.meta.env.VITE_LICENSE_REGISTER_PATH ?? "register.php").trim();
-const LOGIN_ENDPOINT_PATH = (import.meta.env.VITE_LICENSE_LOGIN_PATH ?? "login.php").trim();
-const ME_ENDPOINT_PATH = (import.meta.env.VITE_LICENSE_ME_PATH ?? "me.php").trim();
-const VALIDATE_ENDPOINT_PATH = (import.meta.env.VITE_LICENSE_VALIDATE_PATH ?? "validate.php").trim();
-const STATUS_ENDPOINT_PATH = (import.meta.env.VITE_LICENSE_STATUS_PATH ?? "status.php").trim();
-const REVOKE_DEVICE_PATH = (import.meta.env.VITE_LICENSE_REVOKE_DEVICE_PATH ?? "revoke-device.php").trim();
-const REACTIVATE_DEVICE_PATH = (import.meta.env.VITE_LICENSE_REACTIVATE_DEVICE_PATH ?? "reactivate-device.php").trim();
 const UPGRADE_PRICE_LABEL = (import.meta.env.VITE_UPGRADE_PRICE_LABEL ?? "R$99,90").trim();
 const SUPPORT_WHATSAPP = (import.meta.env.VITE_SUPPORT_WHATSAPP ?? "+5592993361237").trim();
 const SUPPORT_EMAIL = (import.meta.env.VITE_SUPPORT_EMAIL ?? "").trim();
@@ -1033,6 +1051,37 @@ function readCachedLicenseStatus(): CachedLicenseStatus | null {
     };
   } catch {
     return null;
+  }
+}
+
+function isLicenseDeviceShape(value: unknown): value is LicenseDevice {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.deviceId === "string" &&
+    typeof v.deviceName === "string" &&
+    typeof v.devicePlatform === "string" &&
+    typeof v.active === "boolean"
+  );
+}
+
+function readLicenseDevicesCache(): LicenseDevice[] {
+  try {
+    const raw = localStorage.getItem(LICENSE_DEVICES_CACHE_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isLicenseDeviceShape);
+  } catch {
+    return [];
+  }
+}
+
+function writeLicenseDevicesCache(devices: LicenseDevice[]) {
+  try {
+    localStorage.setItem(LICENSE_DEVICES_CACHE_STORAGE_KEY, JSON.stringify(devices));
+  } catch {
+    // best-effort persistence only
   }
 }
 
@@ -1080,6 +1129,22 @@ function buildMixerCacheIdentity(
   }
 
   return `ip:${normalizedIp}:ch:${normalizedChannels}`;
+}
+
+async function buildMixerApiId(mixerCacheIdentity: string): Promise<string | null> {
+  const match = mixerCacheIdentity.match(/^mac:([0-9A-Fa-f:]{17}):ch:(\d+)$/);
+  if (!match) return null;
+
+  const mac = match[1].toUpperCase();
+  const channels = match[2];
+  const encoded = new TextEncoder().encode(`${mac}:${channels}`);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", encoded);
+  const hashHex = Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 32);
+
+  return `mh:${hashHex}:ch:${channels}`;
 }
 
 function getScopedStorageKey(baseKey: string, mixerCacheIdentity: string | null) {
@@ -1228,333 +1293,37 @@ function clearRuntimeLicenseCache() {
   clearRuntimeLicenseCacheFromStorage(LICENSE_RUNTIME_CACHE_STORAGE_KEY);
 }
 
-function buildLicenseApiUrl(path: string) {
-  if (!LICENSE_API_BASE_URL) return "";
-  const base = LICENSE_API_BASE_URL.endsWith("/") ? LICENSE_API_BASE_URL.slice(0, -1) : LICENSE_API_BASE_URL;
-  const suffix = path.startsWith("/") ? path : `/${path}`;
-  return `${base}${suffix}`;
+type PendingTrialActivation = {
+  queuedAt: string;
+};
+
+function isPendingTrialActivationShape(value: unknown): value is PendingTrialActivation {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.queuedAt === "string";
 }
 
-function buildLicenseEndpointCandidates(primaryUrl: string, primaryPath: string, fallbackPaths: string[]) {
-  const unique = new Set<string>();
-  const result: string[] = [];
-
-  if (primaryUrl) {
-    const normalizedUrl = primaryUrl.trim();
-    if (normalizedUrl) {
-      unique.add(normalizedUrl);
-      result.push(normalizedUrl);
-    }
-  }
-
-  for (const rawPath of [primaryPath, ...fallbackPaths]) {
-    const path = rawPath.trim();
-    if (!path) continue;
-
-    const endpoint = /^https?:\/\//i.test(path) ? path : buildLicenseApiUrl(path);
-    if (!endpoint || unique.has(endpoint)) continue;
-
-    unique.add(endpoint);
-    result.push(endpoint);
-  }
-
-  return result;
-}
-
-function resolveLicenseEndpointUrl(primaryUrl: string, primaryPath: string, fallbackPaths: string[]) {
-  const candidates = buildLicenseEndpointCandidates(primaryUrl, primaryPath, fallbackPaths);
-  return candidates[0] ?? "";
-}
-
-function buildLocalhostApiCandidates(fileName: string) {
-  return [
-    `https://www.axcontrol.com.br/api/${fileName}`,
-    `https://www.axcontrol.com.br/${fileName}`,
-    `http://www.axcontrol.com.br/api/${fileName}`,
-    `http://www.axcontrol.com.br/${fileName}`,
-    `/api/${fileName}`,
-    `api/${fileName}`,
-    fileName,
-    `/${fileName}`,
-  ];
-}
-
-function getBackendMessage(payload: Record<string, unknown>, parsed: Record<string, unknown>) {
-  const fromPayload = typeof payload.message === "string" ? payload.message.trim() : "";
-  if (fromPayload) return fromPayload;
-  const fromParsed = typeof parsed.message === "string" ? parsed.message.trim() : "";
-  if (fromParsed) return fromParsed;
-  return "";
-}
-
-function buildRegistrationFailureMessage(input: {
-  httpStatus: number;
-  backendMessage: string;
-  rawBody: string;
-  transportError?: string;
-}) {
-  if (input.transportError) {
-    return "Não foi possível concluir o cadastro agora. Tente novamente em instantes ou use Entrar se já tiver uma conta.";
-  }
-
-  const backendMessage = input.backendMessage.trim();
-  const backendMessageLower = backendMessage.toLowerCase();
-  if (backendMessage) {
-    const looksLikeDuplicateAccount =
-      backendMessageLower.includes("já existe") ||
-      backendMessageLower.includes("ja existe") ||
-      backendMessageLower.includes("already") ||
-      backendMessageLower.includes("duplic") ||
-      backendMessageLower.includes("e-mail") ||
-      backendMessageLower.includes("email");
-
-    if (looksLikeDuplicateAccount) {
-      return "Não foi possível concluir o cadastro com estes dados. Se você já possui uma conta, use Entrar para continuar.";
-    }
-
-    return backendMessage;
-  }
-
-  const rawBody = input.rawBody.trim().toLowerCase();
-  const looksLikeHtml = rawBody.startsWith("<!doctype") || rawBody.startsWith("<html") || rawBody.includes("<body");
-  if (looksLikeHtml || input.httpStatus === 404) {
-    return "Não foi possível concluir o cadastro agora. Se você já possui uma conta, use Entrar para continuar.";
-  }
-
-  if (input.httpStatus >= 500) {
-    return "Serviço de cadastro indisponível no momento. Tente novamente em instantes.";
-  }
-
-  if (input.httpStatus === 429) {
-    return "Muitas tentativas em sequência. Aguarde um momento e tente novamente.";
-  }
-
-  return "Não foi possível concluir o cadastro agora. Revise os dados e tente novamente. Se você já possui uma conta, use Entrar para continuar.";
-}
-
-function buildRegisterSnapshotPayload(payload: Record<string, unknown>, fallbackInstallationId: string): Record<string, unknown> {
-  const normalized = normalizeLicenseApiPayload(payload);
-  const license = normalized.license && typeof normalized.license === "object"
-    ? (normalized.license as Record<string, unknown>)
-    : null;
-  const installation = normalized.installation && typeof normalized.installation === "object"
-    ? (normalized.installation as Record<string, unknown>)
-    : {};
-
-  const statusValue =
-    (license && typeof license.status === "string" ? license.status : "") ||
-    (typeof normalized.status === "string" ? normalized.status : "active");
-  const statusLower = statusValue.trim().toLowerCase();
-  const activeValue = typeof normalized.active === "boolean"
-    ? normalized.active
-    : statusLower === "active";
-  const validValue = typeof normalized.valid === "boolean"
-    ? normalized.valid
-    : activeValue;
-
-  let codeValue = typeof normalized.code === "string" ? normalized.code : "LICENSE_VALID";
-  if (typeof normalized.code !== "string") {
-    if (statusLower === "revoked") codeValue = "LICENSE_REVOKED";
-    else if (statusLower === "suspended") codeValue = "LICENSE_SUSPENDED";
-    else if (statusLower === "blocked" || statusLower === "inactive" || statusLower === "pending") codeValue = "LICENSE_BLOCKED";
-  }
-
-  const resolvedSeries =
-    (license && typeof license.series === "string" && license.series.trim()) ||
-    (typeof normalized.series === "string" && normalized.series.trim()) ||
-    fallbackInstallationId;
-  const resolvedType =
-    (license && typeof license.type === "string" && license.type.trim()) ||
-    (typeof normalized.license_type === "string" && normalized.license_type.trim()) ||
-    "unknown";
-
-  return {
-    ...normalized,
-    code: codeValue,
-    status: statusValue,
-    valid: validValue,
-    active: activeValue,
-    license: {
-      ...(license ?? {}),
-      series: resolvedSeries,
-      type: resolvedType,
-    },
-    activation: {
-      active_devices: normalized.active_devices,
-      remaining_activations:
-        normalized.remaining_activations ??
-        (license && typeof license.max_activations !== "undefined" ? license.max_activations : null),
-      devices: normalized.devices,
-    },
-    installation: {
-      ...installation,
-      uuid:
-        (typeof installation.uuid === "string" && installation.uuid.trim()) ||
-        (typeof normalized.installation_uuid === "string" && normalized.installation_uuid.trim()) ||
-        fallbackInstallationId,
-    },
-  };
-}
-
-function normalizeLicenseApiPayload(payload: Record<string, unknown>): Record<string, unknown> {
-  const body = payload && typeof payload === "object" ? payload : {};
-  const data = body.data;
-  return data && typeof data === "object" ? (data as Record<string, unknown>) : body;
-}
-
-function isAppKeyError(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as Record<string, unknown>).isAppKeyError === true;
-}
-
-function isSessionExpiredError(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as Record<string, unknown>).isSessionExpiredError === true;
-}
-
-function isRateLimitError(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as Record<string, unknown>).isRateLimitError === true;
-}
-
-function licenseApiErrorText(err: unknown): string | null {
-  if (isAppKeyError(err)) return "Erro de configuração do aplicativo. Por favor, reinstale ou atualize o app.";
-  if (isSessionExpiredError(err)) return "Sessão expirada. Faça login novamente.";
-  if (isRateLimitError(err)) return "Muitas tentativas. Aguarde alguns minutos e tente novamente.";
-  return null;
-}
-
-async function requestLicenseApiViaNative(
-  method: "GET" | "POST",
-  url: string,
-  body?: Record<string, unknown>
-): Promise<{ statusCode: number; body: Record<string, unknown>; rawBody: string } | null> {
-  if (!url) return null;
-
+function readPendingTrialActivation(): PendingTrialActivation | null {
   try {
-    const response = await invoke<{ statusCode: number; body: Record<string, unknown>; rawBody: string }>(
-      "license_api_request",
-      {
-        payload: {
-          method,
-          url,
-          body: method === "POST" ? (body ?? null) : null,
-        },
-      }
-    );
-
-    if (response.statusCode === 403) {
-      throw Object.assign(new Error("APP_KEY_UNAUTHORIZED"), { isAppKeyError: true });
-    }
-    if (response.statusCode === 401) {
-      throw Object.assign(new Error("SESSION_EXPIRED"), { isSessionExpiredError: true });
-    }
-    if (response.statusCode === 429) {
-      throw Object.assign(new Error("RATE_LIMIT"), { isRateLimitError: true });
-    }
-
-    return response;
-  } catch (err) {
-    if (isAppKeyError(err) || isSessionExpiredError(err) || isRateLimitError(err)) throw err;
+    const raw = localStorage.getItem(PENDING_TRIAL_ACTIVATION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return isPendingTrialActivationShape(parsed) ? parsed : null;
+  } catch {
     return null;
   }
 }
 
-function buildAuthSnapshotPayload(payload: Record<string, unknown>, fallbackInstallationId: string): Record<string, unknown> {
-  const normalized = normalizeLicenseApiPayload(payload);
-  const license = normalized.license && typeof normalized.license === "object"
-    ? (normalized.license as Record<string, unknown>)
-    : {};
-  const activation = normalized.activation && typeof normalized.activation === "object"
-    ? (normalized.activation as Record<string, unknown>)
-    : {};
-  const installation = normalized.installation && typeof normalized.installation === "object"
-    ? (normalized.installation as Record<string, unknown>)
-    : {};
-
-  const statusValue = typeof normalized.status === "string"
-    ? normalized.status
-    : (typeof license.status === "string" ? license.status : "active");
-  const statusLower = statusValue.trim().toLowerCase();
-
-  const activeValue = typeof normalized.active === "boolean"
-    ? normalized.active
-    : statusLower === "active";
-  const validValue = typeof normalized.valid === "boolean"
-    ? normalized.valid
-    : activeValue;
-
-  let codeValue = typeof normalized.code === "string" ? normalized.code : "LICENSE_VALID";
-  if (typeof normalized.code !== "string") {
-    if (statusLower === "revoked") codeValue = "LICENSE_REVOKED";
-    else if (statusLower === "suspended") codeValue = "LICENSE_SUSPENDED";
-    else if (statusLower === "blocked" || statusLower === "inactive" || statusLower === "pending") codeValue = "LICENSE_BLOCKED";
+function writePendingTrialActivation(payload: PendingTrialActivation) {
+  try {
+    localStorage.setItem(PENDING_TRIAL_ACTIVATION_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // best-effort persistence only
   }
-
-  const resolvedSeries =
-    (typeof license.series === "string" && license.series.trim()) ||
-    (typeof normalized.series === "string" && normalized.series.trim()) ||
-    fallbackInstallationId;
-
-  const resolvedUuid =
-    (typeof installation.uuid === "string" && installation.uuid.trim()) ||
-    (typeof normalized.device_id === "string" && normalized.device_id.trim()) ||
-    (typeof normalized.series === "string" && normalized.series.trim()) ||
-    fallbackInstallationId;
-
-  const licenseTypeValue =
-    (typeof license.type === "string" && license.type.trim()) ||
-    (typeof normalized.license_type === "string" && normalized.license_type.trim()) ||
-    "unknown";
-
-  return {
-    ...normalized,
-    code: codeValue,
-    status: statusValue,
-    valid: validValue,
-    active: activeValue,
-    license: {
-      ...license,
-      series: resolvedSeries,
-      type: licenseTypeValue,
-    },
-    activation: {
-      ...activation,
-      active_devices: activation.active_devices ?? normalized.active_devices,
-      remaining_activations: activation.remaining_activations ?? normalized.remaining_activations,
-    },
-    installation: {
-      ...installation,
-      uuid: resolvedUuid,
-    },
-  };
 }
 
-function normalizePhoneDigits(value: string) {
-  return value.replace(/\D/g, "").slice(0, 11);
-}
-
-function formatPhoneWithDddMask(value: string) {
-  const digits = normalizePhoneDigits(value);
-  if (!digits) return "";
-
-  if (digits.length <= 2) {
-    return `(${digits}`;
-  }
-
-  const ddd = digits.slice(0, 2);
-  const number = digits.slice(2);
-
-  if (digits.length <= 6) {
-    return `(${ddd}) ${number}`;
-  }
-
-  if (digits.length <= 10) {
-    const first = number.slice(0, 4);
-    const last = number.slice(4);
-    return `(${ddd}) ${first}${last ? `-${last}` : ""}`;
-  }
-
-  const first = number.slice(0, 5);
-  const last = number.slice(5, 9);
-  return `(${ddd}) ${first}-${last}`;
+function clearPendingTrialActivation() {
+  localStorage.removeItem(PENDING_TRIAL_ACTIVATION_STORAGE_KEY);
 }
 
 type ColorScope = "input" | "aux" | "fx" | "master";
@@ -1584,26 +1353,6 @@ function generateInstallationId() {
   }
 
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function getPlatformLabel() {
-  const ua = navigator.userAgent.toLowerCase();
-  if (ua.includes("android")) return "Android";
-  if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios")) return "iOS";
-  if (ua.includes("mac")) return "macOS";
-  if (ua.includes("win")) return "Windows";
-  if (ua.includes("linux")) return "Linux";
-  return "";
-}
-
-function getDeviceNameLabel() {
-  const ua = navigator.userAgent.toLowerCase();
-  if (ua.includes("ipad")) return "iPad";
-  if (ua.includes("iphone")) return "iPhone";
-  if (ua.includes("mac")) return "Mac";
-  if (ua.includes("win")) return "Windows PC";
-  if (ua.includes("android")) return "Android Device";
-  return "Desktop Device";
 }
 
 function isConstrainedMobileDevice() {
@@ -2030,6 +1779,100 @@ function sendGroupMessages(
   }
 }
 
+// ─── Demo Mode Data ──────────────────────────────────────────────────────────
+// Layout: stereo pairs always on consecutive odd-even channels so channel links work.
+
+const DEMO_CHANNEL_NAMES: string[] = [
+  // 1-8 drums + bass
+  "Kick", "Snare", "OH L", "OH R", "Tom 1", "Tom 2", "Bass DI", "Hi-Hat",
+  // 9-12 guitars + keys
+  "Guitar L", "Guitar R", "Keys L", "Keys R",
+  // 13-16 vocals
+  "Vocal Lead", "Vocal BG 1", "Vocal BG 2", "Vocal BG 3",
+  // 17-20 winds + strings
+  "Sax", "Trumpet", "Violin", "Violoncelo",
+  // 21-24 choir + production
+  "Choir L", "Choir R", "Click", "Talk Back",
+  // 25-28 playback + fx returns
+  "Play L", "Play R", "FX Ret L", "FX Ret R",
+  // 29-32 misc
+  "Aux In 1", "Aux In 2", "Ambient L", "Ambient R",
+];
+
+const DEMO_COLOR_IDS: number[] = [
+  1, 2, 3, 3, 1, 1, 6, 2,    // Kick=red Snare=orange OH pair=blue Toms=red Bass=green HH=orange
+  5, 5, 9, 9,                  // Guitar pair=yellow Keys pair=purple
+  11, 11, 11, 11,              // Vocals=light blue
+  4, 4, 10, 10,                // Winds=teal Strings=pink
+  7, 7, 8, 8,                  // Choir pair=white Click/Talk=dark
+  0, 0, 12, 12,                // Play pair=gray FX Ret pair=violet
+  8, 8, 0, 0,                  // Aux=dark Ambient=gray
+];
+
+const DEMO_PAN_VALUES: number[] = [
+  100, 100,  45, 155,  65, 135, 100, 120,  // drums/bass: OH panned wide, toms L/R
+   50, 150,  60, 140,                        // guitars L/R, keys L/R
+  100,  80, 120,  92,                        // vocal lead center, BGs spread
+   75, 125,  55, 145,                        // winds: sax L / trumpet R, strings wide
+   40, 160, 100, 100,                        // choir wide, click/talk center
+   40, 160,  40, 160,                        // playback wide, FX returns wide
+  100, 100, 100, 100,                        // aux/ambient center
+];
+
+const DEMO_FADER_DBS: number[] = [
+   -3,  -5,  -9,  -9, -10, -10,  -4, -12,  // drums/bass
+   -6,  -6,  -7,  -7,                        // guitar, keys
+    0,  -7,  -7,  -9,                        // vocal lead unity, BGs
+   -8,  -9, -11, -11,                        // winds, strings
+   -9,  -9, -120, -120,                      // choir, click muted, talk muted
+  -12, -12,  -7,  -7,                        // playback, FX returns
+  -12, -12, -120, -120,                      // aux, ambient muted
+];
+
+// 0-indexed bitmasks for channel properties
+const DEMO_MUTED_INDICES    = new Set([22, 23, 30, 31]);  // Click, Talk Back, Ambient L/R
+const DEMO_PHANTOM_INDICES  = new Set([2, 3, 12, 13, 14, 15]);  // OH L/R, all vocals
+const DEMO_HIZ_INDICES      = new Set([6]);  // Bass DI
+
+function createDemoChannelsState(): ChannelState[] {
+  return Array.from({ length: 32 }, (_, i) => ({
+    muted:         DEMO_MUTED_INDICES.has(i),
+    soloOn:        false,
+    phantomOn:     DEMO_PHANTOM_INDICES.has(i),
+    hiZOn:         DEMO_HIZ_INDICES.has(i),
+    usbInputOn:    false,
+    phasePositive: true,
+    colorId:       DEMO_COLOR_IDS[i] ?? 1,
+    iconId:        0,
+    channelName:   DEMO_CHANNEL_NAMES[i] ?? `Canal ${i + 1}`,
+    mixerName:     "AXIOS 32 — DEMO",
+    faderDb:       Math.max(-120, DEMO_FADER_DBS[i] ?? -6),
+    faderPosition: dbToFaderPosition(Math.max(-120, DEMO_FADER_DBS[i] ?? -6)),
+    pan:           DEMO_PAN_VALUES[i] ?? 100,
+    gain:          32 + (i % 6) * 4,
+    meterDb:       -75,
+    meterLevel:    0,
+    peakDb:        -75,
+    peakLevel:     0,
+    peakUntil:     0,
+    clipUntil:     0,
+  }));
+}
+
+// Stereo pairs: key = pairKey(odd, even). All odd-even consecutive pairs.
+const DEMO_CHANNEL_LINKS: PairLinkState = {
+  "3-4":   true,  // OH L/R
+  "9-10":  true,  // Guitar L/R
+  "11-12": true,  // Keys L/R
+  "21-22": true,  // Choir L/R
+  "25-26": true,  // Play L/R
+  "27-28": true,  // FX Ret L/R
+};
+
+const DEMO_DCA_NAMES = ["DRUMS", "BASS", "GUITARS", "KEYS", "VOCALS", "WINDS", "STRINGS", "CHOIR"];
+// Colors: red green yellow purple lightblue teal pink white
+const DEMO_DCA_COLOR_IDS_ARRAY = [1, 6, 5, 9, 11, 4, 10, 7];
+
 const DEFAULT_GATE: GateState = {
   enabled: false,
   threshold: -50,
@@ -2154,6 +1997,130 @@ function createDefaultAuxProcessorState(): ProcessorState {
     },
   };
 }
+
+// ─── Demo processor, DCA and mute group factories ───────────────────────────
+
+function createDemoProcessorStates(): ProcessorState[] {
+  type B = { freq: number; gain: number; q?: number };
+  const proc = (
+    g: Partial<GateState> | null,
+    c: Partial<CompressorState> | null,
+    hpf: number | null,
+    b1: B | null, b2: B | null, b3: B | null, b4: B | null
+  ): ProcessorState => {
+    const bands: EqBandState[] = [
+      b1 ? { enabled: true, freq: b1.freq, gain: b1.gain, q: b1.q ?? 1 } : { ...DEFAULT_EQ.bands[0]! },
+      b2 ? { enabled: true, freq: b2.freq, gain: b2.gain, q: b2.q ?? 1 } : { ...DEFAULT_EQ.bands[1]! },
+      b3 ? { enabled: true, freq: b3.freq, gain: b3.gain, q: b3.q ?? 1 } : { ...DEFAULT_EQ.bands[2]! },
+      b4 ? { enabled: true, freq: b4.freq, gain: b4.gain, q: b4.q ?? 1 } : { ...DEFAULT_EQ.bands[3]! },
+    ];
+    return {
+      gate: g ? { ...DEFAULT_GATE, enabled: true, ...g } : { ...DEFAULT_GATE },
+      comp: c ? { ...DEFAULT_COMP, enabled: true, ...c } : { ...DEFAULT_COMP },
+      eq: {
+        ...DEFAULT_EQ,
+        enabled: !!(hpf ?? b1 ?? b2 ?? b3 ?? b4),
+        hpfEnabled: !!hpf,
+        hpfFreq: hpf ?? DEFAULT_EQ.hpfFreq,
+        bands,
+      },
+    };
+  };
+  const flat = () => createDefaultProcessorState();
+  return [
+    // 1 Kick
+    proc({ threshold:-28,attack:2,decay:3,hold:20 }, { ratio:4,threshold:-18,attack:4,release:80,gain:4 },   40, {freq:80,gain:4,q:1.2},{freq:350,gain:-4,q:2},{freq:2500,gain:3,q:1.5},{freq:10000,gain:2}),
+    // 2 Snare
+    proc({ threshold:-25,attack:2,decay:3,hold:20 }, { ratio:3,threshold:-18,attack:8,release:100,gain:3 },  80, {freq:200,gain:3},{freq:500,gain:-2,q:2},{freq:4000,gain:5,q:1.5},{freq:10000,gain:2}),
+    // 3 OH L
+    proc(null, { ratio:2,threshold:-22,attack:20,release:200,gain:2 }, 200, {freq:300,gain:-2},{freq:800,gain:0},{freq:5000,gain:1},{freq:12000,gain:2}),
+    // 4 OH R
+    proc(null, { ratio:2,threshold:-22,attack:20,release:200,gain:2 }, 200, {freq:300,gain:-2},{freq:800,gain:0},{freq:5000,gain:1},{freq:12000,gain:2}),
+    // 5 Tom 1
+    proc({ threshold:-30,attack:2,decay:4,hold:30 }, { ratio:3,threshold:-20,attack:8,release:100,gain:3 },  60, {freq:120,gain:4},{freq:500,gain:-3,q:2},{freq:3000,gain:2,q:1.5},{freq:10000,gain:1}),
+    // 6 Tom 2
+    proc({ threshold:-30,attack:2,decay:4,hold:30 }, { ratio:3,threshold:-20,attack:8,release:100,gain:3 },  60, {freq:100,gain:4},{freq:500,gain:-3,q:2},{freq:2500,gain:2,q:1.5},{freq:10000,gain:1}),
+    // 7 Bass DI
+    proc(null, { ratio:5,threshold:-15,attack:15,release:250,gain:5 },                                        40, {freq:80,gain:3},{freq:250,gain:-2,q:2},{freq:1000,gain:2},{freq:4000,gain:1}),
+    // 8 Hi-Hat
+    proc({ threshold:-40,attack:5,decay:2,hold:10 }, { ratio:2,threshold:-22,attack:20,release:150,gain:2 }, 600, {freq:1000,gain:-2},{freq:3000,gain:0},{freq:8000,gain:3,q:1.5},{freq:15000,gain:2}),
+    // 9 Guitar L
+    proc(null, { ratio:3,threshold:-18,attack:15,release:150,gain:3 },                                        80, {freq:200,gain:2},{freq:400,gain:-3,q:2},{freq:2500,gain:3,q:1.5},{freq:8000,gain:2}),
+    // 10 Guitar R
+    proc(null, { ratio:3,threshold:-18,attack:15,release:150,gain:3 },                                        80, {freq:200,gain:2},{freq:400,gain:-3,q:2},{freq:2500,gain:3,q:1.5},{freq:8000,gain:2}),
+    // 11 Keys L
+    proc(null, { ratio:2,threshold:-20,attack:20,release:200,gain:2 },                                        60, {freq:100,gain:-2},{freq:500,gain:1},{freq:3000,gain:2},{freq:10000,gain:2}),
+    // 12 Keys R
+    proc(null, { ratio:2,threshold:-20,attack:20,release:200,gain:2 },                                        60, {freq:100,gain:-2},{freq:500,gain:1},{freq:3000,gain:2},{freq:10000,gain:2}),
+    // 13 Vocal Lead
+    proc({ threshold:-40,attack:10,decay:10,hold:30 }, { ratio:3,threshold:-20,attack:15,release:200,gain:4 }, 120, {freq:200,gain:-3},{freq:1500,gain:2,q:2},{freq:5000,gain:4,q:1.5},{freq:12000,gain:3}),
+    // 14 Vocal BG 1
+    proc({ threshold:-42,attack:10,decay:10,hold:30 }, { ratio:3,threshold:-22,attack:15,release:200,gain:3 }, 100, {freq:200,gain:-2},{freq:1000,gain:1,q:2},{freq:4000,gain:3,q:1.5},{freq:10000,gain:2}),
+    // 15 Vocal BG 2
+    proc({ threshold:-42,attack:10,decay:10,hold:30 }, { ratio:3,threshold:-22,attack:15,release:200,gain:3 }, 100, {freq:200,gain:-2},{freq:1000,gain:1,q:2},{freq:4000,gain:3,q:1.5},{freq:10000,gain:2}),
+    // 16 Vocal BG 3
+    proc({ threshold:-40,attack:12,decay:10,hold:30 }, { ratio:2,threshold:-24,attack:20,release:200,gain:2 }, 120, {freq:250,gain:-2},{freq:1200,gain:1,q:2},{freq:4500,gain:2,q:1.5},{freq:10000,gain:1}),
+    // 17 Sax
+    proc(null, { ratio:3,threshold:-20,attack:10,release:150,gain:2 },                                        150, {freq:300,gain:2},{freq:800,gain:-1,q:2},{freq:2500,gain:3,q:1.5},{freq:8000,gain:2}),
+    // 18 Trumpet
+    proc(null, { ratio:3,threshold:-20,attack:10,release:120,gain:2 },                                        200, {freq:400,gain:-1},{freq:1000,gain:1,q:2},{freq:3000,gain:3,q:1.5},{freq:8000,gain:1}),
+    // 19 Violin
+    proc(null, { ratio:2,threshold:-22,attack:20,release:200,gain:2 },                                        100, {freq:250,gain:2},{freq:600,gain:-1,q:2},{freq:4000,gain:3,q:1.5},{freq:10000,gain:2}),
+    // 20 Violoncelo
+    proc(null, { ratio:2,threshold:-22,attack:20,release:200,gain:2 },                                         80, {freq:150,gain:3},{freq:400,gain:-1,q:2},{freq:3000,gain:2,q:1.5},{freq:8000,gain:1}),
+    // 21 Choir L
+    proc(null, { ratio:2,threshold:-24,attack:20,release:250,gain:2 },                                        150, {freq:300,gain:-2},{freq:800,gain:1},{freq:3000,gain:2,q:1.5},{freq:10000,gain:2}),
+    // 22 Choir R
+    proc(null, { ratio:2,threshold:-24,attack:20,release:250,gain:2 },                                        150, {freq:300,gain:-2},{freq:800,gain:1},{freq:3000,gain:2,q:1.5},{freq:10000,gain:2}),
+    // 23 Click (muted, flat)
+    flat(),
+    // 24 Talk Back
+    proc({ threshold:-35,attack:5,decay:3,hold:20 }, { ratio:6,threshold:-18,attack:5,release:80,gain:4 },   200, {freq:400,gain:-2},{freq:1000,gain:2,q:2},{freq:3000,gain:1,q:1.5},{freq:8000,gain:-2}),
+    // 25 Play L
+    proc(null, { ratio:2,threshold:-20,attack:20,release:200,gain:0 }, 80, null, null, null, null),
+    // 26 Play R
+    proc(null, { ratio:2,threshold:-20,attack:20,release:200,gain:0 }, 80, null, null, null, null),
+    // 27 FX Ret L (flat)
+    flat(),
+    // 28 FX Ret R (flat)
+    flat(),
+    // 29 Aux In 1
+    proc(null, { ratio:2,threshold:-20,attack:20,release:200,gain:0 }, 100, null, null, null, null),
+    // 30 Aux In 2
+    proc(null, { ratio:2,threshold:-20,attack:20,release:200,gain:0 }, 100, null, null, null, null),
+    // 31 Ambient L (muted, flat)
+    flat(),
+    // 32 Ambient R (muted, flat)
+    flat(),
+  ];
+}
+
+function createDemoDcaGroups(): DcaGroupState[] {
+  const pos = dcaDbToPosition(0);
+  return [
+    { enabled: true, faderPosition: pos, members: ["CH_1","CH_2","CH_3","CH_4","CH_5","CH_6","CH_8"] as GroupMember[] },  // DRUMS
+    { enabled: true, faderPosition: pos, members: ["CH_7"]                                            as GroupMember[] },  // BASS
+    { enabled: true, faderPosition: pos, members: ["CH_9","CH_10"]                                    as GroupMember[] },  // GUITARS
+    { enabled: true, faderPosition: pos, members: ["CH_11","CH_12"]                                   as GroupMember[] },  // KEYS
+    { enabled: true, faderPosition: pos, members: ["CH_13","CH_14","CH_15","CH_16"]                   as GroupMember[] },  // VOCALS
+    { enabled: true, faderPosition: pos, members: ["CH_17","CH_18"]                                   as GroupMember[] },  // WINDS
+    { enabled: true, faderPosition: pos, members: ["CH_19","CH_20"]                                   as GroupMember[] },  // STRINGS
+    { enabled: true, faderPosition: pos, members: ["CH_21","CH_22"]                                   as GroupMember[] },  // CHOIR
+  ];
+}
+
+function createDemoMuteGroups(): MuteGroupState[] {
+  return [
+    { active: false, members: ["CH_1","CH_2","CH_3","CH_4","CH_5","CH_6","CH_8"]                        as GroupMember[] }, // DRUMS
+    { active: false, members: ["CH_13","CH_14","CH_15","CH_16"]                                          as GroupMember[] }, // VOCALS
+    { active: false, members: ["CH_7","CH_9","CH_10","CH_11","CH_12","CH_17","CH_18","CH_19","CH_20"]    as GroupMember[] }, // INSTRUMENTS
+    { active: false, members: ["CH_21","CH_22","CH_25","CH_26"]                                          as GroupMember[] }, // PLAYBACK/CHOIR
+    { active: false, members: ["CH_27","CH_28"]                                                          as GroupMember[] }, // FX RETURNS
+    { active: false, members: ["CH_24"]                                                                  as GroupMember[] }, // TALK BACK
+  ];
+}
+
+// ─── End Demo Mode factories ─────────────────────────────────────────────────
 
 function createDefaultFxPresetState(): FxPresetState {
   return {
@@ -2643,6 +2610,7 @@ function App() {
   const isConstrainedDevice = useMemo(() => isConstrainedMobileDevice(), []);
   const [channelCount, setChannelCount] = useState(DEFAULT_CHANNEL_COUNT);
   const [appStage, setAppStage] = useState<AppStage>("splash");
+  const [homeSubView, setHomeSubView] = useState<HomeNavView>("home");
   const [_ip, setIp] = useState(DEFAULT_MIXER_IP);
   void _ip;
   const [status, setStatus] = useState("Desconectado");
@@ -2653,7 +2621,7 @@ function App() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [licenseModalOpen, setLicenseModalOpen] = useState(false);
   const [licenseModalMandatory, setLicenseModalMandatory] = useState(false);
-  const [licenseModalMode, setLicenseModalMode] = useState<"onboarding" | "settings" | "upgrade">("onboarding");
+  const [licenseModalMode, setLicenseModalMode] = useState<"onboarding" | "upgrade">("onboarding");
   const [pixPayment, setPixPayment] = useState<
     | { stage: "idle" }
     | { stage: "creating" }
@@ -2676,9 +2644,12 @@ function App() {
   const [licenseLinkedUserType, setLicenseLinkedUserType] = useState<LicenseSnapshot["linkedUserType"]>(null);
   const [licenseActiveDevicesCount, setLicenseActiveDevicesCount] = useState<number | null>(null);
   const [licenseRemainingActivations, setLicenseRemainingActivations] = useState<number | null>(null);
-  const [licenseDevices, setLicenseDevices] = useState<LicenseDevice[]>([]);
+  const [licenseDevices, setLicenseDevices] = useState<LicenseDevice[]>(() => readLicenseDevicesCache());
   const [licenseDevicesLoading, setLicenseDevicesLoading] = useState(false);
   const [licenseDeviceActionBusy, setLicenseDeviceActionBusy] = useState<string | null>(null);
+  const [licenseUserName, setLicenseUserName] = useState(() => localStorage.getItem(USER_NAME_STORAGE_KEY) ?? "");
+  const [licenseUserEmail, setLicenseUserEmail] = useState(() => localStorage.getItem(USER_EMAIL_STORAGE_KEY) ?? "");
+  const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [licenseRegisterBusy, setLicenseRegisterBusy] = useState(false);
   const [licenseRegisterWantsUpgrade] = useState(false);
   const [licenseRegisterName, setLicenseRegisterName] = useState("");
@@ -2686,14 +2657,14 @@ function App() {
   const [licenseRegisterPhone, setLicenseRegisterPhone] = useState("");
   const [licenseRegisterPassword, setLicenseRegisterPassword] = useState("");
   const [licenseRegisterConfirmPassword, setLicenseRegisterConfirmPassword] = useState("");
-  const [licenseOnboardingView, setLicenseOnboardingView] = useState<"register" | "signin">("register");
+  const [licenseOnboardingView, setLicenseOnboardingView] = useState<"register" | "signin">("signin");
   const [licenseSignInEmail, setLicenseSignInEmail] = useState("");
   const [licenseSignInPassword, setLicenseSignInPassword] = useState("");
   const [licenseSignInBusy, setLicenseSignInBusy] = useState(false);
   const [licenseSignInShowPassword, setLicenseSignInShowPassword] = useState(false);
   const [licenseRegisterShowPassword, setLicenseRegisterShowPassword] = useState(false);
   const [licenseRegisterShowConfirmPassword, setLicenseRegisterShowConfirmPassword] = useState(false);
-  const [, setHasLicenseActivatedOnce] = useState(false);
+  const [hasLicenseActivatedOnce, setHasLicenseActivatedOnce] = useState(false);
   const [licenseRevalidationHint, setLicenseRevalidationHint] = useState("");
   const [pendingDiscoveryMixer, setPendingDiscoveryMixer] = useState<DiscoveredMixer | null>(null);
   const [isOnline, setIsOnline] = useState(() =>
@@ -2832,6 +2803,7 @@ function App() {
   const auxLinkBusyRef = useRef(false);
   const meterUpdateLastAtRef = useRef(0);
   const isChannelsDraggingRef = useRef(false);
+  const isConnectedRef = useRef(false);
   const mixerChannelsScrollerRef = useRef<HTMLElement | null>(null);
   const mixerChannelsScrollLeftRef = useRef(0);
   const dragScrollRafRef = useRef<number | null>(null);
@@ -2994,7 +2966,7 @@ function App() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setAppStage((current) => (current === "splash" ? "device-selection" : current));
+      setAppStage((current) => (current === "splash" ? "home" : current));
     }, SPLASH_MIN_DURATION_MS);
 
     return () => {
@@ -3080,6 +3052,26 @@ function App() {
     } else {
       setLicenseRevalidationHint("");
     }
+
+    // Migrate installationId to Rust secure storage (background, non-blocking).
+    void getOrCreateDeviceId(nextInstallationId)
+      .then(() => validateCertificate())
+      .catch(() => { /* non-critical — certificate layer is additive */ });
+
+    // Sync user profile from backend on startup (background, non-blocking).
+    if (storedLicenseKey && navigator.onLine) {
+      void apiGetMe(nextInstallationId, storedLicenseKey).then((meResult) => {
+        if (!meResult || meResult.httpStatus >= 400) return;
+        if (meResult.returnedUserName) {
+          localStorage.setItem(USER_NAME_STORAGE_KEY, meResult.returnedUserName);
+          setLicenseUserName(meResult.returnedUserName);
+        }
+        if (meResult.returnedUserEmail) {
+          localStorage.setItem(USER_EMAIL_STORAGE_KEY, meResult.returnedUserEmail);
+          setLicenseUserEmail(meResult.returnedUserEmail);
+        }
+      }).catch(() => {});
+    }
   }, []);
 
   useEffect(() => {
@@ -3102,13 +3094,9 @@ function App() {
     }
 
     if (!storedLicenseKey) {
-      setLicenseValidationMessage({
-        kind: "error",
-        text: "Informe e valide a chave para liberar este dispositivo.",
-      });
-      setLicenseModalMandatory(true);
-      setLicenseModalMode("onboarding");
-      setLicenseModalOpen(true);
+      // No account yet — the Home screen forces the login/register modal open
+      // (see the hasLicenseActivatedOnce effect) since an account is required
+      // even for the Free plan.
       strictStartupValidationDoneRef.current = true;
       return;
     }
@@ -3126,18 +3114,30 @@ function App() {
       return;
     }
 
+    // If offline: never block the user because of connectivity.
+    // A stored license key is sufficient proof of prior activation — defer
+    // any online validation until the connection is restored.
     if (!isOnline) {
-      setLicenseValidationMessage({
-        kind: "error",
-        text: hasValidCache && licenseExpiredByDate
-          ? "Período de teste expirado. Conecte-se e entre em contato para adquirir a licença."
-          : hasValidCache && cacheExpired
-            ? "Revalidação da licença expirou. Conecte-se à internet para continuar."
-            : "Conecte-se à internet para validar a licença deste dispositivo.",
-      });
-      setLicenseModalMandatory(true);
-      setLicenseModalMode("onboarding");
-      setLicenseModalOpen(true);
+      strictStartupValidationDoneRef.current = true;
+      if (storedLicenseKey) {
+        // Trust the locally cached/stored key. Show a soft hint only when
+        // the cache is actually expired, but never open a mandatory modal.
+        setIsLicenseValidated(true);
+        if (hasValidCache && licenseExpiredByDate) {
+          setLicenseRevalidationHint("Conecte-se à internet para renovar sua licença.");
+        } else if (hasValidCache && cacheExpired) {
+          setLicenseRevalidationHint("Revalidação pendente — será feita quando voltar online.");
+        }
+      } else {
+        // Truly first-time: no key at all and offline → can't do anything useful.
+        setLicenseValidationMessage({
+          kind: "error",
+          text: "Conecte-se à internet para criar conta e ativar sua licença.",
+        });
+        setLicenseModalMandatory(true);
+        setLicenseModalMode("onboarding");
+        setLicenseModalOpen(true);
+      }
       return;
     }
 
@@ -3188,12 +3188,23 @@ function App() {
     if (!installationId) return;
 
     const checkExpiryFromCache = () => {
+      // License state is only enforced on the Home screen — never interrupt an active mixer session.
+      if (isConnectedRef.current) return;
+
       const runtimeCache = readRuntimeLicenseCache();
       const bootDecision = resolveBootDecision(runtimeCache, Date.now(), LICENSE_REVALIDATE_WARNING_DAYS);
+
       if (runtimeCache && bootDecision.isBlocked) {
+        const formalState = bootDecision.formalState;
+        // TRIAL_EXPIRED is free tier — never block, just update state.
+        if (!isLicenseStateBlocked(formalState)) {
+          setLicenseFormalState(formalState);
+          setLicenseRevalidationHint("Teste encerrado — conheça o AX Control+ para liberar tudo.");
+          return;
+        }
         localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
         setIsLicenseValidated(false);
-        setLicenseFormalState(bootDecision.formalState);
+        setLicenseFormalState(formalState);
         setLicenseRevalidationHint("");
         enforceLicenseBlock("Licença expirada/revalidação vencida. Revalide para continuar.");
         return;
@@ -3203,15 +3214,19 @@ function App() {
       if (!cached || !isCacheValidForInstallation(cached, installationId)) return;
       if (!isLicenseExpiredByDate(cached.expiryDate)) return;
 
+      // Trial expired by date — transition to free tier, no block.
+      if (runtimeCache?.licenseType === "trial") {
+        setLicenseFormalState("TRIAL_EXPIRED");
+        setLicenseRevalidationHint("Seu período de teste encerrou. Conheça o AX Control+.");
+        return;
+      }
+
+      // Purchased license somehow expired — block.
       localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
       localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
       setIsLicenseValidated(false);
       setLicenseRevalidationHint("");
-      setLicenseValidationMessage({
-        kind: "error",
-        text: "Período de teste expirado. Entre em contato para adquirir a licença.",
-      });
-      enforceLicenseBlock("Período de teste expirado. Entre em contato para adquirir a licença.", "upgrade");
+      enforceLicenseBlock("Licença expirada. Revalide para continuar.", "upgrade");
     };
 
     checkExpiryFromCache();
@@ -3232,13 +3247,23 @@ function App() {
   }, [isOnline, installationId]);
 
   useEffect(() => {
-    if (!licenseModalOpen || licenseModalMode !== "settings") return;
+    if (appStage !== "home" || homeSubView !== "devices" || !isOnline) return;
     void handleRefreshLicenseStatus();
-  }, [licenseModalMode, licenseModalOpen]);
+  }, [appStage, homeSubView, isOnline]);
+
+  useEffect(() => {
+    // Even Free requires an account — force the login modal open on Home until
+    // the user has registered or logged in. No skip path, no one-time dismissal.
+    if (appStage !== "home" || hasLicenseActivatedOnce) return;
+    if (licenseModalOpen && licenseModalMandatory) return;
+    setLicenseOnboardingView("signin");
+    setLicenseModalMode("onboarding");
+    setLicenseModalMandatory(true);
+    setLicenseModalOpen(true);
+  }, [appStage, hasLicenseActivatedOnce, licenseModalOpen, licenseModalMandatory]);
 
   useEffect(() => {
     if (!licenseModalOpen || licenseModalMode !== "onboarding") return;
-    setLicenseOnboardingView("register");
     setLicenseSignInPassword("");
     setLicenseValidationMessage({ kind: "idle", text: "" });
   }, [licenseModalMode, licenseModalOpen]);
@@ -3290,8 +3315,71 @@ function App() {
   }, [isOnline, installationId]);
 
   useEffect(() => {
+    if (!isOnline || !installationId) return;
+    const pending = readPendingTrialActivation();
+    if (!pending) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const result = await apiActivateTrial(installationId);
+
+      if (cancelled) return;
+
+      const networkUnavailable = !result || Boolean(result.httpStatus === 0);
+      if (networkUnavailable) {
+        // Still offline in practice, or the endpoint isn't live yet — keep retrying.
+        return;
+      }
+
+      if (result.httpStatus >= 400 || !result.success) {
+        // Backend rejected the activation (e.g. that account already used its trial
+        // elsewhere). Never cut the trial already running locally — just stop retrying.
+        clearPendingTrialActivation();
+        return;
+      }
+
+      const returnedKey = result.returnedLicenseKey || "";
+      const resolvedState = resolveLicenseFormalState({
+        snapshot: result.snapshot,
+        warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
+        fallbackTrialExpiryAt: licenseTrialExpiryAt,
+        fallbackNextRevalidationAt: licenseNextRevalidationAt,
+      });
+
+      const localTrialStillRunning =
+        licenseFormalState === "TRIAL_ACTIVE" &&
+        Boolean(licenseTrialExpiryAt) &&
+        Date.parse(licenseTrialExpiryAt as string) > Date.now();
+
+      // If the synced account turns out to be stricter than the trial already running
+      // locally (e.g. that account had already used its trial elsewhere), let the local
+      // trial finish on its own schedule instead of cutting it short.
+      if (localTrialStillRunning && isLicenseStateBlocked(resolvedState)) {
+        clearPendingTrialActivation();
+        return;
+      }
+
+      if (returnedKey) {
+        localStorage.setItem(LICENSE_KEY_STORAGE_KEY, returnedKey);
+        setLicenseKeyInput(returnedKey);
+      }
+      applyLicenseSnapshot(result.snapshot, returnedKey, "Teste grátis sincronizado automaticamente.");
+      clearPendingTrialActivation();
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOnline, installationId, licenseFormalState, licenseTrialExpiryAt, licenseNextRevalidationAt]);
+
+  useEffect(() => {
     isChannelsDraggingRef.current = isChannelsDragging;
   }, [isChannelsDragging]);
+
+  useEffect(() => {
+    isConnectedRef.current = isConnected;
+  }, [isConnected]);
 
   useEffect(() => {
     return () => {
@@ -3928,6 +4016,18 @@ function App() {
       window.clearInterval(timer);
     };
   }, [assignableMemberIds, isConnected, isSyncing, mainView]);
+
+  function requirePlus(action: () => void) {
+    if (isFreeTier(licenseFormalState)) {
+      setUpgradeModalOpen(true);
+    } else {
+      action();
+    }
+  }
+
+  function openCustomization(view: Parameters<typeof setCustomizationView>[0]) {
+    requirePlus(() => setCustomizationView(view));
+  }
 
   function handleDcaGroupToggleEnabled(id: DcaGroupId) {
     const group = dcaGroups[id - 1];
@@ -8252,6 +8352,95 @@ function App() {
     };
   }, [channelCount, isConnected, isSyncing]);
 
+  // Fake meter animation for demo mode — no hardware, just makes the UI feel alive.
+  useEffect(() => {
+    if (appStage !== "demo") return;
+
+    const CH_COUNT = 32;
+    const AUX_COUNT = 8;
+    // "Hot" channels (Kick, Snare, Tom, Vocal, Bass, Guitar range) get higher targets.
+    const HOT_CHANNELS = new Set([0, 1, 3, 4, 5, 6, 7, 11, 12]);
+
+    const chTarget = Array.from({ length: CH_COUNT }, (_, i) =>
+      HOT_CHANNELS.has(i) ? 0.25 + Math.random() * 0.45 : Math.random() * 0.12
+    );
+    const chLevel = [...chTarget];
+    const chPeak = [...chTarget];
+    const chPeakAt = Array.from({ length: CH_COUNT }, () => 0);
+
+    const auxTarget = Array.from({ length: AUX_COUNT }, () => 0.06 + Math.random() * 0.18);
+    const auxLevel = [...auxTarget];
+
+    const TICK_MS = 80;
+    const now = () => Date.now();
+
+    const tick = () => {
+      const ts = now();
+
+      for (let i = 0; i < CH_COUNT; i++) {
+        const hot = HOT_CHANNELS.has(i);
+        const base = hot ? 0.18 : 0.02;
+        const ceiling = hot ? 0.82 : 0.22;
+        chTarget[i] = Math.max(0, Math.min(ceiling, chTarget[i] + (Math.random() - 0.48) * (hot ? 0.22 : 0.08)));
+        // Occasional transient spike on hot channels
+        if (hot && Math.random() < 0.06) chTarget[i] = Math.min(ceiling, chTarget[i] + Math.random() * 0.3);
+        // Natural decay when quiet
+        if (chTarget[i] < base) chTarget[i] *= 0.88;
+        // Smooth tracking (fast attack, slower decay)
+        const diff = chTarget[i] - chLevel[i];
+        chLevel[i] += diff > 0 ? diff * 0.55 : diff * 0.25;
+        chLevel[i] = Math.max(0, chLevel[i]);
+
+        if (chLevel[i] >= chPeak[i]) {
+          chPeak[i] = chLevel[i];
+          chPeakAt[i] = ts;
+        } else if (ts - chPeakAt[i] > 1400) {
+          chPeak[i] = Math.max(chLevel[i], chPeak[i] - 0.015);
+        }
+      }
+
+      for (let i = 0; i < AUX_COUNT; i++) {
+        auxTarget[i] = Math.max(0, Math.min(0.45, auxTarget[i] + (Math.random() - 0.48) * 0.09));
+        auxLevel[i] += (auxTarget[i] - auxLevel[i]) * 0.3;
+        auxLevel[i] = Math.max(0, auxLevel[i]);
+      }
+
+      setChannels((current) => {
+        const next = [...current];
+        let changed = false;
+        for (let i = 0; i < Math.min(next.length, CH_COUNT); i++) {
+          const ch = next[i];
+          if (!ch || ch.muted) continue;
+          const lvl = chLevel[i];
+          const pk = chPeak[i];
+          if (Math.abs(ch.meterLevel - lvl) > 0.004 || Math.abs(ch.peakLevel - pk) > 0.004) {
+            next[i] = { ...ch, meterLevel: lvl, meterDb: -60 + lvl * 60, peakLevel: pk, peakDb: -60 + pk * 60 };
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
+
+      setAuxStrips((current) => {
+        const next = [...current];
+        let changed = false;
+        for (let i = 0; i < Math.min(next.length, AUX_COUNT); i++) {
+          const strip = next[i];
+          if (!strip) continue;
+          const lvl = auxLevel[i];
+          if (Math.abs(strip.meterLevel - lvl) > 0.004) {
+            next[i] = { ...strip, meterLevel: lvl, meterDb: -60 + lvl * 60 };
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
+    };
+
+    const timerId = window.setInterval(tick, TICK_MS);
+    return () => window.clearInterval(timerId);
+  }, [appStage]);
+
   function applyLinkStateFrom3056(value3056: number) {
     const now = Date.now();
 
@@ -8843,21 +9032,11 @@ function App() {
     setStatus("Conectando...");
 
     const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
-    const runtimeCache = readRuntimeLicenseCache();
-    const bootDecision = resolveBootDecision(runtimeCache, Date.now(), LICENSE_REVALIDATE_WARNING_DAYS);
-    const allowsTrialWithoutKey = runtimeCache?.licenseType === "trial" && bootDecision.formalState === "TRIAL_ACTIVE";
 
-    if (!storedLicenseKey && !allowsTrialWithoutKey) {
-      setLicenseValidationMessage({
-        kind: "error",
-        text: "Valide a licença antes de conectar ao mixer.",
-      });
-      openLicenseModal(true, "onboarding");
-      setConnectingSource(null);
-      return false;
-    }
-
-    if ((!isLicenseValidated || isLicenseStateBlocked(licenseFormalState)) && !allowsTrialWithoutKey) {
+    // Free tier (LICENSE_NOT_FOUND) and trial (active or expired) are allowed to connect —
+    // only server-confirmed blocked states (suspended/revoked/blocked/revalidation expired)
+    // stop the connection. Plan-specific feature limits are gated elsewhere via requirePlus.
+    if (!isLicenseValidated || isLicenseStateBlocked(licenseFormalState)) {
       setLicenseValidationMessage({
         kind: "error",
         text: "Valide a licença antes de conectar ao mixer.",
@@ -8907,6 +9086,28 @@ function App() {
         targetChannelCount,
         discoveredMixers
       );
+
+      if (storedLicenseKey) {
+        const mixerApiId = await buildMixerApiId(mixerCacheIdentity);
+        if (mixerApiId) {
+          const regResponse = await requestLicenseApiViaNative(
+            "POST",
+            "https://axcontrol.com.br/api/license/register-mixer.php",
+            { license_key: storedLicenseKey, mixer_id: mixerApiId, device_id: installationId }
+          );
+          if (regResponse?.body && (regResponse.body as { code?: string }).code === "MIXER_MISMATCH") {
+            const msg = (regResponse.body as { message?: string }).message ?? "Esta licença já está vinculada a outra mesa.";
+            setConnectionError(msg);
+            setStatus(msg);
+            setAppStage("home");
+            setHomeSubView("connect");
+            setConnectingSource(null);
+            setInitialConnectSyncBusy(false);
+            return false;
+          }
+        }
+      }
+
       const client = new Axios16Client(normalizedIp, 8088, selectedProfile, {
         channelCount: targetChannelCount,
       });
@@ -9119,7 +9320,8 @@ function App() {
       clearLocalParamWriteTracking();
       setIsConnected(false);
       setInitialConnectSyncBusy(false);
-      setAppStage("device-selection");
+      setAppStage("home");
+      setHomeSubView("connect");
       setActiveMixerCacheIdentity(null);
       const detail = error instanceof Error ? error.message : "Erro ao conectar";
       setStatus(detail);
@@ -9130,11 +9332,34 @@ function App() {
     }
   }
 
+  function enterDemoMode() {
+    clientRef.current = new DemoMixerAdapter();
+    applyMixerChannelProfile(AX32_CHANNEL_COUNT);
+    // Override the initial state set by applyMixerChannelProfile with demo data.
+    // React batches these with the setters above — last write per state key wins.
+    setChannels(createDemoChannelsState());
+    setProcessorStates(createDemoProcessorStates());
+    setDcaGroups(createDemoDcaGroups());
+    setMuteGroups(createDemoMuteGroups());
+    setChannelLinks(DEMO_CHANNEL_LINKS);
+    setDcaNames(DEMO_DCA_NAMES);
+    setDcaColorIds(DEMO_DCA_COLOR_IDS_ARRAY);
+    setIsConnected(true);
+    setAppStage("demo");
+  }
+
+  function exitDemoMode() {
+    clientRef.current = null;
+    setIsConnected(false);
+    applyMixerChannelProfile(DEFAULT_CHANNEL_COUNT);
+    setAppStage("home");
+  }
+
   function applyLicenseSnapshot(snapshot: LicenseSnapshot, licenseKey: string, sourceMessage?: string) {
     const validatedAtIso = new Date().toISOString();
     const resolvedTrialExpiryAt =
       snapshot.licenseType === "trial"
-        ? snapshot.trialExpiryAt ?? new Date(Date.parse(validatedAtIso) + 7 * 24 * 60 * 60 * 1000).toISOString()
+        ? snapshot.trialExpiryAt ?? new Date(Date.parse(validatedAtIso) + TRIAL_DURATION_MS).toISOString()
         : null;
     const resolvedNextRevalidationAt =
       snapshot.licenseType === "purchased"
@@ -9159,7 +9384,12 @@ function App() {
     setLicenseLinkedUserType(snapshot.linkedUserType);
     setLicenseActiveDevicesCount(snapshot.activeDevices);
     setLicenseRemainingActivations(snapshot.remainingActivations);
-    setLicenseDevices(snapshot.devices);
+    // Lightweight background pings request includeDevices=false and come back with an
+    // empty devices array — never let that clobber the last known-good roster on screen.
+    if (snapshot.devices.length > 0) {
+      setLicenseDevices(snapshot.devices);
+      writeLicenseDevicesCache(snapshot.devices);
+    }
 
     const blocked = isLicenseStateBlocked(formalState);
     setIsLicenseValidated(!blocked);
@@ -9201,327 +9431,46 @@ function App() {
           ? "Período de teste expirado. Entre em contato para adquirir a licença."
           : "Licença bloqueada. Revalide para continuar.");
       enforceLicenseBlock(blockingMessage, formalState === "TRIAL_EXPIRED" ? "upgrade" : "onboarding");
+    } else if (licenseKey && installationId) {
+      // Issue or renew offline certificate in background after successful license validation.
+      void issueCertificateAndStore(licenseKey, installationId, APP_VERSION)
+        .then((issued) => {
+          if (!issued) return renewCertificateAndStore(licenseKey, installationId);
+        })
+        .catch(() => { /* certificate layer is non-blocking */ });
     }
   }
 
-  async function requestLicenseRegister(wantsUpgrade: boolean): Promise<{
-    snapshot: LicenseSnapshot;
-    returnedLicenseKey: string;
-    httpStatus: number;
-    rawBody: string;
-    success: boolean;
-    backendMessage: string;
-    attemptedUrl: string;
-    transportError?: string;
-  } | null> {
-    if (!installationId) {
-      return null;
-    }
-
-    const endpointCandidates = buildLicenseEndpointCandidates(
-      REGISTER_ENDPOINT_URL,
-      REGISTER_ENDPOINT_PATH,
-      buildLocalhostApiCandidates("register.php")
-    );
-    if (endpointCandidates.length === 0) return null;
-
-    console.info("[license/register] candidates", endpointCandidates);
-
-    const payloadBody: Record<string, unknown> = {
-      name: licenseRegisterName.trim(),
-      email: licenseRegisterEmail.trim(),
-      phone: normalizePhoneDigits(licenseRegisterPhone),
+  async function requestLicenseRegister(wantsUpgrade: boolean): Promise<RegisterApiResult | null> {
+    return apiRegisterLicense({
+      name: licenseRegisterName,
+      email: licenseRegisterEmail,
+      phone: licenseRegisterPhone,
       password: licenseRegisterPassword,
-      installation_uuid: installationId,
-      device_id: installationId,
-      device_name: getDeviceNameLabel(),
-      device_platform: getPlatformLabel(),
-      wants_upgrade: wantsUpgrade,
-    };
-
-    const confirm = licenseRegisterConfirmPassword.trim();
-    if (confirm) {
-      payloadBody.confirm_password = confirm;
-    }
-
-    let lastAttempt: {
-      snapshot: LicenseSnapshot;
-      returnedLicenseKey: string;
-      httpStatus: number;
-      rawBody: string;
-      success: boolean;
-      backendMessage: string;
-      attemptedUrl: string;
-      transportError?: string;
-    } | null = null;
-
-    for (const endpoint of endpointCandidates) {
-      try {
-        const response = await requestLicenseApiViaNative("POST", endpoint, payloadBody);
-        if (!response) {
-          lastAttempt = {
-            snapshot: parseLicenseSnapshot(buildRegisterSnapshotPayload({}, installationId)),
-            returnedLicenseKey: "",
-            httpStatus: 0,
-            rawBody: "",
-            success: false,
-            backendMessage: "",
-            attemptedUrl: endpoint,
-            transportError: "Falha nativa ao chamar o endpoint de cadastro.",
-          };
-          continue;
-        }
-
-        const rawText = response.rawBody;
-        console.info("[license/register] url", endpoint);
-        console.info("[license/register] status", response.statusCode);
-        console.info("[license/register] raw", rawText);
-
-        const parsed = response.body;
-        const payload = normalizeLicenseApiPayload(parsed);
-        const hasRegisterContract =
-          (("success" in parsed) || ("success" in payload)) &&
-          (typeof parsed.user === "object" || typeof payload.user === "object") &&
-          (Object.prototype.hasOwnProperty.call(parsed, "license") || Object.prototype.hasOwnProperty.call(payload, "license"));
-
-        if (!hasRegisterContract) {
-          lastAttempt = {
-            snapshot: parseLicenseSnapshot(buildRegisterSnapshotPayload(parsed, installationId)),
-            returnedLicenseKey: "",
-            httpStatus: response.statusCode,
-            rawBody: rawText,
-            success: false,
-            backendMessage: getBackendMessage(payload, parsed),
-            attemptedUrl: endpoint,
-          };
-          continue;
-        }
-
-        const success = payload.success === true || parsed.success === true;
-        const snapshotPayload = buildRegisterSnapshotPayload(parsed, installationId);
-        const backendMessage = getBackendMessage(payload, parsed);
-        const licenseRecord = payload.license && typeof payload.license === "object"
-          ? (payload.license as Record<string, unknown>)
-          : {};
-
-        const returnedLicenseKey =
-          (typeof payload.license_key === "string" && payload.license_key.trim()) ||
-          (typeof licenseRecord.license_key === "string" && licenseRecord.license_key.trim()) ||
-          "";
-        const attempt = {
-          snapshot: parseLicenseSnapshot(snapshotPayload),
-          returnedLicenseKey,
-          httpStatus: response.statusCode,
-          rawBody: rawText,
-          success,
-          backendMessage,
-          attemptedUrl: endpoint,
-        };
-
-        lastAttempt = attempt;
-
-        if (response.statusCode !== 404) {
-          return attempt;
-        }
-      } catch (error) {
-        lastAttempt = {
-          snapshot: parseLicenseSnapshot(buildRegisterSnapshotPayload({}, installationId)),
-          returnedLicenseKey: "",
-          httpStatus: 0,
-          rawBody: "",
-          success: false,
-          backendMessage: "",
-          attemptedUrl: endpoint,
-          transportError: error instanceof Error ? error.message : "Erro de rede ao chamar o cadastro.",
-        };
-      }
-    }
-
-    return lastAttempt;
+      confirmPassword: licenseRegisterConfirmPassword,
+      installationId: installationId ?? "",
+      wantsUpgrade,
+    });
   }
 
   async function requestLicenseLogin(email: string, password: string) {
-    const endpoint = resolveLicenseEndpointUrl(
-      LOGIN_ENDPOINT_URL,
-      LOGIN_ENDPOINT_PATH,
-      buildLocalhostApiCandidates("login.php")
-    );
-    if (!endpoint) return null;
-
-    const response = await requestLicenseApiViaNative("POST", endpoint, {
-      email,
-      password,
-      device_id: installationId,
-      device_name: getDeviceNameLabel(),
-      device_platform: getPlatformLabel(),
-    });
-    if (!response) return null;
-
-    const rawText = response.rawBody;
-    const parsed = response.body;
-    const snapshotPayload = buildAuthSnapshotPayload(parsed, installationId);
-    const envelope = normalizeLicenseApiPayload(parsed);
-    const success = envelope.success === true || parsed.success === true;
-    const hasFormalContract =
-      success &&
-      (typeof envelope.code === "string" || typeof parsed.code === "string") &&
-      (typeof envelope.status === "string" || typeof parsed.status === "string") &&
-      (typeof envelope.valid === "boolean" || typeof parsed.valid === "boolean") &&
-      (typeof envelope.active === "boolean" || typeof parsed.active === "boolean");
-    const licenseRecord = envelope.license && typeof envelope.license === "object"
-      ? (envelope.license as Record<string, unknown>)
-      : {};
-    const returnedLicenseKey =
-      (typeof envelope.license_key === "string" && envelope.license_key.trim()) ||
-      (typeof licenseRecord.license_key === "string" && licenseRecord.license_key.trim()) ||
-      "";
-
-    return {
-      snapshot: parseLicenseSnapshot(snapshotPayload),
-      returnedLicenseKey,
-      httpStatus: response.statusCode,
-      rawBody: rawText,
-      success: hasFormalContract,
-      backendMessage: getBackendMessage(envelope, parsed),
-    };
+    return apiLoginLicense(email, password, installationId ?? "");
   }
 
   async function requestLicenseMe() {
-    const endpoint = resolveLicenseEndpointUrl(
-      ME_ENDPOINT_URL,
-      ME_ENDPOINT_PATH,
-      buildLocalhostApiCandidates("me.php")
-    );
-    if (!endpoint) return null;
-
-    let response = await requestLicenseApiViaNative("GET", endpoint);
-
-    if (!response || response.statusCode >= 400) {
-      response = await requestLicenseApiViaNative("POST", endpoint, {
-        device_id: installationId,
-      });
-    }
-    if (!response) return null;
-
-    const rawText = response.rawBody;
-    const parsed = response.body;
-    const snapshotPayload = buildAuthSnapshotPayload(parsed, installationId);
-    const envelope = normalizeLicenseApiPayload(parsed);
-    const success = envelope.success === true || parsed.success === true;
-    const hasFormalContract =
-      success &&
-      (typeof envelope.code === "string" || typeof parsed.code === "string") &&
-      (typeof envelope.status === "string" || typeof parsed.status === "string") &&
-      (typeof envelope.valid === "boolean" || typeof parsed.valid === "boolean") &&
-      (typeof envelope.active === "boolean" || typeof parsed.active === "boolean");
-    const licenseRecord = envelope.license && typeof envelope.license === "object"
-      ? (envelope.license as Record<string, unknown>)
-      : {};
-    const returnedLicenseKey =
-      (typeof envelope.license_key === "string" && envelope.license_key.trim()) ||
-      (typeof licenseRecord.license_key === "string" && licenseRecord.license_key.trim()) ||
-      "";
-
-    return {
-      snapshot: parseLicenseSnapshot(snapshotPayload),
-      returnedLicenseKey,
-      httpStatus: response.statusCode,
-      rawBody: rawText,
-      success: hasFormalContract,
-      backendMessage: getBackendMessage(envelope, parsed),
-    };
+    return apiGetMe(installationId ?? "");
   }
 
   async function requestLicenseValidateApi(licenseValue: string) {
-    const endpoint = resolveLicenseEndpointUrl(
-      VALIDATE_ENDPOINT_URL,
-      VALIDATE_ENDPOINT_PATH,
-      buildLocalhostApiCandidates("validate.php")
-    );
-    if (!endpoint) return null;
-
-    const response = await requestLicenseApiViaNative("POST", endpoint, {
-      license_key: licenseValue,
-      series: installationId,
-      device_id: installationId,
-      device_name: getDeviceNameLabel(),
-      device_platform: getPlatformLabel(),
-      platform: getPlatformLabel(),
-      app_version: APP_VERSION,
-    });
-    if (!response) return null;
-
-    const parsed = response.body;
-    const payload = normalizeLicenseApiPayload(parsed);
-
-    const hasFormalContract =
-      (typeof payload.code === "string" || typeof parsed.code === "string") &&
-      (typeof payload.status === "string" || typeof parsed.status === "string") &&
-      (typeof payload.valid === "boolean" || typeof parsed.valid === "boolean") &&
-      (typeof payload.active === "boolean" || typeof parsed.active === "boolean");
-    if (!hasFormalContract) {
-      return null;
-    }
-
-    return parseLicenseSnapshot(payload);
+    return apiValidateLicense(licenseValue, installationId ?? "", APP_VERSION);
   }
 
   async function requestLicenseStatus(includeDevices = true, licenseKeyOverride?: string) {
-    const effectiveLicenseKey = (licenseKeyOverride ?? licenseKeyInput).trim();
-    if (!effectiveLicenseKey || !installationId) {
-      return null;
-    }
-
-    const endpoint = resolveLicenseEndpointUrl(
-      STATUS_ENDPOINT_URL,
-      STATUS_ENDPOINT_PATH,
-      buildLocalhostApiCandidates("status.php")
+    return apiGetLicenseStatus(
+      (licenseKeyOverride ?? licenseKeyInput).trim(),
+      installationId ?? "",
+      includeDevices
     );
-    if (!endpoint) return null;
-
-    const query = new URLSearchParams({
-      license_key: effectiveLicenseKey,
-      series: installationId,
-      installation_uuid: installationId,
-      device_id: installationId,
-      device_name: getDeviceNameLabel(),
-      device_platform: getPlatformLabel(),
-      include_devices: includeDevices ? "1" : "0",
-    });
-
-    let response = await requestLicenseApiViaNative("GET", `${endpoint}?${query.toString()}`);
-
-    if (!response || response.statusCode >= 400) {
-      response = await requestLicenseApiViaNative("POST", endpoint, {
-        license_key: effectiveLicenseKey,
-        series: installationId,
-        installation_uuid: installationId,
-        device_id: installationId,
-        device_name: getDeviceNameLabel(),
-        device_platform: getPlatformLabel(),
-        include_devices: includeDevices ? "1" : "0",
-      });
-    }
-    if (!response) return null;
-
-    const parsed = response.body;
-    const payload = normalizeLicenseApiPayload(parsed);
-
-    const hasAnyLicenseSignal =
-      typeof payload.code === "string" ||
-      typeof parsed.code === "string" ||
-      typeof payload.status === "string" ||
-      typeof parsed.status === "string" ||
-      typeof payload.license_type === "string" ||
-      typeof parsed.license_type === "string" ||
-      (payload.license !== null && typeof payload.license === "object") ||
-      (parsed.license !== null && typeof parsed.license === "object");
-    if (!hasAnyLicenseSignal) {
-      return null;
-    }
-
-    const normalizedPayload = buildAuthSnapshotPayload(payload, installationId);
-    return parseLicenseSnapshot(normalizedPayload);
   }
 
   function scoreRecoveredLicenseSnapshot(snapshot: LicenseSnapshot) {
@@ -9602,18 +9551,6 @@ function App() {
     }
   }
 
-  function resolveDeviceEndpointUrl(path: string): string {
-    if (/^https?:\/\//i.test(path)) return path;
-    if (path.startsWith("/")) {
-      try {
-        return `${new URL(LICENSE_API_BASE_URL).origin}${path}`;
-      } catch {
-        return path;
-      }
-    }
-    return buildLicenseApiUrl(path);
-  }
-
   async function callDeviceEndpoint(
     phpFile: string,
     targetDeviceId: string,
@@ -9624,20 +9561,7 @@ function App() {
 
     setLicenseDeviceActionBusy(targetDeviceId);
     try {
-      const endpoint = resolveDeviceEndpointUrl(phpFile);
-      if (!endpoint) {
-        setLicenseValidationMessage({ kind: "error", text: "URL da API de licença não configurada." });
-        return;
-      }
-
-      const response = await requestLicenseApiViaNative("POST", endpoint, {
-        license_key: licenseKeyInput.trim(),
-        series: installationId,
-        installation_uuid: installationId,
-        device_id: targetDeviceId,
-        device_name: getDeviceNameLabel(),
-        device_platform: getPlatformLabel(),
-      });
+      const response = await apiDeviceAction(phpFile, licenseKeyInput.trim(), installationId, targetDeviceId);
 
       if (!response) {
         setLicenseValidationMessage({ kind: "error", text: "Falha de conexão com a API. Tente novamente." });
@@ -9789,13 +9713,6 @@ function App() {
     });
   }
 
-  function openUpgradeOfferForMixer(mixer: DiscoveredMixer, mandatory: boolean) {
-    setPendingDiscoveryMixer(mixer);
-    setLicenseValidationMessage({ kind: "idle", text: "" });
-    setLicenseModalMandatory(mandatory);
-    setLicenseModalMode("upgrade");
-    setLicenseModalOpen(true);
-  }
 
   function connectToSelectedMixer(mixer: DiscoveredMixer) {
     const compatibility = getMixerCompatibility(mixer);
@@ -9848,7 +9765,7 @@ function App() {
 
   function handleLicenseOnboardingSuccess(successMessage: string) {
     setLicenseModalMandatory(false);
-    setLicenseModalMode("settings");
+    setLicenseModalMode("onboarding");
     setLicenseModalOpen(false);
     setLicenseValidationMessage({
       kind: "success",
@@ -9864,18 +9781,48 @@ function App() {
     connectToSelectedMixer(mixer);
   }
 
-  function buildLicenseRegistrationDraft() {
-    return [
-      "Solicitação de cadastro/licença - AX Controller",
-      `Nome: ${licenseRegisterName || ""}`,
-      `E-mail: ${licenseRegisterEmail || ""}`,
-      `Telefone: ${licenseRegisterPhone || ""}`,
-      `UUID: ${installationId || "indisponivel"}`,
-      `Dispositivo: ${getDeviceNameLabel()}`,
-      `Plataforma: ${getPlatformLabel()}`,
-      `Versão app: ${APP_VERSION}`,
-      `Data: ${new Date().toISOString()}`,
-    ].join("\n");
+  // Starts the 7-day trial for an account that already exists — registration is a
+  // separate, mandatory-online step. This action itself works offline: it flips local
+  // state immediately and queues a sync so the backend learns about it once online.
+  async function startTrialNow() {
+    const nowIso = new Date().toISOString();
+    const trialExpiryAt = new Date(Date.now() + TRIAL_DURATION_MS).toISOString();
+
+    writeRuntimeLicenseCache({
+      installationUuid: installationId ?? "",
+      licenseKey: "",
+      licenseType: "trial",
+      trialExpiryAt,
+      lastValidatedAt: nowIso,
+      nextRevalidationAt: null,
+      cachedState: "TRIAL_ACTIVE",
+      feedbackMessage: "Teste grátis de 7 dias iniciado.",
+    });
+
+    setLicenseFormalState("TRIAL_ACTIVE");
+    setIsLicenseValidated(true);
+    setLicenseTrialExpiryAt(trialExpiryAt);
+    setLicenseNextRevalidationAt(null);
+    localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+    setHasLicenseActivatedOnce(true);
+    localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
+
+    setLicenseValidationMessage({
+      kind: "success",
+      text: "Teste grátis de 7 dias iniciado! Aproveite o acesso completo ao AX Control+.",
+    });
+
+    if (!isOnline || !installationId) {
+      writePendingTrialActivation({ queuedAt: nowIso });
+      return;
+    }
+
+    const activated = await apiActivateTrial(installationId);
+    if (!activated || activated.httpStatus >= 400 || !activated.success) {
+      // Endpoint missing/unreachable/rejected — keep the trial running locally and
+      // let the background sync effect retry once the backend side is ready.
+      writePendingTrialActivation({ queuedAt: nowIso });
+    }
   }
 
   async function handleRequestLicenseRegistration() {
@@ -9939,114 +9886,102 @@ function App() {
       return;
     }
 
+    if (!isOnline) {
+      setLicenseValidationMessage({
+        kind: "error",
+        text: "É necessário estar conectado à internet para criar sua conta. O teste grátis pode ser iniciado depois, mesmo sem internet.",
+      });
+      return;
+    }
+
     setLicenseRegisterBusy(true);
     setLicenseValidationMessage({ kind: "idle", text: "" });
     try {
       const registered = await requestLicenseRegister(licenseRegisterWantsUpgrade);
-      if (registered) {
-        if (registered.httpStatus >= 400) {
-          setLicenseValidationMessage({
-            kind: "error",
-            text: buildRegistrationFailureMessage({
-              httpStatus: registered.httpStatus,
-              backendMessage: registered.backendMessage,
-              rawBody: registered.rawBody,
-              transportError: registered.transportError,
-            }),
-          });
-          return;
-        }
 
-        if (!registered.success) {
-          setLicenseValidationMessage({
-            kind: "error",
-            text: buildRegistrationFailureMessage({
-              httpStatus: registered.httpStatus,
-              backendMessage: registered.backendMessage,
-              rawBody: registered.rawBody,
-              transportError: registered.transportError,
-            }),
-          });
-          return;
-        }
-
-        const returnedKey = registered.returnedLicenseKey || licenseKeyInput.trim();
-        if (returnedKey) {
-          localStorage.setItem(LICENSE_KEY_STORAGE_KEY, returnedKey);
-          setLicenseKeyInput(returnedKey);
-        }
-
-        const statusSnapshot = returnedKey ? await requestLicenseStatus(true, returnedKey) : null;
-        const validatedSnapshot = statusSnapshot ?? (returnedKey ? await requestLicenseValidateApi(returnedKey) : null);
-        const snapshotToApply = validatedSnapshot ?? registered.snapshot;
-
-        applyLicenseSnapshot(
-          snapshotToApply,
-          returnedKey,
-          snapshotToApply.message || "Cadastro concluído. Teste grátis iniciado."
-        );
-
-        const resolvedState = resolveLicenseFormalState({
-          snapshot: snapshotToApply,
-          warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
-          fallbackTrialExpiryAt: licenseTrialExpiryAt,
-          fallbackNextRevalidationAt: licenseNextRevalidationAt,
-        });
-
-        if (!isLicenseStateBlocked(resolvedState)) {
-          localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
-          setHasLicenseActivatedOnce(true);
-          localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
-          setIsLicenseValidated(true);
-          setLicenseOnboardingView("register");
-          setLicenseRegisterName("");
-          setLicenseRegisterEmail("");
-          setLicenseRegisterPhone("");
-          setLicenseRegisterPassword("");
-          setLicenseRegisterConfirmPassword("");
-          handleLicenseOnboardingSuccess(snapshotToApply.message || "Cadastro concluído com sucesso.");
-          return;
-        }
-
+      if (!registered) {
         setLicenseValidationMessage({
           kind: "error",
-          text: snapshotToApply.message || "Não foi possível concluir o cadastro com os dados informados.",
+          text: "Não foi possível criar sua conta agora. Verifique sua conexão e tente novamente.",
         });
         return;
       }
 
-      const draft = buildLicenseRegistrationDraft();
-      try {
-        await navigator.clipboard.writeText(draft);
-      } catch {
-        // Se falhar copiar, ainda tentamos abrir canal de contato.
-      }
-
-      if (SUPPORT_WHATSAPP) {
-        const digits = SUPPORT_WHATSAPP.replace(/\D/g, "");
-        const url = `https://wa.me/${digits}?text=${encodeURIComponent(draft)}`;
-        window.open(url, "_blank", "noopener,noreferrer");
+      if (registered.httpStatus >= 400) {
         setLicenseValidationMessage({
-          kind: "success",
-          text: "Cadastro não disponível via API. Dados copiados e WhatsApp aberto.",
+          kind: "error",
+          text: buildRegistrationFailureMessage({
+            httpStatus: registered.httpStatus,
+            backendMessage: registered.backendMessage,
+            rawBody: registered.rawBody,
+            transportError: registered.transportError,
+          }),
         });
         return;
       }
 
-      if (SUPPORT_EMAIL) {
-        const subject = encodeURIComponent("Cadastro de licença - AX Controller");
-        const body = encodeURIComponent(draft);
-        window.location.href = `mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`;
+      if (!registered.success) {
         setLicenseValidationMessage({
-          kind: "success",
-          text: "Cadastro não disponível via API. Dados copiados e e-mail aberto.",
+          kind: "error",
+          text: buildRegistrationFailureMessage({
+            httpStatus: registered.httpStatus,
+            backendMessage: registered.backendMessage,
+            rawBody: registered.rawBody,
+            transportError: registered.transportError,
+          }),
         });
+        return;
+      }
+
+      const returnedKey = registered.returnedLicenseKey || licenseKeyInput.trim();
+      if (returnedKey) {
+        localStorage.setItem(LICENSE_KEY_STORAGE_KEY, returnedKey);
+        setLicenseKeyInput(returnedKey);
+      }
+
+      const statusSnapshot = returnedKey ? await requestLicenseStatus(true, returnedKey) : null;
+      const validatedSnapshot = statusSnapshot ?? (returnedKey ? await requestLicenseValidateApi(returnedKey) : null);
+      const snapshotToApply = validatedSnapshot ?? registered.snapshot;
+
+      applyLicenseSnapshot(
+        snapshotToApply,
+        returnedKey,
+        snapshotToApply.message || "Cadastro concluído. Teste grátis iniciado."
+      );
+
+      const resolvedState = resolveLicenseFormalState({
+        snapshot: snapshotToApply,
+        warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
+        fallbackTrialExpiryAt: licenseTrialExpiryAt,
+        fallbackNextRevalidationAt: licenseNextRevalidationAt,
+      });
+
+      if (!isLicenseStateBlocked(resolvedState)) {
+        localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+        setHasLicenseActivatedOnce(true);
+        localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
+        setIsLicenseValidated(true);
+        setLicenseOnboardingView("register");
+        if (licenseRegisterName.trim()) {
+          localStorage.setItem(USER_NAME_STORAGE_KEY, licenseRegisterName.trim());
+          setLicenseUserName(licenseRegisterName.trim());
+        }
+        if (licenseRegisterEmail.trim()) {
+          localStorage.setItem(USER_EMAIL_STORAGE_KEY, licenseRegisterEmail.trim());
+          setLicenseUserEmail(licenseRegisterEmail.trim());
+        }
+        setLicenseRegisterName("");
+        setLicenseRegisterEmail("");
+        setLicenseRegisterPhone("");
+        setLicenseRegisterPassword("");
+        setLicenseRegisterConfirmPassword("");
+        handleLicenseOnboardingSuccess(snapshotToApply.message || "Cadastro concluído com sucesso.");
         return;
       }
 
       setLicenseValidationMessage({
         kind: "error",
-        text: "Cadastro indisponível nesta API. Nenhum endpoint retornou resposta válida.",
+        text: snapshotToApply.message || "Não foi possível concluir o cadastro com os dados informados.",
       });
     } catch {
       setLicenseValidationMessage({ kind: "error", text: "Falha ao cadastrar licença/teste grátis." });
@@ -10155,6 +10090,16 @@ function App() {
       localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
       localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
       setHasLicenseActivatedOnce(true);
+      const nameToSave = meResult?.returnedUserName || loginResult.returnedUserName;
+      if (nameToSave) {
+        localStorage.setItem(USER_NAME_STORAGE_KEY, nameToSave);
+        setLicenseUserName(nameToSave);
+      }
+      const emailToSave = meResult?.returnedUserEmail || loginResult.returnedUserEmail || licenseSignInEmail.trim();
+      if (emailToSave) {
+        localStorage.setItem(USER_EMAIL_STORAGE_KEY, emailToSave);
+        setLicenseUserEmail(emailToSave);
+      }
       setLicenseSignInPassword("");
       handleLicenseOnboardingSuccess("Dados de licença recuperados com sucesso.");
     } catch (err) {
@@ -10184,7 +10129,8 @@ function App() {
       reconnectParamsRef.current = null;
       reconnectAttemptsRef.current = 0;
       setStatus("Nao foi possivel reconectar. Verifique a conexao de rede.");
-      setAppStage("device-selection");
+      setAppStage("home");
+      setHomeSubView("connect");
       return;
     }
 
@@ -10217,12 +10163,13 @@ function App() {
     setDetailView(null);
     setMainView("mixer");
     setSettingsDropdownOpen(false);
-    setAppStage("device-selection");
+    setAppStage("home");
+    setHomeSubView("connect");
     setConnectingSource(null);
     setActiveMixerCacheIdentity(null);
     const blocked = isLicenseStateBlocked(licenseFormalState);
     setLicenseModalMandatory(blocked);
-    setLicenseModalMode(blocked ? (licenseFormalState === "TRIAL_EXPIRED" ? "upgrade" : "onboarding") : "settings");
+    setLicenseModalMode(blocked && licenseFormalState === "TRIAL_EXPIRED" ? "upgrade" : "onboarding");
     setLicenseModalOpen(blocked);
   }
 
@@ -10238,7 +10185,10 @@ function App() {
     localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
     localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
     localStorage.removeItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY);
+    localStorage.removeItem(USER_NAME_STORAGE_KEY);
+    localStorage.removeItem(USER_EMAIL_STORAGE_KEY);
     clearRuntimeLicenseCache();
+    clearPendingTrialActivation();
 
     setIsConnected(false);
     setConnectionError(null);
@@ -10246,7 +10196,8 @@ function App() {
     setDetailView(null);
     setMainView("mixer");
     setSettingsDropdownOpen(false);
-    setAppStage("device-selection");
+    setAppStage("home");
+    setHomeSubView("home");
     setConnectingSource(null);
     setActiveMixerCacheIdentity(null);
     setPendingDiscoveryMixer(null);
@@ -10256,6 +10207,8 @@ function App() {
     setLicenseSignInPassword("");
     setLicenseRegisterPassword("");
     setLicenseRegisterConfirmPassword("");
+    setLicenseUserName("");
+    setLicenseUserEmail("");
     setHasLicenseActivatedOnce(false);
     setIsLicenseValidated(false);
     setLicenseFormalState("LICENSE_NOT_FOUND");
@@ -10266,6 +10219,7 @@ function App() {
     setLicenseActiveDevicesCount(null);
     setLicenseRemainingActivations(null);
     setLicenseDevices([]);
+    localStorage.removeItem(LICENSE_DEVICES_CACHE_STORAGE_KEY);
     setLicenseRevalidationHint("");
     setLicenseValidationMessage({ kind: "idle", text: "" });
     setLicenseModalMandatory(true);
@@ -10274,6 +10228,9 @@ function App() {
   }
 
   function enforceLicenseBlock(message: string, mode: "onboarding" | "upgrade" = "onboarding") {
+    // License state is only enforced on the Home screen — never interrupt an active mixer session.
+    if (isConnectedRef.current) return;
+
     stopMeterPolling();
     clearScheduledSendWrites();
     clearLocalParamWriteTracking();
@@ -10288,15 +10245,20 @@ function App() {
     setDetailView(null);
     setMainView("mixer");
     setSettingsDropdownOpen(false);
-    setAppStage("device-selection");
+    setAppStage("home");
+    setHomeSubView("home");
     setLicenseModalMandatory(true);
     setLicenseModalMode(mode);
     setLicenseModalOpen(true);
   }
 
-  function openLicenseModal(mandatory = false, mode: "onboarding" | "settings" | "upgrade" = "settings") {
+  function openLicenseModal(mandatory = false, mode: "onboarding" | "upgrade" = "onboarding") {
+    const resolvedMode = mandatory && mode !== "upgrade" ? "onboarding" : mode;
     setLicenseModalMandatory(mandatory);
-    setLicenseModalMode(mandatory && mode !== "upgrade" ? "onboarding" : mode);
+    setLicenseModalMode(resolvedMode);
+    if (resolvedMode === "onboarding") {
+      setLicenseOnboardingView("signin");
+    }
     setLicenseValidationMessage({ kind: "idle", text: "" });
     setLicenseModalOpen(true);
     setSettingsDropdownOpen(false);
@@ -10373,7 +10335,7 @@ function App() {
     window.setTimeout(() => {
       setLicenseModalOpen(false);
       setLicenseModalMandatory(false);
-      setLicenseModalMode("settings");
+      setLicenseModalMode("onboarding");
       setPixPayment({ stage: "idle" });
       void runBackgroundLicenseRevalidation(true);
     }, 2500);
@@ -10509,7 +10471,7 @@ function App() {
         setHasLicenseActivatedOnce(true);
         setLicenseModalOpen(false);
         setLicenseModalMandatory(false);
-        setLicenseModalMode("settings");
+        setLicenseModalMode("onboarding");
         setLicenseValidationMessage({ kind: "success", text: snapshot.message || "Licença validada com sucesso." });
         return;
       }
@@ -10531,6 +10493,8 @@ function App() {
   }
 
   async function runBackgroundLicenseRevalidation(force = false, strict = false): Promise<boolean> {
+    // License state is only enforced on the Home screen — never interrupt an active mixer session.
+    if (isConnectedRef.current) return false;
     if (backgroundLicenseRevalidationBusyRef.current) return false;
 
     const now = Date.now();
@@ -10548,16 +10512,9 @@ function App() {
     }
 
     if (strict && !isOnline) {
-      localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
-      setIsLicenseValidated(false);
-      setLicenseRevalidationHint("");
-      setLicenseValidationMessage({
-        kind: "error",
-        text: "Validação online obrigatória. Conecte-se à internet para continuar.",
-      });
-      setLicenseModalMandatory(true);
-      setLicenseModalMode("onboarding");
-      setLicenseModalOpen(true);
+      // Offline: never revoke the session. Defer strict validation until
+      // connectivity is restored. The online-listener effect will re-trigger
+      // runBackgroundLicenseRevalidation() when the connection comes back.
       return false;
     }
 
@@ -10696,11 +10653,6 @@ function App() {
   }
 
   function handlePreconnectMixerSelection(mixer: DiscoveredMixer) {
-    if (licenseFormalState === "TRIAL_EXPIRED") {
-      openUpgradeOfferForMixer(mixer, true);
-      return;
-    }
-
     if (!isLicenseValidated || isLicenseStateBlocked(licenseFormalState)) {
       setPendingDiscoveryMixer(mixer);
       setLicenseValidationMessage({
@@ -11182,6 +11134,33 @@ function App() {
     lockChannelPairTransition(key);
 
     try {
+      if (appStage === "demo") {
+        setChannelLinks((current) => ({ ...current, [key]: nextLinked }));
+        if (nextLinked) {
+          setChannels((current) => {
+            const next = [...current];
+            const baseName = stripLinkedNameSuffix(next[odd - 1].channelName) || `Canal ${odd}`;
+            next[odd - 1] = { ...next[odd - 1], pan: 0, channelName: baseName };
+            next[even - 1] = { ...next[even - 1], pan: 200, channelName: baseName };
+            return next;
+          });
+          setProcessorStates((current) => {
+            const next = [...current];
+            next[even - 1] = {
+              ...next[odd - 1],
+              gate: { ...next[odd - 1].gate },
+              comp: { ...next[odd - 1].comp },
+              eq: { ...next[odd - 1].eq, bands: next[odd - 1].eq.bands.map((b) => ({ ...b })) },
+            };
+            return next;
+          });
+        } else {
+          updateChannelState(odd, { pan: 100 });
+          updateChannelState(even, { pan: 100 });
+        }
+        return;
+      }
+
       if (nextLinked && client) {
         const basesToCopy = [
           66, 67, 69, 70, 71,
@@ -11369,6 +11348,49 @@ function App() {
     }
 
     try {
+      if (appStage === "demo") {
+        if (optimisticLinked) {
+          setAuxStrips((current) => {
+            const next = [...current];
+            next[even - 1] = { ...next[odd - 1] };
+            return next;
+          });
+          setAuxProcessorStates((current) => {
+            const next = [...current];
+            next[even - 1] = {
+              ...next[odd - 1],
+              gate: { ...next[odd - 1].gate },
+              comp: { ...next[odd - 1].comp },
+              eq: { ...next[odd - 1].eq, bands: next[odd - 1].eq.bands.map((band) => ({ ...band })) },
+            };
+            return next;
+          });
+          setAuxInputSendValues((current) => {
+            const sourceValues = current[odd] ?? createDefaultChannelInputSendValues(channelCount);
+            return { ...current, [odd]: { ...sourceValues }, [even]: { ...sourceValues } };
+          });
+          setAuxInputSendTapPoints((current) => {
+            const sourceTapPoints =
+              current[odd] ?? createDefaultChannelInputSendTapPoints(channelCount);
+            return { ...current, [odd]: { ...sourceTapPoints }, [even]: { ...sourceTapPoints } };
+          });
+          setChannelSendValues((current) => {
+            const sourceId = `aux${odd}`;
+            const targetId = `aux${even}`;
+            const sourceValue = current[sourceId] ?? 1200;
+            return { ...current, [sourceId]: sourceValue, [targetId]: sourceValue };
+          });
+          setSendTapPoints((current) => {
+            const sourceId = `aux${odd}`;
+            const targetId = `aux${even}`;
+            const sourceTapPoint = current[sourceId] ?? "post";
+            return { ...current, [sourceId]: sourceTapPoint, [targetId]: sourceTapPoint };
+          });
+        }
+        setStatus(optimisticLinked ? "AUX vinculado" : "AUX desvinculado");
+        return;
+      }
+
       const linkMaskParam = getLinkMaskParam();
       const initialMaskResponse = await client.readParams([linkMaskParam], 2000);
       const currentMask = initialMaskResponse[0]?.value;
@@ -12342,7 +12364,7 @@ function App() {
       }
 
       const confirmedLinked = Boolean(confirmedMask & masterLinkBit);
-      applyLinkStateFrom3056(confirmedMask);
+      if (appStage !== "demo") applyLinkStateFrom3056(confirmedMask);
       setMasterLinked(confirmedLinked);
 
       if (confirmedLinked !== nextLinked) {
@@ -12357,6 +12379,11 @@ function App() {
 
 
   function goToDetailChannel(channelNumber: number, options?: { preserveActiveModule?: boolean }) {
+    if (isFreeTier(licenseFormalState)) {
+      setUpgradeModalOpen(true);
+      return;
+    }
+
     const nextChannel = Math.max(1, Math.min(channelCount, channelNumber));
 
     setMainView("mixer");
@@ -12387,6 +12414,11 @@ function App() {
 
 
   function goToDetailAux(auxNumber: number, options?: { preserveActiveModule?: boolean }) {
+    if (isFreeTier(licenseFormalState)) {
+      setUpgradeModalOpen(true);
+      return;
+    }
+
     const nextAux = Math.max(1, Math.min(getAuxBusCount(), auxNumber));
     const [pairOdd, pairEven] = getAuxPair(nextAux);
     setMainView("mixer");
@@ -12418,6 +12450,11 @@ function App() {
   }
 
   function goToDetailFx(fxNumber: number) {
+    if (isFreeTier(licenseFormalState)) {
+      setUpgradeModalOpen(true);
+      return;
+    }
+
     const nextFx = Math.max(1, Math.min(getFxBusCount(), fxNumber));
     setMainView("mixer");
     setActiveProcessorModule("presets");
@@ -12519,6 +12556,11 @@ function App() {
   }
 
   function goToDetailMaster() {
+    if (isFreeTier(licenseFormalState)) {
+      setUpgradeModalOpen(true);
+      return;
+    }
+
     setMainView("mixer");
     setActiveProcessorModule("eq");
     const side: "left" | "right" = "left";
@@ -12859,7 +12901,7 @@ function App() {
               <button
                 type="button"
                 disabled={!isConnected}
-                onClick={() => setCustomizationView({ section: "inputs", index: channelNumber })}
+                onClick={() => openCustomization({ section: "inputs", index: channelNumber })}
                 aria-label="Editar canal"
                 title="Editar canal"
                 style={{
@@ -13228,7 +13270,7 @@ function App() {
               <button
                 type="button"
                 disabled={!isConnected}
-                onClick={() => setCustomizationView({ section: "aux", index: auxNumber })}
+                onClick={() => openCustomization({ section: "aux", index: auxNumber })}
                 aria-label="Editar auxiliar"
                 title="Editar auxiliar"
                 style={{
@@ -13680,7 +13722,7 @@ function App() {
               <button
                 type="button"
                 disabled={!isConnected}
-                onClick={() => setCustomizationView({ section: "fx", index: fxNumber })}
+                onClick={() => openCustomization({ section: "fx", index: fxNumber })}
                 aria-label="Editar FX"
                 title="Editar FX"
                 style={{
@@ -14435,7 +14477,7 @@ function App() {
           }
           onOpenDetail={goToDetailChannel}
           onOpenEditMenu={(channelNumber) =>
-            setCustomizationView({ section: "inputs", index: channelNumber })
+            openCustomization({ section: "inputs", index: channelNumber })
           }
           rawParamStore={rawParamStoreRef.current}
           domainSelectors={domainSelectors}
@@ -14478,7 +14520,7 @@ function App() {
           }
           onOpenDetail={goToDetailFx}
           onOpenEditMenu={(targetFxNumber) =>
-            setCustomizationView({ section: "fx", index: targetFxNumber })
+            openCustomization({ section: "fx", index: targetFxNumber })
           }
           rawParamStore={rawParamStoreRef.current}
           domainSelectors={domainSelectors}
@@ -14547,7 +14589,7 @@ function App() {
           }
           onOpenDetail={goToDetailAux}
           onOpenEditMenu={(targetAuxNumber) =>
-            setCustomizationView({ section: "aux", index: targetAuxNumber })
+            openCustomization({ section: "aux", index: targetAuxNumber })
           }
           rawParamStore={rawParamStoreRef.current}
           domainSelectors={domainSelectors}
@@ -14586,12 +14628,14 @@ function App() {
           onToggleActive={() => handleDcaGroupToggleEnabled(id)}
           onFaderChange={(value) => handleDcaGroupFaderChange(id, value)}
           onOpenDetail={() => {
-            setMainView("dcaGroups");
-            setDetailView(null);
-            setSettingsDropdownOpen(false);
+            requirePlus(() => {
+              setMainView("dcaGroups");
+              setDetailView(null);
+              setSettingsDropdownOpen(false);
+            });
           }}
           onOpenEditMenu={() => {
-            setCustomizationView({ section: "dca", index: id });
+            openCustomization({ section: "dca", index: id });
             setDetailView(null);
             setSettingsDropdownOpen(false);
           }}
@@ -15040,7 +15084,6 @@ function App() {
   const trialDaysRemaining = getTrialRemainingDays(licenseTrialExpiryAt);
   const trialIsActive = licenseFormalState === "TRIAL_ACTIVE";
   const trialIsExpired = licenseFormalState === "TRIAL_EXPIRED";
-  const trialDaysRemainingLabel = trialDaysRemaining !== null ? `${Math.max(0, trialDaysRemaining)} dia(s)` : "trial ativo";
   const isTrialLicense = trialIsActive || trialIsExpired;
   const normalizedInstallationId = installationId.trim();
   const hasCurrentDeviceInList = licenseDevices.some((device) => device.deviceId === normalizedInstallationId);
@@ -15079,32 +15122,6 @@ function App() {
   const associatedDeviceLimit = hasUnlimitedActivations ? null : (apiDeviceLimit ?? defaultDeviceLimit);
   const activeDeviceCount = visibleAssociatedDevices.filter((d) => d.active).length;
   const canReactivate = hasUnlimitedActivations || associatedDeviceLimit === null || activeDeviceCount < associatedDeviceLimit;
-  const deviceCount = visibleAssociatedDevices.length;
-  const deviceCountLabel = deviceCount === 1 ? "1 dispositivo" : `${deviceCount} dispositivos`;
-  const settingsUsageLabel = hasUnlimitedActivations
-    ? `${deviceCountLabel} ${deviceCount === 1 ? "ativo" : "ativos"}`
-    : `${deviceCountLabel} de ${associatedDeviceLimit}`;
-  const associatedDeviceCapacityLabel = hasUnlimitedActivations ? "Sem limite" : String(associatedDeviceLimit);
-  const isFullLicenseView = !isTrialLicense && licenseFormalState !== "LICENSE_NOT_FOUND";
-  const settingsVariantClass = isFullLicenseView ? "settings-modal--settings-full" : "settings-modal--settings-trial";
-  const settingsStatusChipLabel = trialIsActive
-    ? "Teste ativo"
-    : trialIsExpired
-      ? "Teste encerrado"
-      : licenseFormalState === "LICENSE_NOT_FOUND"
-        ? "Sem licença"
-        : "Licença adquirida";
-  const settingsStatusChipDetail = trialIsActive
-    ? `${trialDaysRemainingLabel} restantes`
-    : isTrialLicense
-      ? "Adquira a licença para liberar mais dispositivos"
-      : hasUnlimitedActivations
-        ? "Licença ativa"
-        : licenseRemainingActivations !== null
-          ? licenseRemainingActivations === 1
-            ? "1 ativação disponível"
-            : `${licenseRemainingActivations} ativações disponíveis`
-          : "Licença ativa";
   const upgradeBadgeLabel = trialIsActive
     ? trialDaysRemaining !== null && trialDaysRemaining >= 0
       ? `Teste ativo · ${trialDaysRemaining} dias`
@@ -15127,7 +15144,7 @@ function App() {
       }}
     >
       <section
-        className={`settings-modal ${licenseModalMode === "onboarding" ? "settings-modal--onboarding" : ""} ${licenseModalMode === "upgrade" ? "settings-modal--upgrade" : ""} ${licenseModalMode === "settings" ? `settings-modal--settings ${settingsVariantClass}` : ""}`}
+        className={`settings-modal ${licenseModalMode === "onboarding" ? "settings-modal--onboarding" : ""} ${licenseModalMode === "upgrade" ? "settings-modal--upgrade" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label="Licença"
@@ -15145,22 +15162,26 @@ function App() {
         )}
         <div className="settings-modal__header">
           <div>
-            {licenseModalMode === "onboarding" && licenseOnboardingView === "register" && (
-              <span className="settings-modal__badge">7 dias grátis</span>
+            {licenseModalMode === "onboarding" && (
+              <img
+                className="settings-modal__onboarding-logo"
+                src={axControlBrand}
+                alt="AX Control"
+              />
             )}
             {licenseModalMode !== "upgrade" && (
               <>
                 <h2>
                   {licenseModalMode === "onboarding"
                     ? licenseOnboardingView === "register"
-                      ? "Experimente grátis por 7 dias"
-                      : "Entre na sua conta"
+                      ? "Crie sua conta gratuita"
+                      : "Bem-vindo de volta"
                     : "Licença e acesso"}
                 </h2>
                 <p>
                   {licenseModalMode === "onboarding"
                     ? licenseOnboardingView === "register"
-                      ? "Controle total da sua Mesa Axios. Sem cartão, sem compromisso."
+                      ? "Leva menos de um minuto. Sem cartão — você decide quando iniciar seu teste de 7 dias."
                       : "Entre com sua conta e continue de onde parou."
                     : isTrialLicense
                       ? "Veja o status do seu teste grátis e gerencie seu acesso."
@@ -15169,7 +15190,7 @@ function App() {
               </>
             )}
             {licenseModalMode === "onboarding" && licenseOnboardingView === "register" && !isOnline && (
-              <p className="settings-modal__hint">Sem internet no momento. A ativação exige conexão.</p>
+              <p className="settings-modal__hint">É necessário estar conectado à internet para criar sua conta. O teste grátis pode ser iniciado depois, mesmo sem internet.</p>
             )}
             {licenseModalMode === "upgrade" && trialIsActive && trialDaysRemaining !== null && (
               <p>Seu teste ainda tem {trialDaysRemaining === 1 ? "1 dia" : `${trialDaysRemaining} dias`}. Aproveite para garantir o acesso completo.</p>
@@ -15177,7 +15198,6 @@ function App() {
             {licenseModalMode === "upgrade" && trialIsExpired && (
               <p>Seu período de teste encerrou. Adquira a licença para voltar a usar o AX Control.</p>
             )}
-            {licenseModalMode === "settings" && !isOnline && <p>Sem internet no momento. Alguns recursos exigem conexão.</p>}
           </div>
         </div>
 
@@ -15267,6 +15287,11 @@ function App() {
 
             {pixPayment.stage === "idle" && (
               <>
+                {!isOnline && (
+                  <p className="settings-modal__offline-hint">
+                    Sem conexão com a internet. Se você está conectado à rede própria da mesa, troque para uma rede com internet (Wi-Fi ou dados) para concluir a compra.
+                  </p>
+                )}
                 <button
                   type="button"
                   className="startup-button settings-modal__upgrade-button settings-modal__upgrade-button--pix"
@@ -15392,204 +15417,6 @@ function App() {
           </div>
         )}
 
-        {licenseModalMode === "settings" && (
-          <>
-            <div className="settings-modal__license-overview">
-              <div className="settings-modal__license-overview-status">
-                <strong>{settingsStatusChipLabel}</strong>
-                <span>{settingsStatusChipDetail}</span>
-              </div>
-              <div className="settings-modal__license-overview-capacity">
-                <strong>{associatedDeviceCapacityLabel}</strong>
-                <span>{settingsUsageLabel}</span>
-              </div>
-            </div>
-
-            <div className="settings-modal__settings-layout">
-              <section className="settings-modal__settings-card settings-modal__settings-card--devices">
-                <div className="settings-modal__settings-card-header">
-                  <div>
-                    <h3>Este dispositivo</h3>
-                    <p>Seu ID de dispositivo é único e permanente. Use-o para ativar ou transferir sua licença.</p>
-                  </div>
-                </div>
-
-                <div className="settings-modal__row">
-                  <label htmlFor="settings-installation-id">
-                    <Hash size={10} style={{ display: "inline", verticalAlign: "middle", marginRight: 4 }} aria-hidden="true" />
-                    ID do dispositivo
-                  </label>
-                  <div className="settings-modal__inline">
-                    <input
-                      id="settings-installation-id"
-                      className="settings-modal__input"
-                      value={installationId}
-                      readOnly
-                    />
-                    <button
-                      type="button"
-                      className="startup-button startup-button--secondary settings-modal__copy"
-                      onClick={handleCopyInstallationId}
-                    >
-                      Copiar
-                    </button>
-                  </div>
-                </div>
-
-                <div className="settings-modal__row">
-                  <label htmlFor="settings-license-key">Chave de licença</label>
-                  <input
-                    id="settings-license-key"
-                    className="settings-modal__input"
-                    value={licenseKeyInput}
-                    onChange={(event) => setLicenseKeyInput(event.target.value)}
-                    placeholder="Cole ou digite sua chave de licença"
-                    disabled={licenseValidationBusy}
-                  />
-                </div>
-
-                <div className="settings-modal__settings-inline-actions">
-                  <button
-                    type="button"
-                    className="startup-button startup-button--secondary"
-                    disabled={licenseValidationBusy}
-                    onClick={() => {
-                      void handleValidateLicense();
-                    }}
-                  >
-                    {licenseValidationBusy
-                      ? "Validando..."
-                      : isFullLicenseView ? "Trocar licença" : "Aplicar licença"}
-                  </button>
-                  {isTrialLicense && (
-                    <>
-                      <button
-                        type="button"
-                        className="startup-button startup-button--primary"
-                        onClick={() => {
-                          setLicenseModalMandatory(false);
-                          setLicenseModalMode("upgrade");
-                          void startPixPayment();
-                        }}
-                      >
-                        Comprar via Pix · {UPGRADE_PRICE_LABEL}
-                      </button>
-                      <button
-                        type="button"
-                        className="startup-button startup-button--secondary"
-                        onClick={() => { void handleContactForUpgrade(); }}
-                      >
-                        Comprar pelo WhatsApp
-                      </button>
-                    </>
-                  )}
-                </div>
-              </section>
-
-              <section className="settings-modal__settings-card">
-                <div className="settings-modal__settings-card-header settings-modal__settings-card-header--split">
-                  <div>
-                    <h3>Dispositivos associados</h3>
-                    <p>{hasUnlimitedActivations
-                      ? "Sem limite de dispositivos para esta conta."
-                      : isTrialLicense
-                        ? "O teste grátis permite apenas 1 dispositivo."
-                        : associatedDeviceLimit !== null
-                          ? `Esta licença permite até ${associatedDeviceLimit} dispositivos.`
-                          : "Número de dispositivos definido pela sua licença."}</p>
-                  </div>
-                  <button
-                    type="button"
-                    className="startup-button startup-button--secondary settings-modal__refresh-btn"
-                    disabled={licenseDevicesLoading}
-                    onClick={() => {
-                      void handleRefreshLicenseStatus();
-                    }}
-                    aria-label="Atualizar lista de dispositivos"
-                  >
-                    <RefreshCw size={13} className={licenseDevicesLoading ? "settings-modal__spin" : ""} aria-hidden="true" />
-                    {licenseDevicesLoading ? "Atualizando..." : "Atualizar"}
-                  </button>
-                </div>
-
-                {visibleAssociatedDevices.length > 0 ? (
-                  <div className="settings-modal__device-list">
-                    {visibleAssociatedDevices.map((device) => {
-                      const isCurrentDevice = device.deviceId === installationId;
-                      const platformLower = device.devicePlatform.toLowerCase();
-                      const PlatformIcon = platformLower === "ios" || platformLower === "android"
-                        ? Smartphone
-                        : platformLower === "macos" || platformLower === "windows" || platformLower === "linux"
-                          ? Laptop2
-                          : Monitor;
-
-                      const isBusy = licenseDeviceActionBusy === device.deviceId;
-                      const isRevoked = device.active === false;
-
-                      return (
-                        <div
-                          key={device.deviceId}
-                          className={[
-                            "settings-modal__device-card",
-                            isCurrentDevice ? "settings-modal__device-card--current" : "",
-                            isRevoked ? "settings-modal__device-card--revoked" : "",
-                          ].filter(Boolean).join(" ")}
-                        >
-                          <div className="settings-modal__device-copy">
-                            <strong className="settings-modal__device-name">
-                              <PlatformIcon size={13} className="settings-modal__device-icon" aria-hidden="true" />
-                              {device.deviceName}
-                              {isCurrentDevice && <span className="settings-modal__device-current-tag">Este dispositivo</span>}
-                              {isRevoked && <span className="settings-modal__device-revoked-tag">Removido</span>}
-                            </strong>
-                            <span>
-                              {device.devicePlatform || "Plataforma desconhecida"}
-                              {isCurrentDevice ? " · Ativo agora" : ""}
-                            </span>
-                            <span className="settings-modal__device-id">
-                              {device.deviceId}
-                            </span>
-                          </div>
-                          {!isCurrentDevice && (
-                            isRevoked ? (
-                              canReactivate && (
-                                <button
-                                  type="button"
-                                  className="startup-button startup-button--primary settings-modal__remove-btn"
-                                  disabled={isBusy}
-                                  onClick={() => handleReactivateLicenseDevice(device.deviceId)}
-                                >
-                                  {isBusy
-                                    ? <><RefreshCw size={12} className="settings-modal__spin" aria-hidden="true" /> Reativando...</>
-                                    : "Reativar"}
-                                </button>
-                              )
-                            ) : (
-                              <button
-                                type="button"
-                                className="startup-button startup-button--secondary settings-modal__remove-btn"
-                                disabled={isBusy}
-                                onClick={() => handleRevokeLicenseDevice(device.deviceId)}
-                              >
-                                {isBusy
-                                  ? <><RefreshCw size={12} className="settings-modal__spin" aria-hidden="true" /> Revogando...</>
-                                  : <><X size={12} aria-hidden="true" /> Revogar</>}
-                              </button>
-                            )
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="settings-modal__device-empty">
-                    Nenhum dispositivo associado no momento.
-                  </div>
-                )}
-              </section>
-            </div>
-          </>
-        )}
 
         {licenseModalMode === "onboarding" && (
           <div className="settings-modal__onboarding">
@@ -15773,8 +15600,8 @@ function App() {
                 <div className="settings-modal__benefit">
                   <Zap size={16} className="settings-modal__benefit-icon" aria-hidden="true" />
                   <div className="settings-modal__benefit-text">
-                    <strong>Ativação imediata</strong>
-                    <span>Pronto para usar</span>
+                    <strong>Teste quando quiser</strong>
+                    <span>7 dias grátis, sem pressa</span>
                   </div>
                 </div>
                 <div className="settings-modal__benefit">
@@ -15793,7 +15620,7 @@ function App() {
           </div>
         )}
 
-        {licenseValidationMessage.kind !== "idle" && licenseModalMode !== "onboarding" && !(licenseModalMode === "settings" && licenseValidationMessage.kind === "success") && (
+        {licenseValidationMessage.kind !== "idle" && licenseModalMode === "upgrade" && (
           <div
             className={`settings-modal__result ${licenseValidationMessage.kind === "success" ? "settings-modal__result--success" : "settings-modal__result--error"}`}
           >
@@ -15801,26 +15628,15 @@ function App() {
           </div>
         )}
 
-        {(licenseModalMode === "settings" || (licenseModalMandatory && isConnected)) && (
+        {licenseModalMandatory && isConnected && (
           <div className="settings-modal__actions">
-            {licenseModalMode === "settings" && !licenseModalMandatory && (
-              <button
-                type="button"
-                className="startup-button startup-button--secondary"
-                onClick={closeLicenseModal}
-              >
-                Fechar
-              </button>
-            )}
-            {licenseModalMandatory && isConnected && (
-              <button
-                type="button"
-                className="startup-button startup-button--secondary"
-                onClick={handleDisconnect}
-              >
-                Desconectar
-              </button>
-            )}
+            <button
+              type="button"
+              className="startup-button startup-button--secondary"
+              onClick={handleDisconnect}
+            >
+              Desconectar
+            </button>
           </div>
         )}
       </section>
@@ -15831,23 +15647,94 @@ function App() {
     return <SplashScreen version={APP_VERSION} />;
   }
 
-  if (appStage === "device-selection") {
+  if (appStage === "home") {
     return (
       <>
-        <DeviceSelectionScreen
-          mixers={discoveredMixers}
-          knownMixers={knownDiscoveryMixers}
-          hasSearched={mixerDiscoveryHasSearched}
-          discoveryLoading={isDiscoveringMixers}
-          discoveryError={discoveryError}
-          connectBusy={connectingSource !== null}
-          connectionError={connectionError}
+        <HomeScreen
           version={APP_VERSION}
-          onRefresh={() => {
-            setConnectionError(null);
-            void refreshMixerDiscovery(true);
+          licenseFormalState={licenseFormalState}
+          licenseTrialExpiryAt={licenseTrialExpiryAt}
+          hasActivatedOnce={hasLicenseActivatedOnce}
+          userName={licenseUserName || (localStorage.getItem(USER_NAME_STORAGE_KEY) ?? "")}
+          userEmail={licenseUserEmail || (localStorage.getItem(USER_EMAIL_STORAGE_KEY) ?? "")}
+          activeNav={homeSubView}
+          onNavHome={() => setHomeSubView("home")}
+          onConnectMixer={() => {
+            setHomeSubView("connect");
+            if (!mixerDiscoveryHasSearched) void refreshMixerDiscovery(true);
           }}
-          onConnectMixer={handlePreconnectMixerSelection}
+          onNavLicense={() => setHomeSubView("license")}
+          onNavDevices={() => setHomeSubView("devices")}
+          onNavSettings={() => setHomeSubView("settings")}
+          mainContent={(() => {
+            if (homeSubView === "connect") {
+              return (
+                <DeviceSelectionPanel
+                  mixers={discoveredMixers}
+                  knownMixers={knownDiscoveryMixers}
+                  hasSearched={mixerDiscoveryHasSearched}
+                  discoveryLoading={isDiscoveringMixers}
+                  discoveryError={discoveryError}
+                  connectBusy={connectingSource !== null}
+                  connectionError={connectionError}
+                  onRefresh={() => {
+                    setConnectionError(null);
+                    void refreshMixerDiscovery(true);
+                  }}
+                  onConnectMixer={handlePreconnectMixerSelection}
+                />
+              );
+            }
+            if (homeSubView === "license") {
+              return (
+                <LicensePanel
+                  licenseFormalState={licenseFormalState}
+                  licenseTrialExpiryAt={licenseTrialExpiryAt}
+                  licenseNextRevalidationAt={licenseNextRevalidationAt}
+                  licenseRevalidationHint={licenseRevalidationHint}
+                  installationId={installationId}
+                  onCopyInstallationId={handleCopyInstallationId}
+                  licenseKeyInput={licenseKeyInput}
+                  onLicenseKeyInputChange={setLicenseKeyInput}
+                  onValidateLicense={() => void handleValidateLicense()}
+                  licenseValidationBusy={licenseValidationBusy}
+                  licenseValidationMessage={licenseValidationMessage}
+                  upgradePriceLabel={UPGRADE_PRICE_LABEL}
+                  isOnline={isOnline}
+                  onStartPixPayment={() => void startPixPayment()}
+                  onContactForUpgrade={() => void handleContactForUpgrade()}
+                  onStartTrial={() => void startTrialNow()}
+                />
+              );
+            }
+            if (homeSubView === "devices") {
+              return (
+                <DevicesPanel
+                  devices={visibleAssociatedDevices}
+                  loading={licenseDevicesLoading}
+                  actionBusy={licenseDeviceActionBusy}
+                  installationId={normalizedInstallationId}
+                  deviceLimit={associatedDeviceLimit}
+                  isUnlimited={hasUnlimitedActivations}
+                  isTrial={isTrialLicense}
+                  canReactivate={canReactivate}
+                  onRefresh={() => void handleRefreshLicenseStatus()}
+                  onRevoke={handleRevokeLicenseDevice}
+                  onReactivate={handleReactivateLicenseDevice}
+                />
+              );
+            }
+            if (homeSubView === "settings") {
+              return (
+                <SettingsPanel
+                  version={APP_VERSION}
+                />
+              );
+            }
+            return null;
+          })()}
+          onDemo={enterDemoMode}
+          onLogout={handleLogout}
         />
         {licenseModalNode}
       </>
@@ -15878,9 +15765,11 @@ function App() {
         </div>
       )}
 
+
       <nav className="top-nav" data-node-id="18:438">
         <div className="top-nav__brand" data-node-id="73:2724">
           <img className="brand-logo brand-logo--wordmark" src={axControlBrand} alt="AX Control" />
+          {appStage === "demo" && <span className="demo-chip">DEMO</span>}
         </div>
 
         <div className="top-nav__tabs" data-node-id="73:575">
@@ -15899,9 +15788,11 @@ function App() {
             type="button"
             className={`top-nav__tab ${mainView === "auxSends" ? "active" : ""}`}
             onClick={() => {
-              setMainView("auxSends");
-              setDetailView(null);
-              setSettingsDropdownOpen(false);
+              requirePlus(() => {
+                setMainView("auxSends");
+                setDetailView(null);
+                setSettingsDropdownOpen(false);
+              });
             }}
             data-node-id="73:572"
           >
@@ -15911,9 +15802,11 @@ function App() {
             type="button"
             className={`top-nav__tab ${mainView === "fxSends" ? "active" : ""}`}
             onClick={() => {
-              setMainView("fxSends");
-              setDetailView(null);
-              setSettingsDropdownOpen(false);
+              requirePlus(() => {
+                setMainView("fxSends");
+                setDetailView(null);
+                setSettingsDropdownOpen(false);
+              });
             }}
             data-node-id="73:576"
           >
@@ -15923,9 +15816,11 @@ function App() {
             type="button"
             className={`top-nav__tab ${mainView === "muteGroups" ? "active" : ""}`}
             onClick={() => {
-              setMainView("muteGroups");
-              setDetailView(null);
-              setSettingsDropdownOpen(false);
+              requirePlus(() => {
+                setMainView("muteGroups");
+                setDetailView(null);
+                setSettingsDropdownOpen(false);
+              });
             }}
           >
             MUTE GROUPS
@@ -15934,9 +15829,11 @@ function App() {
             type="button"
             className={`top-nav__tab ${mainView === "dcaGroups" ? "active" : ""}`}
             onClick={() => {
-              setMainView("dcaGroups");
-              setDetailView(null);
-              setSettingsDropdownOpen(false);
+              requirePlus(() => {
+                setMainView("dcaGroups");
+                setDetailView(null);
+                setSettingsDropdownOpen(false);
+              });
             }}
             data-node-id="73:2725"
           >
@@ -15945,6 +15842,11 @@ function App() {
         </div>
 
         <div className="top-nav__actions" data-node-id="73:2723">
+          {appStage === "demo" && (
+            <button type="button" className="demo-exit-btn" onClick={exitDemoMode}>
+              Sair do Demo
+            </button>
+          )}
           <AxHeaderStatusTag
             status={
               isConnected
@@ -15972,9 +15874,11 @@ function App() {
                   type="button"
                   className={`settings-dropdown__item ${!detailView && mainView === "patching" ? "settings-dropdown__item--active" : ""}`}
                   onClick={() => {
-                    setMainView("patching");
-                    setDetailView(null);
-                    setSettingsDropdownOpen(false);
+                    requirePlus(() => {
+                      setMainView("patching");
+                      setDetailView(null);
+                      setSettingsDropdownOpen(false);
+                    });
                   }}
                 >
                   Patching
@@ -15983,19 +15887,14 @@ function App() {
                   type="button"
                   className={`settings-dropdown__item ${!detailView && mainView === "scenes" ? "settings-dropdown__item--active" : ""}`}
                   onClick={() => {
-                    setMainView("scenes");
-                    setDetailView(null);
-                    setSettingsDropdownOpen(false);
+                    requirePlus(() => {
+                      setMainView("scenes");
+                      setDetailView(null);
+                      setSettingsDropdownOpen(false);
+                    });
                   }}
                 >
                   Scenes
-                </button>
-                <button
-                  type="button"
-                  className="settings-dropdown__item"
-                  onClick={() => openLicenseModal(false)}
-                >
-                  Licença
                 </button>
                 <button
                   type="button"
@@ -16010,13 +15909,6 @@ function App() {
                   }}
                 >
                   {isConnected ? "Desconectar" : "Reconectar"}
-                </button>
-                <button
-                  type="button"
-                  className="settings-dropdown__item settings-dropdown__item--danger"
-                  onClick={handleLogout}
-                >
-                  Sair
                 </button>
               </div>
             )}
@@ -16071,6 +15963,22 @@ function App() {
             );
           }}
           onClose={closeChannelCustomizer}
+        />
+      )}
+
+      {upgradeModalOpen && (
+        <UpgradeModal
+          canStartTrial={licenseFormalState === "LICENSE_NOT_FOUND"}
+          onUpgrade={() => {
+            setUpgradeModalOpen(false);
+            setAppStage("home");
+            setHomeSubView("license");
+          }}
+          onStartTrial={() => {
+            setUpgradeModalOpen(false);
+            void startTrialNow();
+          }}
+          onClose={() => setUpgradeModalOpen(false)}
         />
       )}
 

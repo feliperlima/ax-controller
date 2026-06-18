@@ -1,4 +1,4 @@
-import type { LicenseFormalState, RuntimeLicenseCache } from "./licenseState";
+import { isLicenseStateBlocked, type LicenseFormalState, type RuntimeLicenseCache } from "./licenseState";
 
 export type LicenseBootDecision = {
   formalState: LicenseFormalState;
@@ -59,14 +59,7 @@ export function resolveBootDecision(cache: RuntimeLicenseCache | null, nowMs = D
     }
   }
 
-  const blocked = [
-    "TRIAL_EXPIRED",
-    "PURCHASED_REVALIDATION_EXPIRED",
-    "LICENSE_SUSPENDED",
-    "LICENSE_REVOKED",
-    "LICENSE_BLOCKED",
-    "LICENSE_NOT_FOUND",
-  ].includes(state);
+  const blocked = isLicenseStateBlocked(state);
 
   return {
     formalState: state,

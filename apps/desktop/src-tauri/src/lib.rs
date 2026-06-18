@@ -1,3 +1,5 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use if_addrs::{get_if_addrs, IfAddr};
 use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -10,7 +12,9 @@ use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tauri::Manager;
 use tungstenite::{connect, Message};
+use uuid::Uuid;
 
 // Chave de autenticação do app compilada em tempo de build via AX_API_KEY env var.
 // Build: AX_API_KEY=axcontrol_app_key_2026_06_14_v1 npm run tauri build
@@ -697,33 +701,32 @@ fn resolve_channels_from_identity_or_probe(
     let (_, inferred_channels) = infer_model_and_channels(identity_name);
     let identity_channels = current_channels.or(inferred_channels);
 
-    eprintln!("[RESOLVE_CHANNELS] name={} identity={:?} probed={:?}", identity_name, identity_channels, probed_channels);
-
     // Probe WebSocket é a FONTE DE VERDADE (autoridade obrigatória)
     // Se probe tem resultado, usa diretamente sem scoring ou ambiguidade
     if let Some(probed) = probed_channels {
-        eprintln!("[RESOLVE_CHANNELS] USING PROBE (authoritative): {}", probed);
         return Some(normalize_detected_channels(probed));
     }
 
     // Se probe falhou, fallback para identidade (nome do device)
     let result = identity_channels.map(normalize_detected_channels);
-    eprintln!("[RESOLVE_CHANNELS] probe failed, using identity fallback");
 
     result
 }
 
+// Fixed addresses the mixer assigns itself when a device joins its own access-point
+// network. These never change (unlike DHCP-assigned LAN addresses), so they're always
+// worth probing first. Note: 172.14.0.0/16 falls outside RFC1918 (172.16.0.0/12), so
+// `Ipv4Addr::is_private()` doesn't recognize it — don't filter these through that check.
+const KNOWN_MIXER_AP_IPS: [&str; 3] = ["172.14.52.1", "172.14.51.1", "172.14.30.1"];
+
 fn build_local_probe_ips(preferred_ips: &[String]) -> Vec<String> {
     let private_networks = collect_private_probe_networks();
-    let mut ordered: Vec<String> = vec![
-        // Known current/default Axios control IPs on the mixer LAN.
-        "172.14.52.1".to_string(),
-        "172.14.51.1".to_string(),
-        "172.14.30.1".to_string(),
+    let mut ordered: Vec<String> = KNOWN_MIXER_AP_IPS.iter().map(|ip| ip.to_string()).collect();
+    ordered.extend([
         "192.168.1.75".to_string(),
         "192.168.0.75".to_string(),
         "10.0.0.75".to_string(),
-    ];
+    ]);
 
     let mut preferred_ordered: Vec<String> = Vec::new();
     for preferred in preferred_ips {
@@ -866,9 +869,9 @@ async fn probe_mixer_ip(
     client: &reqwest::Client,
     ip: &str,
     open_timeout_ms: u64,
+    allow_http_only_fallback: bool,
 ) -> Option<DiscoveredMixer> {
     let ws_online = is_ws_port_open(ip, open_timeout_ms);
-    let allow_http_only_fallback = ip.trim().ends_with(".75");
 
     if !ws_online && !allow_http_only_fallback {
         return None;
@@ -1001,6 +1004,15 @@ async fn discover_mixers_by_local_probe(preferred_ips: Option<Vec<String>>) -> R
         return Ok(Vec::new());
     }
 
+    // Trusted candidates (previously-known mixers + the mixer's own fixed AP addresses) can
+    // be reported from the HTTP probe alone if the WS port check misses; the rest of the
+    // subnet sweep still requires a confirmed WS port to avoid probing every random LAN host.
+    let trusted_ips: HashSet<String> = preferred
+        .iter()
+        .cloned()
+        .chain(KNOWN_MIXER_AP_IPS.iter().map(|ip| ip.to_string()))
+        .collect();
+
     let mut found = HashMap::<String, DiscoveredMixer>::new();
 
     // Single fast pass: keeps discovery responsive and works well with periodic refresh.
@@ -1010,8 +1022,9 @@ async fn discover_mixers_by_local_probe(preferred_ips: Option<Vec<String>>) -> R
         for ip in chunk {
             let probe_client = client.clone();
             let probe_ip = ip.clone();
+            let allow_http_only_fallback = trusted_ips.contains(ip);
             handles.push(tauri::async_runtime::spawn(async move {
-                probe_mixer_ip(&probe_client, &probe_ip, 170).await
+                probe_mixer_ip(&probe_client, &probe_ip, 170, allow_http_only_fallback).await
             }));
         }
 
@@ -1036,7 +1049,7 @@ async fn discover_mixers_by_preferred_ips(preferred_ips: &[String]) -> Result<Ve
         .map_err(|error| error.to_string())?;
 
     let mut dedup = HashMap::<String, ()>::new();
-    let candidates: Vec<String> = preferred_ips
+    let mut candidates: Vec<String> = preferred_ips
         .iter()
         .filter_map(|ip| {
             let parsed = ip.trim().parse::<Ipv4Addr>().ok()?;
@@ -1053,6 +1066,14 @@ async fn discover_mixers_by_preferred_ips(preferred_ips: &[String]) -> Result<Ve
         })
         .collect();
 
+    // The mixer's own access-point addresses never change, so they're always worth a quick
+    // check on every periodic poll — not just on the slower full subnet scan fallback.
+    for fixed_ip in KNOWN_MIXER_AP_IPS {
+        if dedup.insert(fixed_ip.to_string(), ()).is_none() {
+            candidates.push(fixed_ip.to_string());
+        }
+    }
+
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
@@ -1066,7 +1087,9 @@ async fn discover_mixers_by_preferred_ips(preferred_ips: &[String]) -> Result<Ve
             let probe_client = client.clone();
             let probe_ip = ip.clone();
             handles.push(tauri::async_runtime::spawn(async move {
-                probe_mixer_ip(&probe_client, &probe_ip, 240).await
+                // Every candidate here is either a previously-known mixer or a fixed AP
+                // address — both trusted, so the HTTP probe alone can confirm a match.
+                probe_mixer_ip(&probe_client, &probe_ip, 240, true).await
             }));
         }
 
@@ -1221,12 +1244,246 @@ async fn license_api_request(payload: LicenseApiRequestPayload) -> Result<Licens
     })
 }
 
+// ─── Phase 4: Certificate Validation + Secure Storage ──────────────────────
+
+const AX_CERT_PUBLIC_KEY_V1: &str = match option_env!("AX_CERT_PUBLIC_KEY_V1") {
+    Some(key) => key,
+    None => "",
+};
+
+const CLOCK_DRIFT_TOLERANCE_SECS: i64 = 300;
+
+static CACHED_PUBLIC_KEYS: OnceLock<Mutex<HashMap<u8, String>>> = OnceLock::new();
+
+fn cert_key_cache() -> &'static Mutex<HashMap<u8, String>> {
+    CACHED_PUBLIC_KEYS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn get_public_key_bytes(sig_v: u8) -> Option<[u8; 32]> {
+    let b64 = if sig_v == 1 && !AX_CERT_PUBLIC_KEY_V1.is_empty() {
+        AX_CERT_PUBLIC_KEY_V1.to_string()
+    } else {
+        cert_key_cache().lock().ok()?.get(&sig_v)?.clone()
+    };
+    let decoded = URL_SAFE_NO_PAD.decode(b64.trim()).ok()?;
+    decoded.try_into().ok()
+}
+
+fn app_storage_dir(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app_handle
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("storage dir error: {e}"))
+}
+
+fn read_stored(path: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn write_stored(path: &std::path::Path, content: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir error: {e}"))?;
+    }
+    std::fs::write(path, content.as_bytes()).map_err(|e| format!("write error: {e}"))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CertificateValidationResult {
+    status: String,
+    plan: Option<String>,
+    expires_at: Option<i64>,
+}
+
+impl CertificateValidationResult {
+    fn invalid() -> Self {
+        Self { status: "invalid".into(), plan: None, expires_at: None }
+    }
+    fn not_found() -> Self {
+        Self { status: "not_found".into(), plan: None, expires_at: None }
+    }
+}
+
+fn validate_jwt_internal(
+    jwt: &str,
+    stored_device_id: &str,
+    server_time_unix: Option<i64>,
+) -> CertificateValidationResult {
+    let parts: Vec<&str> = jwt.splitn(3, '.').collect();
+    if parts.len() != 3 {
+        return CertificateValidationResult::invalid();
+    }
+    let (header_b64, payload_b64, sig_b64) = (parts[0], parts[1], parts[2]);
+
+    let header_bytes = match URL_SAFE_NO_PAD.decode(header_b64) {
+        Ok(b) => b,
+        Err(_) => return CertificateValidationResult::invalid(),
+    };
+    let header: serde_json::Value = match serde_json::from_slice(&header_bytes) {
+        Ok(v) => v,
+        Err(_) => return CertificateValidationResult::invalid(),
+    };
+    if header.get("alg").and_then(|v| v.as_str()) != Some("EdDSA")
+        || header.get("typ").and_then(|v| v.as_str()) != Some("AXC")
+    {
+        return CertificateValidationResult::invalid();
+    }
+
+    let payload_bytes = match URL_SAFE_NO_PAD.decode(payload_b64) {
+        Ok(b) => b,
+        Err(_) => return CertificateValidationResult::invalid(),
+    };
+    let payload: serde_json::Value = match serde_json::from_slice(&payload_bytes) {
+        Ok(v) => v,
+        Err(_) => return CertificateValidationResult::invalid(),
+    };
+
+    let sig_v = payload.get("sig_v").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+    let did = payload.get("did").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let exp = payload.get("exp").and_then(|v| v.as_i64()).unwrap_or(0);
+    let plan = payload.get("plan").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+    let pub_key_bytes = match get_public_key_bytes(sig_v) {
+        Some(b) => b,
+        None => return CertificateValidationResult {
+            status: "unknown_key_version".into(),
+            plan,
+            expires_at: Some(exp),
+        },
+    };
+
+    let sig_bytes = match URL_SAFE_NO_PAD.decode(sig_b64) {
+        Ok(b) => b,
+        Err(_) => return CertificateValidationResult { status: "invalid".into(), plan, expires_at: Some(exp) },
+    };
+    let sig_array: [u8; 64] = match sig_bytes.try_into() {
+        Ok(a) => a,
+        Err(_) => return CertificateValidationResult { status: "invalid".into(), plan, expires_at: Some(exp) },
+    };
+    let verifying_key = match VerifyingKey::from_bytes(&pub_key_bytes) {
+        Ok(vk) => vk,
+        Err(_) => return CertificateValidationResult { status: "invalid".into(), plan, expires_at: Some(exp) },
+    };
+    let signature = Signature::from_bytes(&sig_array);
+    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    if verifying_key.verify(signing_input.as_bytes(), &signature).is_err() {
+        return CertificateValidationResult { status: "invalid".into(), plan, expires_at: Some(exp) };
+    }
+
+    if did != stored_device_id.trim() {
+        return CertificateValidationResult {
+            status: "device_mismatch".into(),
+            plan,
+            expires_at: Some(exp),
+        };
+    }
+
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let adjusted_now = if let Some(server_time) = server_time_unix {
+        let offset = (server_time - now_secs).clamp(-3600, 3600);
+        now_secs + offset
+    } else {
+        now_secs
+    };
+    if adjusted_now - CLOCK_DRIFT_TOLERANCE_SECS > exp {
+        return CertificateValidationResult { status: "expired".into(), plan, expires_at: Some(exp) };
+    }
+
+    CertificateValidationResult { status: "valid".into(), plan, expires_at: Some(exp) }
+}
+
+#[tauri::command]
+async fn get_or_create_device_id(
+    app_handle: tauri::AppHandle,
+    existing_id: Option<String>,
+) -> Result<String, String> {
+    let dir = app_storage_dir(&app_handle)?;
+    let path = dir.join("device_id");
+    if let Some(stored) = read_stored(&path) {
+        return Ok(stored);
+    }
+    let new_id = if let Some(id) = existing_id.filter(|s| !s.trim().is_empty()) {
+        id.trim().to_string()
+    } else {
+        Uuid::new_v4().to_string()
+    };
+    write_stored(&path, &new_id)?;
+    Ok(new_id)
+}
+
+#[tauri::command]
+async fn validate_certificate(
+    app_handle: tauri::AppHandle,
+    server_time_unix: Option<i64>,
+) -> CertificateValidationResult {
+    let dir = match app_storage_dir(&app_handle) {
+        Ok(d) => d,
+        Err(_) => return CertificateValidationResult::invalid(),
+    };
+    let device_id = read_stored(&dir.join("device_id")).unwrap_or_default();
+    let jwt = match read_stored(&dir.join("axc")) {
+        Some(j) => j,
+        None => return CertificateValidationResult::not_found(),
+    };
+    validate_jwt_internal(&jwt, &device_id, server_time_unix)
+}
+
+#[tauri::command]
+async fn store_certificate(
+    app_handle: tauri::AppHandle,
+    jwt: String,
+) -> Result<(), String> {
+    let dir = app_storage_dir(&app_handle)?;
+    write_stored(&dir.join("axc"), jwt.trim())
+}
+
+#[tauri::command]
+async fn load_certificate(app_handle: tauri::AppHandle) -> Result<Option<String>, String> {
+    let dir = app_storage_dir(&app_handle)?;
+    Ok(read_stored(&dir.join("axc")))
+}
+
+#[tauri::command]
+fn cache_public_key(sig_v: u8, key_base64url: String) -> Result<(), String> {
+    let trimmed = key_base64url.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("empty key".into());
+    }
+    URL_SAFE_NO_PAD
+        .decode(&trimmed)
+        .map_err(|e| format!("invalid base64url: {e}"))?
+        .try_into()
+        .map_err(|_| "key must be 32 bytes".to_string())
+        .map(|_: [u8; 32]| {
+            if let Ok(mut guard) = cert_key_cache().lock() {
+                guard.insert(sig_v, trimmed);
+            }
+        })
+}
+
+// ─── End Phase 4 ────────────────────────────────────────────────────────────
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_websocket::init())
-        .invoke_handler(tauri::generate_handler![discover_mixers, validate_license, license_api_request])
+        .invoke_handler(tauri::generate_handler![
+            discover_mixers,
+            validate_license,
+            license_api_request,
+            get_or_create_device_id,
+            validate_certificate,
+            store_certificate,
+            load_certificate,
+            cache_public_key,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
