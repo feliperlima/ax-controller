@@ -593,7 +593,73 @@ body {
   overflow: hidden;
   font-family: var(--font-family-base), Inter, sans-serif;
   color: var(--text-primary);
+  position: relative;
 }
+
+/* Remote banners — overlay no topo, acima de sidebar e content */
+.hs-banners {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  z-index: 20;
+}
+
+.hs-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px;
+  background: rgba(10, 18, 28, 0.92);
+  backdrop-filter: blur(6px);
+  border-left: 3px solid var(--color-cyan, #00c8e0);
+  font-size: 13px;
+  color: var(--text-primary);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.hs-banner--info {
+  border-left-color: var(--color-cyan, #00c8e0);
+}
+
+.hs-banner__title {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.hs-banner__text {
+  flex: 1;
+  opacity: 0.88;
+}
+
+.hs-banner__cta {
+  padding: 3px 10px;
+  border-radius: 4px;
+  background: var(--color-cyan, #00c8e0);
+  color: #000;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.hs-banner__cta:hover { opacity: 0.85; }
+
+.hs-banner__dismiss {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 4px;
+  line-height: 1;
+  opacity: 0.5;
+  margin-left: 4px;
+}
+
+.hs-banner__dismiss:hover { opacity: 1; }
 
 /* Sidebar */
 .hs-sidebar {

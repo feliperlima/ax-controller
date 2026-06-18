@@ -2655,7 +2655,7 @@ function App() {
   const [bootstrapFeatureFlags, setBootstrapFeatureFlags] = useState<Record<string, boolean>>({});
   const [bootstrapMessages, setBootstrapMessages] = useState<import("./services/bootstrapService").BootstrapMessage[]>([]);
   const [bootstrapVersionInfo, setBootstrapVersionInfo] = useState<import("./services/bootstrapService").BootstrapVersionInfo | null>(null);
-  void bootstrapFeatureFlags; void bootstrapMessages; void bootstrapVersionInfo;
+  void bootstrapFeatureFlags;
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [licenseRegisterBusy, setLicenseRegisterBusy] = useState(false);
   const [licenseRegisterWantsUpgrade] = useState(false);
@@ -3103,6 +3103,11 @@ function App() {
         setBootstrapFeatureFlags(boot.feature_flags);
         setBootstrapMessages(boot.messages);
         if (boot.version) setBootstrapVersionInfo(boot.version);
+
+        // Fire toast-channel messages immediately
+        boot.messages
+          .filter((m) => m.channel === "toast")
+          .forEach((m) => showToast(m.title ? `${m.title}: ${m.body}` : m.body));
       })
       .catch(() => {});
   }, []);
@@ -15690,6 +15695,8 @@ function App() {
           hasActivatedOnce={hasLicenseActivatedOnce}
           userName={licenseUserName || (localStorage.getItem(USER_NAME_STORAGE_KEY) ?? "")}
           userEmail={licenseUserEmail || (localStorage.getItem(USER_EMAIL_STORAGE_KEY) ?? "")}
+          messages={bootstrapMessages}
+          versionInfo={bootstrapVersionInfo}
           activeNav={homeSubView}
           onNavHome={() => setHomeSubView("home")}
           onConnectMixer={() => {

@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import axControlBrand from "../assets/AX-control-Brand-vert.svg";
 import type { LicenseFormalState } from "../lib/licenseState";
+import type { BootstrapMessage, BootstrapVersionInfo } from "../services/bootstrapService";
 
 // ── Inline SVG icons ──────────────────────────────────────────────────────────
 
@@ -214,6 +215,75 @@ function ActionCard({
   );
 }
 
+// ── Remote banners ────────────────────────────────────────────────────────────
+
+type BannerSeverity = "info" | "warning" | "error" | "critical";
+
+const BANNER_COLORS: Record<BannerSeverity, string> = {
+  info:     "var(--color-cyan, #00c8e0)",
+  warning:  "#f5a623",
+  error:    "#e05252",
+  critical: "#c0392b",
+};
+
+function RemoteBanners({
+  messages,
+  versionInfo,
+  onDismiss,
+}: {
+  messages: BootstrapMessage[];
+  versionInfo: BootstrapVersionInfo | null;
+  onDismiss: (key: string) => void;
+}) {
+  const banners = messages.filter((m) => m.channel === "banner");
+  const hasUpdate = versionInfo && versionInfo.update_type !== "none";
+
+  if (!hasUpdate && banners.length === 0) return null;
+
+  return (
+    <div className="hs-banners">
+      {hasUpdate && versionInfo && (
+        <div className="hs-banner hs-banner--info">
+          <span className="hs-banner__text">
+            {versionInfo.message ?? `Nova versão disponível: ${versionInfo.latest_version}`}
+          </span>
+          {versionInfo.download_url && (
+            <a
+              className="hs-banner__cta"
+              href={versionInfo.download_url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Baixar
+            </a>
+          )}
+        </div>
+      )}
+      {banners.map((msg) => (
+        <div
+          key={msg.key}
+          className="hs-banner"
+          style={{ borderLeftColor: BANNER_COLORS[msg.severity] ?? BANNER_COLORS.info }}
+        >
+          {msg.title && <span className="hs-banner__title">{msg.title}</span>}
+          <span className="hs-banner__text">{msg.body}</span>
+          {msg.cta_label && msg.cta_url && (
+            <a
+              className="hs-banner__cta"
+              href={msg.cta_url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {msg.cta_label}
+            </a>
+          )}
+          <button className="hs-banner__dismiss" onClick={() => onDismiss(msg.key)} aria-label="Fechar">✕</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export type HomeNavView = "home" | "connect" | "license" | "devices" | "settings";
@@ -227,6 +297,8 @@ type HomeScreenProps = {
   userEmail?: string;
   activeNav?: HomeNavView;
   mainContent?: ReactNode;
+  messages?: BootstrapMessage[];
+  versionInfo?: BootstrapVersionInfo | null;
   onConnectMixer: () => void;
   onNavHome?: () => void;
   onNavLicense?: () => void;
@@ -243,6 +315,8 @@ export function HomeScreen({
   userEmail = "",
   activeNav = "home",
   mainContent,
+  messages = [],
+  versionInfo = null,
   onConnectMixer,
   onNavHome,
   onNavLicense,
@@ -252,12 +326,15 @@ export function HomeScreen({
   onLogout,
 }: HomeScreenProps) {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [dismissedBanners, setDismissedBanners] = useState<Set<string>>(new Set());
   const badge = resolveBadge(licenseFormalState, licenseTrialExpiryAt);
   const isPurchased =
     licenseFormalState === "PURCHASED_ACTIVE" ||
     licenseFormalState === "PURCHASED_REVALIDATION_DUE";
   const initials = getInitials(userName);
   const firstName = userName.trim().split(/\s+/)[0] ?? "";
+
+  const visibleMessages = messages.filter((m) => !dismissedBanners.has(m.key));
 
   return (
     <div className="hs-root">
@@ -334,6 +411,13 @@ export function HomeScreen({
           )}
         </div>
       </aside>
+
+      {/* ── Remote banners ── */}
+      <RemoteBanners
+        messages={visibleMessages}
+        versionInfo={versionInfo}
+        onDismiss={(key) => setDismissedBanners((prev) => new Set([...prev, key]))}
+      />
 
       {/* ── Content ── */}
       <main className="hs-content">
