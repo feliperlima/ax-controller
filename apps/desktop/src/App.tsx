@@ -42,6 +42,7 @@ import {
   getFxPresetConfig,
 } from "./protocol/duonn/fxPresets";
 import { ChannelStrip } from "./components/ChannelStrip";
+import { DigiStrip } from "./components/DigiStrip";
 import { AuxStrip } from "./components/AuxStrip";
 import { FxStrip } from "./components/FxStrip";
 import { GroupStrip } from "./components/GroupStrip";
@@ -287,7 +288,8 @@ const AX32_FX_COUNT = 4;
 // Meter parameter ranges for AUX/FX
 // AUX1-14 meters: sequential from 2854 (AUX1=2854, AUX2=2855, ...)
 const AUX_METER_PARAM_START = 2854;
-const FX_METER_PARAM_START = 2868;
+// AX16/24 FX meter candidates at 2849-2850 (binary analysis); AX32 uses AX32_FX_METER_PARAMS
+const FX_METER_PARAM_START_AX16_24 = 2849;
 const AX32_AUX_METER_PARAMS = [2854, 2855, 2856, 2857, 2858, 2859, 2860];
 const AX32_FX_METER_PARAMS = [2864, 2865, 2866, 2867];
 
@@ -457,23 +459,32 @@ type AuxFxMeterConfig = {
   auxMeterParams: number[];
   fxMeterParams: number[];
   auxPairCount: number;
+  /** AX32: each param encodes 2 AUX (lo/hi byte). AX16/24: 1 param = 1 AUX. */
+  isPackedStereo: boolean;
 };
 
 const AUX_FX_METER_CONFIGS: Record<"ax16_24" | "ax32", AuxFxMeterConfig> = {
   ax16_24: {
     auxMeterParams: Array.from({ length: AX16_24_AUX_COUNT }, (_, index) => AUX_METER_PARAM_START + index),
-    fxMeterParams: Array.from({ length: AX16_24_FX_COUNT }, (_, index) => FX_METER_PARAM_START + index),
+    fxMeterParams: Array.from({ length: AX16_24_FX_COUNT }, (_, index) => FX_METER_PARAM_START_AX16_24 + index),
     auxPairCount: AX16_24_AUX_COUNT,
+    isPackedStereo: false,
   },
   ax32: {
     auxMeterParams: AX32_AUX_METER_PARAMS,
     fxMeterParams: AX32_FX_METER_PARAMS,
     auxPairCount: Math.ceil(AX32_AUX_COUNT / 2),
+    isPackedStereo: true,
   },
 };
 
 function getAuxFxMeterConfig(): AuxFxMeterConfig {
   return isAx32ProfileActive() ? AUX_FX_METER_CONFIGS.ax32 : AUX_FX_METER_CONFIGS.ax16_24;
+}
+
+/** AX16/24: ch25=L, ch26=R. AX32: ch33=L, ch34=R. */
+function getDigiChannelNumbers(): [number, number] {
+  return isAx32ProfileActive() ? [33, 34] : [25, 26];
 }
 
 function getDcaIdsForActiveProfile(): DcaGroupId[] {
@@ -899,11 +910,12 @@ type DetailView =
   | { type: "aux"; aux: number }
   | { type: "fx"; fx: number }
   | { type: "master"; side: "left" | "right" }
+  | { type: "digi" }
   | null;
 type AppStage = "splash" | "home" | "mixer" | "demo";
 type MainView = "mixer" | "auxSends" | "fxSends" | "dcaGroups" | "muteGroups" | "scenes" | "patching";
 type StripSection = "inputs" | "aux" | "fx";
-type CustomizationSection = StripSection | "dca";
+type CustomizationSection = StripSection | "dca" | "digi";
 type CustomizationView = { section: CustomizationSection; index: number } | null;
 type PairLinkState = Record<string, boolean>;
 type SendValueState = Record<SendStripId, number>;
@@ -2742,6 +2754,11 @@ function App() {
     createInitialProcessorStates
   );
 
+  const [digiProcessorState, setDigiProcessorState] = useState<ProcessorState>(() => createDefaultProcessorState());
+
+  // DIGI stereo input: AX16/24 = ch25 (L) + ch26 (R); AX32 = ch33 (L) + ch34 (R)
+  const [digiChannels, setDigiChannels] = useState<ChannelState[]>(() => createInitialChannelsState(2));
+
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -3794,6 +3811,20 @@ function App() {
     });
   }
 
+  function updateDigiChannelState(index: 0 | 1, patch: Partial<ChannelState>) {
+    setDigiChannels((current) => {
+      const currentChannel = current[index];
+      if (!currentChannel) return current;
+      const changed = Object.entries(patch).some(
+        ([key, value]) => currentChannel[key as keyof ChannelState] !== value
+      );
+      if (!changed) return current;
+      const next = [...current];
+      next[index] = { ...currentChannel, ...patch };
+      return next;
+    });
+  }
+
   function updateMasterState(patch: Partial<MasterState>) {
     setMaster((current) => ({ ...current, ...patch }));
   }
@@ -4145,7 +4176,7 @@ function App() {
     const client = clientRef.current;
     const groupsViewActive = mainView === "dcaGroups" || mainView === "muteGroups";
 
-    if (!client || !isConnected || isSyncing || !groupsViewActive) {
+    if (appStage === "demo" || !client || !isConnected || isSyncing || !groupsViewActive) {
       lastAppliedMuteGroupsSignatureRef.current = "";
       return;
     }
@@ -4171,11 +4202,11 @@ function App() {
   }, [assignableMemberIds, isConnected, isSyncing, mainView]);
 
   function requirePlus(action: () => void, feature?: import("./screens/UpgradeModal").PaywallFeatureKey) {
-    if (isFreeTier(licenseFormalState)) {
+    if (appStage === "demo" || !isFreeTier(licenseFormalState)) {
+      action();
+    } else {
       setUpgradeModalFeature(feature);
       setUpgradeModalOpen(true);
-    } else {
-      action();
     }
   }
 
@@ -4495,6 +4526,10 @@ function App() {
     );
   }
 
+  function updateDigiProcessorState(updater: (current: ProcessorState) => ProcessorState) {
+    setDigiProcessorState((current) => updater(current));
+  }
+
   function updateAuxProcessorState(
     auxNumber: number,
     updater: (current: ProcessorState) => ProcessorState
@@ -4733,11 +4768,108 @@ function App() {
   async function syncChannelProcessorState(channelNumber: number) {
     const client = clientRef.current;
     if (!client) return;
+    if (appStage === "demo") return;
 
     const params = processorParams(channelNumber);
     const response = await client.readParams(Object.values(params), 2500);
     const values = new Map(response.map((item) => [item.param, item.value]));
     applyChannelProcessorStateFromValues(channelNumber, values, params);
+  }
+
+  async function syncDigiChannels() {
+    const client = clientRef.current;
+    if (!client) return;
+
+    const [chL, chR] = getDigiChannelNumbers();
+    const paramsL = getChannelStateParams(chL);
+    const paramsR = getChannelStateParams(chR);
+
+    // Single batched read for both DIGI channels to avoid sequential round-trips.
+    const allReadParams = [
+      ...Object.values(paramsL).filter((p): p is number => typeof p === "number"),
+      ...Object.values(paramsR).filter((p): p is number => typeof p === "number"),
+    ];
+
+    const response = await client.readParams(allReadParams, 2000);
+    if (response.length === 0) return;
+
+    const values = new Map(response.map((item) => [item.param, item.value]));
+
+    for (const [params, idx] of [[paramsL, 0], [paramsR, 1]] as const) {
+      const patch: Partial<ChannelState> = {};
+      const get = (p: number | undefined) => (p !== undefined ? values.get(p) : undefined);
+
+      const phantom = get(params.phantom);
+      if (phantom !== undefined) patch.phantomOn = valueToBoolean(phantom);
+      const gain = get(params.gain);
+      if (gain !== undefined) patch.gain = valueToGain(gain);
+      const phase = get(params.phase);
+      if (phase !== undefined) patch.phasePositive = valueToBoolean(phase);
+      const color = get(params.color);
+      if (color !== undefined) patch.colorId = normalizeColorByScope("input", valueToColorId(color));
+      const mute = get(params.mute);
+      if (mute !== undefined) patch.muted = valueToMute(mute);
+      const pan = get(params.pan);
+      if (pan !== undefined) patch.pan = valueToPan(pan);
+      const fader = get(params.fader);
+      if (fader !== undefined) {
+        const faderDb = valueToFaderDb(fader);
+        patch.faderDb = faderDb;
+        patch.faderPosition = dbToFaderPosition(faderDb);
+      }
+      const soloLeft = get(params.soloLeft);
+      const soloRight = get(params.soloRight);
+      if (soloLeft !== undefined && soloRight !== undefined) {
+        patch.soloOn = soloLeft > 0 || soloRight > 0;
+      }
+
+      if (Object.keys(patch).length > 0) updateDigiChannelState(idx, patch);
+    }
+
+    const procParams = processorParams(chL);
+    const procReadParams = Object.values(procParams).filter((p): p is number => typeof p === "number");
+    const procResponse = await client.readParams(procReadParams, 2000);
+    if (procResponse.length > 0) {
+      const procValues = new Map(procResponse.map((item) => [item.param, item.value]));
+      const getValue = (param: number, fallback: number) => procValues.get(param) ?? fallback;
+      const rawHpfFreq = getValue(procParams.hpfFreq, 0);
+      const rawLpfFreq = getValue(procParams.lpfFreq, 0);
+      const parsedState: ProcessorState = {
+        gate: {
+          enabled: valueToBoolean(getValue(procParams.gateEnabled, 0)),
+          threshold: valueToGateThreshold(getValue(procParams.gateThreshold, 50)),
+          attack: valueToGateAttack(getValue(procParams.gateAttack, 15)),
+          decay: valueToGateDecay(getValue(procParams.gateDecay, 2)),
+          hold: valueToGateHold(getValue(procParams.gateHold, 120)),
+        },
+        comp: {
+          enabled: valueToBoolean(getValue(procParams.compEnabled, 0)),
+          ratio: valueToCompRatio(getValue(procParams.compRatio, 100)),
+          attack: valueToCompTime(getValue(procParams.compAttack, 300)),
+          release: valueToCompTime(getValue(procParams.compRelease, 1450)),
+          threshold: valueToCompThreshold(getValue(procParams.compThreshold, 0)),
+          gain: valueToCompGain(getValue(procParams.compGain, 1200)),
+        },
+        eq: {
+          enabled: valueToBoolean(getValue(procParams.eqEnabled, 0)),
+          hpfEnabled: inferHpfEnabledFromRaw(rawHpfFreq, false),
+          hpfType: valueToHpfTypeSlope(getValue(procParams.hpfTypeSlope, 8)).type,
+          hpfSlope: valueToHpfTypeSlope(getValue(procParams.hpfTypeSlope, 8)).slope,
+          hpfFreq: resolveHpfFreqFromRaw(rawHpfFreq, createDefaultProcessorState().eq.hpfFreq),
+          lpfEnabled: inferLpfEnabledFromRaw(rawLpfFreq, false),
+          lpfType: valueToLpfTypeSlope(getValue(procParams.lpfTypeSlope, 13)).type,
+          lpfSlope: valueToLpfTypeSlope(getValue(procParams.lpfTypeSlope, 13)).slope,
+          lpfFreq: resolveLpfFreqFromRaw(rawLpfFreq, createDefaultProcessorState().eq.lpfFreq),
+          bands: [
+            { enabled: true, freq: valueToFrequency(getValue(procParams.eqBand1Freq, 120)), gain: valueToEqGain(getValue(procParams.eqBand1Gain, 470)), q: valueToEqQ(getValue(procParams.eqBand1Q, 120)) },
+            { enabled: true, freq: valueToFrequency(getValue(procParams.eqBand2Freq, 393)), gain: valueToEqGain(getValue(procParams.eqBand2Gain, 477)), q: valueToEqQ(getValue(procParams.eqBand2Q, 121)) },
+            { enabled: true, freq: valueToFrequency(getValue(procParams.eqBand3Freq, 1010)), gain: valueToEqGain(getValue(procParams.eqBand3Gain, 478)), q: valueToEqQ(getValue(procParams.eqBand3Q, 121)) },
+            { enabled: true, freq: valueToFrequency(getValue(procParams.eqBand4Freq, 11000)), gain: valueToEqGain(getValue(procParams.eqBand4Gain, 526)), q: valueToEqQ(getValue(procParams.eqBand4Q, 121)) },
+          ],
+        },
+      };
+      setDigiProcessorState(parsedState);
+    }
   }
 
   function getUsbReturnPatchParamsForActiveProfile() {
@@ -5907,6 +6039,7 @@ function App() {
       await syncMasterProcessorState();
       await syncLinkStates();
       await syncAllAux();
+      await syncDigiChannels();
 
       setStatus("Canais, auxiliares e EQ sincronizados com a mesa");
     } catch (error) {
@@ -5996,11 +6129,14 @@ function App() {
       !shouldSuppressRemoteParam(param, value, now);
 
     if (!skipNonMasterFastPass) {
-      const channelParams = Array.from({ length: channelCount }, (_, index) =>
-        getChannelRealtimeControlParams(index + 1)
-      )
-        .flat()
-        .filter((param): param is number => typeof param === "number");
+      const [digiChL, digiChR] = getDigiChannelNumbers();
+      const channelParams = [
+        ...Array.from({ length: channelCount }, (_, index) =>
+          getChannelRealtimeControlParams(index + 1)
+        ).flat(),
+        ...getChannelRealtimeControlParams(digiChL),
+        ...getChannelRealtimeControlParams(digiChR),
+      ].filter((param): param is number => typeof param === "number");
       const channelValues = await readValuesMapChunked(
         client,
         channelParams,
@@ -6013,6 +6149,27 @@ function App() {
           shouldApplyParam,
         });
       }
+
+      // Apply DIGI realtime control state from the same batch
+      const digiPatchL: Partial<ChannelState> = {};
+      const digiPatchR: Partial<ChannelState> = {};
+      for (const [ch, patch] of [[digiChL, digiPatchL], [digiChR, digiPatchR]] as const) {
+        const params = getChannelStateParams(ch);
+        const get = (p: number | undefined) => (p !== undefined ? channelValues.get(p) : undefined);
+        const mute = get(params.mute); if (mute !== undefined && shouldApplyParam(params.mute!, mute)) patch.muted = valueToMute(mute);
+        const pan = get(params.pan); if (pan !== undefined && shouldApplyParam(params.pan!, pan)) patch.pan = valueToPan(pan);
+        const phase = get(params.phase); if (phase !== undefined && shouldApplyParam(params.phase!, phase)) patch.phasePositive = valueToBoolean(phase);
+        const fader = get(params.fader);
+        if (fader !== undefined && shouldApplyParam(params.fader!, fader)) {
+          const db = valueToFaderDb(fader);
+          patch.faderDb = db;
+          patch.faderPosition = dbToFaderPosition(db);
+        }
+        const soloL = get(params.soloLeft); const soloR = get(params.soloRight);
+        if (soloL !== undefined && soloR !== undefined) patch.soloOn = soloL > 0 || soloR > 0;
+      }
+      if (Object.keys(digiPatchL).length > 0) updateDigiChannelState(0, digiPatchL);
+      if (Object.keys(digiPatchR).length > 0) updateDigiChannelState(1, digiPatchR);
 
       const auxCount = getAuxBusCount();
       const auxParams = Array.from({ length: auxCount }, (_, index) =>
@@ -6373,6 +6530,21 @@ function App() {
         }
       });
     }
+
+    // Sync DIGI name from mixer — use readNameByIndex to bypass channel count validation
+    const [digiChL] = getDigiChannelNumbers();
+    try {
+      const digiMixerName = (await client.readNameByIndex(digiChL - 1, readTimeoutMs)).trim();
+      if (digiMixerName.length > 0 && digiMixerName.toUpperCase() !== "DIGI") {
+        const currentDigiName = digiChannels[0].channelName.trim();
+        const hasUserLocalName = currentDigiName.length > 0 && currentDigiName.toUpperCase() !== "DIGI";
+        const displayName = !forceFromMixer && hasUserLocalName ? currentDigiName : digiMixerName;
+        updateDigiChannelState(0, { channelName: displayName, mixerName: digiMixerName });
+        updateDigiChannelState(1, { channelName: displayName, mixerName: digiMixerName });
+      }
+    } catch {
+      // DIGI name read failing is non-fatal
+    }
   }
 
   function handleDcaGroupRename(id: DcaGroupId, name: string) {
@@ -6566,6 +6738,39 @@ function App() {
 
       return next;
     });
+
+    // Sync DIGI color + name alongside regular channel color refresh (runs every ~2.2s)
+    {
+      const [digiChL, digiChR] = getDigiChannelNumbers();
+      const digiColorResponse = await client.readParams(
+        [channelColorParam(digiChL), channelColorParam(digiChR)],
+        800
+      ).catch(() => []);
+      if (digiColorResponse.length > 0) {
+        const digiColorMap = new Map(digiColorResponse.map((item) => [item.param, item.value]));
+        const rawL = digiColorMap.get(channelColorParam(digiChL));
+        if (rawL !== undefined) {
+          const colorId = normalizeColorByScope("input", valueToColorId(rawL));
+          updateDigiChannelState(0, { colorId });
+          updateDigiChannelState(1, { colorId });
+        }
+      }
+
+      // Sync DIGI name from mixer periodically
+      try {
+        const mixerName = (await client.readNameByIndex(digiChL - 1, 800)).trim();
+        const currentName = digiChannels[0].channelName.trim();
+        const currentMixerName = digiChannels[0].mixerName?.trim() ?? "";
+        if (mixerName !== currentMixerName) {
+          const hasUserLocalName = currentName.length > 0 && currentName.toUpperCase() !== "DIGI" && currentName !== currentMixerName;
+          const displayName = hasUserLocalName ? currentName : (mixerName.length > 0 ? mixerName : "DIGI");
+          updateDigiChannelState(0, { channelName: displayName, mixerName });
+          updateDigiChannelState(1, { channelName: displayName, mixerName });
+        }
+      } catch {
+        // non-fatal
+      }
+    }
 
     setProcessorStates((current) => {
       const next = [...current];
@@ -7806,6 +8011,7 @@ function App() {
   async function syncAllSoloStates() {
     const client = clientRef.current;
     if (!client || meterBusyRef.current) return;
+    if (appStage === "demo") return;
 
     // Se os meters acabaram de atualizar, prioriza responsividade visual.
     if (Date.now() - meterUpdateLastAtRef.current < 320) return;
@@ -8315,7 +8521,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (!isConnected || !detailView) return;
+    if (appStage === "demo" || !isConnected || !detailView) return;
 
     syncBypassFlagsFromMesa();
 
@@ -8329,7 +8535,7 @@ function App() {
   }, [isConnected, isSyncing, detailView]);
 
   useEffect(() => {
-    if (!isConnected || isSyncing) return;
+    if (appStage === "demo" || !isConnected || isSyncing) return;
 
     const intervalMs = detailView
       ? isConstrainedDevice
@@ -8364,6 +8570,8 @@ function App() {
   useEffect(() => {
     if (!isConnected || isSyncing) return;
 
+    if (appStage === "demo") return;
+
     const run = () => {
       void syncGlobalControlStates().catch(() => {
         // Ignore transient read failures in periodic control polling.
@@ -8380,6 +8588,8 @@ function App() {
 
   useEffect(() => {
     if (!isConnected || isSyncing) return;
+
+    if (appStage === "demo") return;
 
     const run = () => {
       if (usbReturnPatchSyncInFlightRef.current) return;
@@ -8406,7 +8616,7 @@ function App() {
   }, [channelCount, isConnected, isSyncing]);
 
   useEffect(() => {
-    if (!isConnected || isSyncing) return;
+    if (appStage === "demo" || !isConnected || isSyncing) return;
 
     // Always refresh controls when returning to mixer or opening detail views.
     if (mainView !== "mixer" && !detailView) return;
@@ -8417,7 +8627,7 @@ function App() {
   }, [detailView, isConnected, isSyncing, mainView]);
 
   useEffect(() => {
-    if (!isConnected || !detailView || detailView.type !== "channel") return;
+    if (appStage === "demo" || !isConnected || !detailView || detailView.type !== "channel") return;
     if (activeProcessorModule !== "sends") return;
 
     syncChannelSendsState(detailView.channel).catch(() => {
@@ -8426,7 +8636,7 @@ function App() {
   }, [activeProcessorModule, detailView, isConnected]);
 
   useEffect(() => {
-    if (!isConnected || !detailView) return;
+    if (appStage === "demo" || !isConnected || !detailView) return;
     if (activeProcessorModule !== "sends") return;
     if (detailView.type === "aux") {
       syncBusInputSendsState("aux", detailView.aux).catch(() => {
@@ -8442,7 +8652,7 @@ function App() {
   }, [activeProcessorModule, detailView, isConnected]);
 
   useEffect(() => {
-    if (!isConnected || detailView) return;
+    if (appStage === "demo" || !isConnected || detailView) return;
     if (mainView === "auxSends") {
       syncBusInputSendsState("aux", selectedAuxSendsTarget).catch(() => {
         // Keep existing values on transient read failures.
@@ -8458,7 +8668,7 @@ function App() {
   }, [detailView, isConnected, mainView, selectedAuxSendsTarget, selectedFxSendsTarget]);
 
   useEffect(() => {
-    if (!isConnected || isSyncing) return;
+    if (appStage === "demo" || !isConnected || isSyncing) return;
 
     // Poll solo state from the hardware every 2.5 s so that changes made
     // directly on the mixer (hardware buttons) are reflected in the app.
@@ -8473,7 +8683,7 @@ function App() {
   }, [isConnected, isSyncing]);
 
   useEffect(() => {
-    if (!isConnected || isSyncing) return;
+    if (appStage === "demo" || !isConnected || isSyncing) return;
 
     // Keep AUX link badges/state fresh even when user stays on sends views.
     const timer = window.setInterval(() => {
@@ -8489,7 +8699,7 @@ function App() {
   }, [isConnected, isSyncing]);
 
   useEffect(() => {
-    if (!isConnected || isSyncing) return;
+    if (appStage === "demo" || !isConnected || isSyncing) return;
 
     const run = () => {
       if (meterBusyRef.current || isChannelsDraggingRef.current) return;
@@ -8961,8 +9171,34 @@ function App() {
       return next ?? current;
     });
 
+    // Process DIGI meter: channels 25/26 (AX16/24) or 33/34 (AX32) packed in one param.
+    const [digiChL] = getDigiChannelNumbers();
+    const digiMeterParam = (digiChL - 1) / 2 + 2;
+    const digiMeterItem = response.find((item) => item.param === digiMeterParam);
+    if (digiMeterItem) {
+      const loByte = digiMeterItem.value & 255;
+      const hiByte = (digiMeterItem.value >> 8) & 255;
+      const digiLDb = meterByteToDb(loByte);
+      const digiRDb = meterByteToDb(hiByte);
+      setDigiChannels((current) => {
+        const now = Date.now();
+        const CLIP_HOLD_MS = 2500;
+        function updateDigiMeter(prev: ChannelState, db: number): ChannelState {
+          const meterLevel = meterDbToLevel(db);
+          const peak = computeNextPeakState(db, prev.peakDb, prev.peakUntil, now);
+          const clipUntil = db > 12 ? now + CLIP_HOLD_MS : prev.clipUntil > now ? prev.clipUntil : 0;
+          if (prev.meterDb === db && prev.meterLevel === meterLevel && prev.peakDb === peak.peakDb && prev.clipUntil === clipUntil) return prev;
+          return { ...prev, meterDb: db, meterLevel, peakDb: peak.peakDb, peakLevel: peak.peakLevel, peakUntil: peak.peakUntil, clipUntil };
+        }
+        const nextL = updateDigiMeter(current[0], digiLDb);
+        const nextR = updateDigiMeter(current[1], digiRDb);
+        if (nextL === current[0] && nextR === current[1]) return current;
+        return [nextL, nextR];
+      });
+    }
+
     // Process AUX meters using the profile-resolved meter param map.
-    const { auxMeterParams: validAuxParams } = getAuxFxMeterConfig();
+    const { auxMeterParams: validAuxParams, isPackedStereo } = getAuxFxMeterConfig();
     const auxMeterItems = response.filter((item) => validAuxParams.includes(item.param));
 
     if (auxMeterItems.length > 0) {
@@ -8974,64 +9210,73 @@ function App() {
           const pairIndex = validAuxParams.indexOf(param);
           if (pairIndex < 0) continue;
 
-          const loByte = value & 255; // Odd AUX (1,3,5,7,9,11,13)
-          const hiByte = (value >> 8) & 255; // Even AUX (2,4,6,8,10,12,14)
+          const loByte = value & 255;
 
-          // Process odd-numbered AUX (lo byte)
-          const auxIndex1 = pairIndex * 2;
-          if (auxIndex1 < current.length) {
-            const meterDb1 = meterByteToDb(loByte);
-            const meterLevel1 = meterDbToLevel(meterDb1);
-            const clipUntil1 =
-              meterDb1 > 12
-                ? now + CLIP_HOLD_MS
-                : current[auxIndex1].clipUntil > now
-                  ? current[auxIndex1].clipUntil
-                  : 0;
+          if (isPackedStereo) {
+            // AX32: each param encodes 2 AUX channels (lo byte = odd, hi byte = even)
+            const hiByte = (value >> 8) & 255;
 
-            const previous1 = (next ?? current)[auxIndex1];
-            const unchanged1 =
-              previous1.meterDb === meterDb1 &&
-              previous1.meterLevel === meterLevel1 &&
-              previous1.clipUntil === clipUntil1;
+            const auxIndex1 = pairIndex * 2;
+            if (auxIndex1 < current.length) {
+              const meterDb1 = meterByteToDb(loByte);
+              const meterLevel1 = meterDbToLevel(meterDb1);
+              const clipUntil1 =
+                meterDb1 > 12
+                  ? now + CLIP_HOLD_MS
+                  : current[auxIndex1].clipUntil > now
+                    ? current[auxIndex1].clipUntil
+                    : 0;
 
-            if (!unchanged1) {
-              if (!next) next = [...current];
-              next[auxIndex1] = {
-                ...previous1,
-                meterDb: meterDb1,
-                meterLevel: meterLevel1,
-                clipUntil: clipUntil1,
-              };
+              const previous1 = (next ?? current)[auxIndex1];
+              if (
+                previous1.meterDb !== meterDb1 ||
+                previous1.meterLevel !== meterLevel1 ||
+                previous1.clipUntil !== clipUntil1
+              ) {
+                if (!next) next = [...current];
+                next[auxIndex1] = { ...previous1, meterDb: meterDb1, meterLevel: meterLevel1, clipUntil: clipUntil1 };
+              }
             }
-          }
 
-          // Process even-numbered AUX (hi byte)
-          const auxIndex2 = pairIndex * 2 + 1;
-          if (auxIndex2 < current.length) {
-            const meterDb2 = meterByteToDb(hiByte);
-            const meterLevel2 = meterDbToLevel(meterDb2);
-            const clipUntil2 =
-              meterDb2 > 12
-                ? now + CLIP_HOLD_MS
-                : current[auxIndex2].clipUntil > now
-                  ? current[auxIndex2].clipUntil
-                  : 0;
+            const auxIndex2 = pairIndex * 2 + 1;
+            if (auxIndex2 < current.length) {
+              const meterDb2 = meterByteToDb(hiByte);
+              const meterLevel2 = meterDbToLevel(meterDb2);
+              const clipUntil2 =
+                meterDb2 > 12
+                  ? now + CLIP_HOLD_MS
+                  : current[auxIndex2].clipUntil > now
+                    ? current[auxIndex2].clipUntil
+                    : 0;
 
-            const previous2 = (next ?? current)[auxIndex2];
-            const unchanged2 =
-              previous2.meterDb === meterDb2 &&
-              previous2.meterLevel === meterLevel2 &&
-              previous2.clipUntil === clipUntil2;
+              const previous2 = (next ?? current)[auxIndex2];
+              if (
+                previous2.meterDb !== meterDb2 ||
+                previous2.meterLevel !== meterLevel2 ||
+                previous2.clipUntil !== clipUntil2
+              ) {
+                if (!next) next = [...current];
+                next[auxIndex2] = { ...previous2, meterDb: meterDb2, meterLevel: meterLevel2, clipUntil: clipUntil2 };
+              }
+            }
+          } else {
+            // AX16/24: 1 param = 1 AUX channel (direct index, lo byte only)
+            const auxIndex = pairIndex;
+            if (auxIndex < current.length) {
+              const meterDb = meterByteToDb(loByte);
+              const meterLevel = meterDbToLevel(meterDb);
+              const clipUntil =
+                meterDb > 12
+                  ? now + CLIP_HOLD_MS
+                  : current[auxIndex].clipUntil > now
+                    ? current[auxIndex].clipUntil
+                    : 0;
 
-            if (!unchanged2) {
-              if (!next) next = [...current];
-              next[auxIndex2] = {
-                ...previous2,
-                meterDb: meterDb2,
-                meterLevel: meterLevel2,
-                clipUntil: clipUntil2,
-              };
+              const previous = (next ?? current)[auxIndex];
+              if (previous.meterDb !== meterDb || previous.meterLevel !== meterLevel || previous.clipUntil !== clipUntil) {
+                if (!next) next = [...current];
+                next[auxIndex] = { ...previous, meterDb, meterLevel, clipUntil };
+              }
             }
           }
         }
@@ -9117,12 +9362,16 @@ function App() {
           meterPollCycle += 1;
           const maxChannelMeterParam = effectiveChannelCount / 2 + 1;
           const chMeterParams = Array.from({ length: maxChannelMeterParam - 1 }, (_, i) => i + 2);
-          
+
           // AUX/FX meter params
           const { auxMeterParams, fxMeterParams } = getAuxFxMeterConfig();
-          
+
+          // DIGI meter param (channels 25/26 for AX16/24 → param 14; channels 33/34 for AX32 → param 18)
+          const [digiChL] = getDigiChannelNumbers();
+          const digiMeterParam = (digiChL - 1) / 2 + 2;
+
           const masterMeterParams = [47, 48, 2862, 1947, 1948, 4644, 4645, 4753, 4754];
-          const meterParams = [...chMeterParams, ...auxMeterParams, ...fxMeterParams, ...masterMeterParams];
+          const meterParams = [...chMeterParams, digiMeterParam, ...auxMeterParams, ...fxMeterParams, ...masterMeterParams];
           const meterResponse = await client.readParams(
             meterParams,
             METER_READ_TIMEOUT_MS
@@ -10742,6 +10991,11 @@ function App() {
     const current = channels[channelNumber - 1];
     const nextValue = !current.muted;
 
+    if (appStage === "demo") {
+      targets.forEach((target) => updateChannelState(target, { muted: nextValue }));
+      return;
+    }
+
     targets.forEach((target) => {
       const client = clientRef.current;
       if (!client) return;
@@ -10785,6 +11039,21 @@ function App() {
   }
 
   function toggleChannelSolo(channelNumber: number) {
+    if (appStage === "demo") {
+      const [odd, even] = getChannelPair(channelNumber);
+      const key = pairKey(odd, even);
+      const linked = Boolean(channelLinks[key]);
+      if (linked) {
+        const pairSoloOn = channels[odd - 1].soloOn || channels[even - 1].soloOn;
+        const next = !pairSoloOn;
+        updateChannelState(odd, { soloOn: next });
+        updateChannelState(even, { soloOn: next });
+      } else {
+        updateChannelState(channelNumber, { soloOn: !channels[channelNumber - 1].soloOn });
+      }
+      return;
+    }
+
     const client = clientRef.current;
     if (!client) return;
 
@@ -10823,6 +11092,11 @@ function App() {
 
     const current = channels[channelNumber - 1];
     const nextValue = !current.usbInputOn;
+
+    if (appStage === "demo") {
+      updateChannelState(channelNumber, { usbInputOn: nextValue });
+      return;
+    }
     const expectedRawValue = resolveExpectedInputSourceRawForToggle(nextValue);
     const controlChannel = isAx32ProfileActive()
       ? resolveInputSourceControlChannel(channelNumber)
@@ -11135,6 +11409,10 @@ function App() {
     const key = pairKey(odd, even);
 
     if (channelLinks[key]) {
+      if (appStage === "demo") {
+        updateChannelState(odd, { pan: value });
+        updateChannelState(even, { pan: value });
+      }
       return;
     }
 
@@ -11799,11 +12077,20 @@ function App() {
       return;
     }
 
-    const client = clientRef.current;
-    if (!client) return;
-
     const strips = getSectionStrips(section);
     const nextValue = !strips[index - 1].muted;
+
+    if (appStage === "demo") {
+      if (section === "aux") {
+        getLinkedAuxTargets(index).forEach((t) => updateAuxStripState(t, { muted: nextValue }));
+      } else {
+        updateFxStripState(index, { muted: nextValue });
+      }
+      return;
+    }
+
+    const client = clientRef.current;
+    if (!client) return;
 
     if (section === "aux") {
       const targets = getLinkedAuxTargets(index);
@@ -11821,6 +12108,23 @@ function App() {
   function toggleStripSolo(section: StripSection, index: number) {
     if (section === "inputs") {
       toggleChannelSolo(index);
+      return;
+    }
+
+    if (appStage === "demo") {
+      if (section === "aux") {
+        const [odd, even] = getAuxPair(index);
+        const linked = Boolean(auxLinks[pairKey(odd, even)]);
+        if (linked) {
+          const next = !(auxStrips[odd - 1].soloOn || auxStrips[even - 1].soloOn);
+          updateAuxStripState(odd, { soloOn: next });
+          updateAuxStripState(even, { soloOn: next });
+        } else {
+          updateAuxStripState(index, { soloOn: !auxStrips[index - 1].soloOn });
+        }
+      } else {
+        updateFxStripState(index, { soloOn: !fxStrips[index - 1].soloOn });
+      }
       return;
     }
 
@@ -12020,6 +12324,27 @@ function App() {
   ) {
     handleCustomizerNameChange(section, index, patch.channelName);
     handleCustomizerColorChange(section, index, patch.colorId);
+  }
+
+  function handleDigiCustomizerSave(patch: { channelName: string; colorId: number }) {
+    const [chL, chR] = getDigiChannelNumbers();
+    const cleanName = patch.channelName.trim();
+    const displayName = cleanName.length > 0 ? patch.channelName : "DIGI";
+    const mixerName = cleanName.length > 0 ? toMixerSafeName(patch.channelName) : "DIGI";
+    const normalizedColorId = normalizeColorByScope("input", patch.colorId);
+
+    updateDigiChannelState(0, { channelName: displayName, mixerName, colorId: normalizedColorId });
+    updateDigiChannelState(1, { channelName: displayName, mixerName, colorId: normalizedColorId });
+
+    if (appStage !== "demo") {
+      const client = clientRef.current;
+      if (!client) return;
+      // Use setNameByIndex to bypass the channel count validation (DIGI ch25/26 > AX16 limit)
+      client.setNameByIndex(chL - 1, mixerName);
+      client.setNameByIndex(chR - 1, mixerName);
+      client.setChannelColor(chL, normalizedColorId);
+      client.setChannelColor(chR, normalizedColorId);
+    }
   }
 
   function handleGateChange(channelNumber: number, patch: Partial<GateState>) {
@@ -12239,6 +12564,120 @@ function App() {
     });
   }
 
+  function handleDigiGateChange(patch: Partial<GateState>) {
+    const [chL, chR] = getDigiChannelNumbers();
+    updateDigiProcessorState((current) => ({ ...current, gate: { ...current.gate, ...patch } }));
+    const client = clientRef.current;
+    if (!client) return;
+    for (const ch of [chL, chR]) {
+      if (patch.enabled !== undefined) client.setGateEnabled(ch, patch.enabled);
+      if (patch.threshold !== undefined) client.setGateThreshold(ch, patch.threshold);
+      if (patch.attack !== undefined) client.setGateAttack(ch, patch.attack);
+      if (patch.decay !== undefined) client.setGateDecay(ch, patch.decay);
+      if (patch.hold !== undefined) client.setGateHold(ch, patch.hold);
+    }
+  }
+
+  function handleDigiCompChange(patch: Partial<CompressorState>) {
+    const [chL, chR] = getDigiChannelNumbers();
+    updateDigiProcessorState((current) => ({ ...current, comp: { ...current.comp, ...patch } }));
+    const client = clientRef.current;
+    if (!client) return;
+    for (const ch of [chL, chR]) {
+      if (patch.enabled !== undefined) client.setCompEnabled(ch, patch.enabled);
+      if (patch.threshold !== undefined) client.setCompThreshold(ch, patch.threshold);
+      if (patch.ratio !== undefined) client.setCompRatio(ch, patch.ratio);
+      if (patch.attack !== undefined) client.setCompAttack(ch, patch.attack);
+      if (patch.release !== undefined) client.setCompRelease(ch, patch.release);
+      if (patch.gain !== undefined) client.setCompGain(ch, patch.gain);
+    }
+  }
+
+  function handleDigiEqChange(patch: Partial<EqState>) {
+    const [chL, chR] = getDigiChannelNumbers();
+    const nextEq = mergeEqPatch(digiProcessorState.eq, patch);
+    updateDigiProcessorState((current) => ({ ...current, eq: mergeEqPatch(current.eq, patch) }));
+    const client = clientRef.current;
+    if (!client) return;
+    for (const ch of [chL, chR]) {
+      if (patch.enabled !== undefined) client.setEqEnabled(ch, nextEq.enabled);
+      if (patch.hpfEnabled !== undefined) {
+        client.setHpfFreq(ch, nextEq.hpfEnabled ? nextEq.hpfFreq : DEFAULT_EQ.hpfFreq);
+      } else if (patch.hpfFreq !== undefined && nextEq.hpfEnabled) {
+        client.setHpfFreq(ch, nextEq.hpfFreq);
+      }
+      if (patch.lpfEnabled !== undefined) {
+        client.setLpfFreq(ch, nextEq.lpfEnabled ? nextEq.lpfFreq : DEFAULT_EQ.lpfFreq);
+      } else if (patch.lpfFreq !== undefined && nextEq.lpfEnabled) {
+        client.setLpfFreq(ch, nextEq.lpfFreq);
+      }
+      if (patch.hpfType !== undefined || patch.hpfSlope !== undefined) {
+        client.setHpfTypeSlope(ch, nextEq.hpfType as FilterType, nextEq.hpfSlope as FilterSlope);
+      }
+      if (patch.lpfType !== undefined || patch.lpfSlope !== undefined) {
+        client.setLpfTypeSlope(ch, nextEq.lpfType as FilterType, nextEq.lpfSlope as FilterSlope);
+      }
+    }
+  }
+
+  function handleDigiEqBandChange(band: number, patch: Partial<EqBandState>) {
+    const [chL, chR] = getDigiChannelNumbers();
+    const currentBand = digiProcessorState.eq.bands[band - 1]!;
+    const nextBand: EqBandState = { ...currentBand, ...patch };
+    const defaultBand = DEFAULT_EQ.bands[band - 1]!;
+    updateDigiProcessorState((current) => ({
+      ...current,
+      eq: {
+        ...current.eq,
+        bands: current.eq.bands.map((b, i) => (i === band - 1 ? { ...b, ...patch } : b)),
+      },
+    }));
+    const client = clientRef.current;
+    if (!client) return;
+    for (const ch of [chL, chR]) {
+      if (patch.enabled === false) {
+        client.setEqBand(ch, band, defaultBand.freq, defaultBand.gain, defaultBand.q);
+        continue;
+      }
+      if (patch.enabled === true) {
+        client.setEqBand(ch, band, nextBand.freq, nextBand.gain, nextBand.q);
+        continue;
+      }
+      if (!nextBand.enabled) continue;
+      if (patch.freq !== undefined) client.setEqBandFreq(ch, band, patch.freq);
+      if (patch.gain !== undefined) client.setEqBandGain(ch, band, patch.gain);
+      if (patch.q !== undefined) client.setEqBandQ(ch, band, patch.q);
+    }
+  }
+
+  function resetDigiGate() {
+    handleDigiGateChange({ ...DEFAULT_GATE, enabled: digiProcessorState.gate.enabled });
+  }
+
+  function resetDigiComp() {
+    handleDigiCompChange({ ...DEFAULT_COMP, enabled: digiProcessorState.comp.enabled });
+  }
+
+  function resetDigiEq() {
+    handleDigiEqChange({
+      enabled: digiProcessorState.eq.enabled,
+      hpfEnabled: DEFAULT_EQ.hpfEnabled,
+      hpfType: DEFAULT_EQ.hpfType,
+      hpfSlope: DEFAULT_EQ.hpfSlope,
+      hpfFreq: DEFAULT_EQ.hpfFreq,
+      lpfEnabled: DEFAULT_EQ.lpfEnabled,
+      lpfType: DEFAULT_EQ.lpfType,
+      lpfSlope: DEFAULT_EQ.lpfSlope,
+      lpfFreq: DEFAULT_EQ.lpfFreq,
+    });
+    DEFAULT_EQ.bands.forEach((band, index) => {
+      handleDigiEqBandChange(index + 1, {
+        ...band,
+        enabled: digiProcessorState.eq.bands[index]?.enabled ?? band.enabled,
+      });
+    });
+  }
+
   function togglePhase(channelNumber: number) {
     const targets = getLinkedChannelTargets(channelNumber);
     const current = channels[channelNumber - 1];
@@ -12248,6 +12687,60 @@ function App() {
       clientRef.current?.setPhase(target, nextValue);
       updateChannelState(target, { phasePositive: nextValue });
     });
+  }
+
+  function toggleDigiMute() {
+    const [chL, chR] = getDigiChannelNumbers();
+    const nextValue = !digiChannels[0].muted;
+    updateDigiChannelState(0, { muted: nextValue });
+    updateDigiChannelState(1, { muted: nextValue });
+    if (appStage === "demo") return;
+    const client = clientRef.current;
+    if (!client) return;
+    client.setMute(chL, nextValue);
+    client.setMute(chR, nextValue);
+  }
+
+  function toggleDigiSolo() {
+    const [chL] = getDigiChannelNumbers();
+    const nextValue = !(digiChannels[0].soloOn || digiChannels[1].soloOn);
+    updateDigiChannelState(0, { soloOn: nextValue });
+    updateDigiChannelState(1, { soloOn: nextValue });
+    if (appStage === "demo") return;
+    const client = clientRef.current;
+    if (!client) return;
+    client.setChannelSoloPair(chL, nextValue, { db: 0, tapPoint: "post" });
+  }
+
+  function handleDigiFaderChange(position: number) {
+    const [chL, chR] = getDigiChannelNumbers();
+    const db = faderPositionToDb(position);
+    const dbForSend = db <= -120 ? "-inf" : db;
+    updateDigiChannelState(0, { faderDb: db, faderPosition: position });
+    updateDigiChannelState(1, { faderDb: db, faderPosition: position });
+    scheduleFaderWrite("digi:L", () => { clientRef.current?.setFader(chL, dbForSend); });
+    scheduleFaderWrite("digi:R", () => { clientRef.current?.setFader(chR, dbForSend); });
+  }
+
+  function handleDigiPanChange(value: number) {
+    const [chL, chR] = getDigiChannelNumbers();
+    updateDigiChannelState(0, { pan: value });
+    updateDigiChannelState(1, { pan: value });
+    if (appStage === "demo") return;
+    clientRef.current?.setPan(chL, value);
+    clientRef.current?.setPan(chR, value);
+  }
+
+  function toggleDigiPhase() {
+    const [chL, chR] = getDigiChannelNumbers();
+    const nextValue = !digiChannels[0].phasePositive;
+    updateDigiChannelState(0, { phasePositive: nextValue });
+    updateDigiChannelState(1, { phasePositive: nextValue });
+    if (appStage === "demo") return;
+    const client = clientRef.current;
+    if (!client) return;
+    client.setPhase(chL, nextValue);
+    client.setPhase(chR, nextValue);
   }
 
   function toggleHiZ(channelNumber: number) {
@@ -12464,6 +12957,7 @@ function App() {
       setActiveProcessorModule("eq");
     }
     setDetailView({ type: "channel", channel: nextChannel });
+    if (appStage === "demo") return;
     (async () => {
       // Garante estado de link antes da leitura do processador do canal.
       await syncLinkStates();
@@ -12499,6 +12993,7 @@ function App() {
       setActiveProcessorModule("eq");
     }
     setDetailView({ type: "aux", aux: nextAux });
+    if (appStage === "demo") return;
     Promise.allSettled([
       syncLinkStates(),
       syncAuxState(nextAux),
@@ -12533,6 +13028,7 @@ function App() {
     setMainView("mixer");
     setActiveProcessorModule("presets");
     setDetailView({ type: "fx", fx: nextFx });
+    if (appStage === "demo") return;
 
     Promise.allSettled([syncFxState(nextFx), syncFxPresetState(nextFx)]).then((results) => {
       const failed = results.find((result) => result.status === "rejected");
@@ -12740,7 +13236,7 @@ function App() {
           >
             <FxPresetGrid
               activePresetId={fxPresetState.presetId}
-              disabled={!isConnected}
+              disabled={!isConnected && appStage !== "demo"}
               onPresetSelect={handleFxPresetChange}
             />
           </div>
@@ -12756,7 +13252,7 @@ function App() {
               presetId={fxPresetState.presetId}
               controlAValue={fxPresetState.controlAValue}
               controlBValue={fxPresetState.controlBValue}
-              disabled={!isConnected}
+              disabled={!isConnected && appStage !== "demo"}
               onControlAChange={handleFxControlAChange}
               onControlBChange={handleFxControlBChange}
             />
@@ -12975,7 +13471,7 @@ function App() {
               </div>
               <button
                 type="button"
-                disabled={!isConnected}
+                disabled={!isConnected && appStage !== "demo"}
                 onClick={() => openCustomization({ section: "inputs", index: channelNumber })}
                 aria-label="Editar canal"
                 title="Editar canal"
@@ -13010,7 +13506,7 @@ function App() {
             >
               <button
                 type="button"
-                disabled={!isConnected}
+                disabled={!isConnected && appStage !== "demo"}
                 onClick={() => handleCopyChannel(channelNumber)}
                 aria-label="Copiar canal"
                 title="Copiar canal"
@@ -13150,7 +13646,7 @@ function App() {
               meterDb={channelState.meterDb}
               peakDb={channelState.peakDb}
               clipped={channelState.clipUntil > Date.now()}
-              disabled={!isConnected}
+              disabled={!isConnected && appStage !== "demo"}
               onToggleMute={() => toggleMute(channelNumber)}
               onToggleSolo={() => toggleChannelSolo(channelNumber)}
               onTogglePhantom={() => togglePhantom(channelNumber)}
@@ -13194,7 +13690,7 @@ function App() {
           <ChannelProcessors
             activeModule={activeProcessorModule}
             state={processorState}
-            disabled={!isConnected}
+            disabled={!isConnected && appStage !== "demo"}
             channelInputDb={channelState.meterDb}
             sends={sendsView}
             onModuleChange={setActiveProcessorModule}
@@ -13344,7 +13840,7 @@ function App() {
               </div>
               <button
                 type="button"
-                disabled={!isConnected}
+                disabled={!isConnected && appStage !== "demo"}
                 onClick={() => openCustomization({ section: "aux", index: auxNumber })}
                 aria-label="Editar auxiliar"
                 title="Editar auxiliar"
@@ -13379,7 +13875,7 @@ function App() {
             >
               <button
                 type="button"
-                disabled={!isConnected}
+                disabled={!isConnected && appStage !== "demo"}
                 onClick={() => handleCopyAux(auxNumber)}
                 aria-label="Copiar auxiliar"
                 title="Copiar auxiliar"
@@ -13512,7 +14008,7 @@ function App() {
               peakDb={auxState.peakDb}
               clipped={auxState.clipUntil > Date.now()}
               isLinked={isLinked}
-              disabled={!isConnected}
+              disabled={!isConnected && appStage !== "demo"}
               eqState={processorState.eq}
               onToggleMute={() => toggleStripMute("aux", auxNumber)}
               onToggleSolo={() => toggleStripSolo("aux", auxNumber)}
@@ -13549,7 +14045,7 @@ function App() {
           <ChannelProcessors
             activeModule={activeProcessorModule}
             state={processorState}
-            disabled={!isConnected}
+            disabled={!isConnected && appStage !== "demo"}
             hideGate={true}
             moduleItems={[
               { id: "eq", label: "EQ" },
@@ -13796,7 +14292,7 @@ function App() {
               </div>
               <button
                 type="button"
-                disabled={!isConnected}
+                disabled={!isConnected && appStage !== "demo"}
                 onClick={() => openCustomization({ section: "fx", index: fxNumber })}
                 aria-label="Editar FX"
                 title="Editar FX"
@@ -13877,7 +14373,7 @@ function App() {
               meterDb={fxState.meterDb}
               peakDb={fxState.peakDb}
               clipped={fxState.clipUntil > Date.now()}
-              disabled={!isConnected}
+              disabled={!isConnected && appStage !== "demo"}
               onToggleMute={() => toggleStripMute("fx", fxNumber)}
               onToggleSolo={() => toggleStripSolo("fx", fxNumber)}
               onFaderChange={(position) => handleStripFaderChange("fx", fxNumber, position)}
@@ -13890,7 +14386,7 @@ function App() {
             <ChannelProcessors
               activeModule={activeProcessorModule}
               state={processorState}
-              disabled={!isConnected}
+              disabled={!isConnected && appStage !== "demo"}
               hideComp={true}
               hideGate={true}
               moduleItems={[
@@ -14233,7 +14729,7 @@ function App() {
               peakDbR={mainMasterMeter.rightPeakDb}
               clippedL={mainMasterMeter.leftClipUntil > Date.now()}
               clippedR={mainMasterMeter.rightClipUntil > Date.now()}
-              disabled={!isConnected}
+              disabled={!isConnected && appStage !== "demo"}
               muteGroups={getMuteIdsForActiveProfile().map((id) => ({
                 id,
                 active: muteGroups[id - 1]?.active ?? false,
@@ -14263,7 +14759,7 @@ function App() {
             <ChannelProcessors
               activeModule={activeProcessorModule}
               state={masterProcessorState}
-              disabled={!isConnected}
+              disabled={!isConnected && appStage !== "demo"}
               hideGate={true}
               moduleItems={[
                 { id: "eq", label: "EQ" },
@@ -14479,6 +14975,231 @@ function App() {
     );
   }
 
+  function renderDigiDetail() {
+    if (!detailView || detailView.type !== "digi") return null;
+    const digiL = digiChannels[0];
+    const fxSendsView: SendStripView[] = fxStrips.map((fxState, index) => {
+      const fxNumber = index + 1;
+      const id = `fx${fxNumber}`;
+      return {
+        id,
+        type: "fx",
+        colorId: fxState.colorId,
+        label: `FX ${fxNumber}`,
+        name: fxState.channelName?.trim() || `FX ${fxNumber}`,
+        value: channelSendValues[id] ?? 1200,
+        tapPoint: sendTapPoints[id] ?? "post",
+        isLinked: false,
+      };
+    });
+    const auxSendsView: SendStripView[] = auxStrips.map((auxState, index) => {
+      const auxNumber = index + 1;
+      const id = `aux${auxNumber}`;
+      const [odd, even] = getAuxPair(auxNumber);
+      const linkKey = pairKey(odd, even);
+      const linkedPairExists = even <= getAuxBusCount();
+      return {
+        id,
+        type: "aux",
+        colorId: auxState.colorId,
+        label: `AUX ${auxNumber}`,
+        name: auxState.channelName?.trim() || `AUX ${auxNumber}`,
+        value: channelSendValues[id] ?? 1200,
+        tapPoint: sendTapPoints[id] ?? "post",
+        isLinked: linkedPairExists ? Boolean(auxLinks[linkKey]) : false,
+      };
+    });
+    const sendsView: SendStripView[] = [...fxSendsView, ...auxSendsView];
+
+    return (
+      <div
+        className="detail-layout"
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr)",
+          gridTemplateRows: "auto minmax(0, 1fr)",
+          gap: 4,
+          padding: 0,
+        }}
+      >
+        <section
+          className="detail-panel"
+          style={{
+            padding: 0,
+            borderRadius: 4,
+            border: "none",
+            background: "transparent",
+            minWidth: 0,
+            position: "relative",
+            zIndex: 3,
+          }}
+        >
+          <div
+            style={{
+              minHeight: 48,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 16,
+              minWidth: 0,
+              padding: "8px",
+              borderRadius: 4,
+              background: "var(--surface-overlay-strong)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                width: 113,
+                flexShrink: 0,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setDetailView(null)}
+                style={{
+                  height: 32,
+                  padding: "4px 8px",
+                  borderRadius: 8,
+                  border: "1px solid var(--button-default-border)",
+                  background: "var(--button-default-bg)",
+                  color: "var(--button-default-text)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontWeight: 900,
+                  fontSize: 10,
+                  letterSpacing: "1.2px",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+                aria-label="Voltar"
+                title="Voltar"
+              >
+                <span style={{ fontSize: 14, lineHeight: 1 }}>←</span>
+                <span>VOLTAR</span>
+              </button>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                minWidth: 0,
+                flex: "1 1 auto",
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: "Inter, system-ui, sans-serif",
+                  fontSize: 22,
+                  lineHeight: "30px",
+                  fontWeight: 700,
+                  color: "#ffffff",
+                }}
+              >
+                DIGI
+              </div>
+              <div
+                className="dca-matrix-row__tag"
+                style={{ background: "rgba(100,116,139,0.22)", border: "1px solid #475569", color: "#94a3b8" }}
+              >
+                STEREO
+              </div>
+            </div>
+
+            <div style={{ width: 113, flexShrink: 0 }} />
+          </div>
+        </section>
+
+        <section
+          style={{
+            minHeight: 0,
+            display: "grid",
+            gridTemplateColumns: "var(--strip-width) minmax(0, 1fr)",
+            gap: 4,
+            padding: 8,
+            overflow: "visible",
+            position: "relative",
+          }}
+        >
+          <aside
+            style={{
+              minWidth: 0,
+              minHeight: 0,
+              width: "var(--strip-width)",
+              display: "flex",
+              justifyContent: "stretch",
+              justifySelf: "start",
+              overflow: "hidden",
+              position: "relative",
+              zIndex: 3,
+            }}
+          >
+            <DigiStrip
+              variant="detail"
+              muted={digiL.muted}
+              soloOn={digiL.soloOn || digiChannels[1].soloOn}
+              phasePositive={digiL.phasePositive}
+              colorId={digiL.colorId}
+              faderDb={digiL.faderDb}
+              faderPosition={digiL.faderPosition}
+              pan={digiL.pan}
+              meterDb={digiL.meterDb}
+              peakDb={digiL.peakDb}
+              clipped={digiL.clipUntil > Date.now()}
+              eqState={digiProcessorState.eq}
+              disabled={!isConnected && appStage !== "demo"}
+              onToggleMute={toggleDigiMute}
+              onToggleSolo={toggleDigiSolo}
+              onTogglePhase={toggleDigiPhase}
+              onFaderChange={handleDigiFaderChange}
+              onPanChange={handleDigiPanChange}
+            />
+          </aside>
+
+          <section
+            className="detail-panel"
+            style={{
+              padding: "0 24px",
+              borderRadius: 4,
+              border: "none",
+              background: "transparent",
+              minHeight: 0,
+              overflow: "hidden",
+              position: "relative",
+              zIndex: 1,
+            }}
+          >
+            <ChannelProcessors
+              activeModule={activeProcessorModule}
+              state={digiProcessorState}
+              disabled={!isConnected && appStage !== "demo"}
+              channelInputDb={digiL.meterDb}
+              sends={sendsView}
+              onModuleChange={setActiveProcessorModule}
+              onGateChange={(patch) => handleDigiGateChange(patch)}
+              onCompChange={(patch) => handleDigiCompChange(patch)}
+              onEqChange={(patch) => handleDigiEqChange(patch)}
+              onEqBandChange={(band, patch) => handleDigiEqBandChange(band, patch)}
+              onSendValueChange={() => {}}
+              onSendTapPointToggle={() => {}}
+              onResetGate={resetDigiGate}
+              onResetComp={resetDigiComp}
+              onResetEq={resetDigiEq}
+            />
+          </section>
+        </section>
+      </div>
+    );
+  }
+
   function renderInputStrip(stripNumber: number): ReactNode {
     const channelState = channels[stripNumber - 1];
     const pair = getChannelPair(stripNumber);
@@ -14536,7 +15257,7 @@ function App() {
           meterDb={channelState.meterDb}
           peakDb={channelState.peakDb}
           clipped={channelState.clipUntil > Date.now()}
-          disabled={!isConnected}
+          disabled={!isConnected && appStage !== "demo"}
           onToggleMute={() => toggleStripMute("inputs", stripNumber)}
           onToggleSolo={() => toggleStripSolo("inputs", stripNumber)}
           onTogglePhantom={() => toggleStripPhantom("inputs", stripNumber)}
@@ -14556,6 +15277,45 @@ function App() {
           }
           rawParamStore={rawParamStoreRef.current}
           domainSelectors={domainSelectors}
+        />
+      </div>
+    );
+  }
+
+  function renderDigiStrip(): ReactNode {
+    const digiL = digiChannels[0];
+    return (
+      <div
+        key="digi-strip"
+        style={{
+          marginLeft: 0,
+          marginRight: 0,
+          flex: "0 0 auto",
+          position: "relative",
+          overflow: "visible",
+        }}
+      >
+        <DigiStrip
+          channelName={digiL.channelName}
+          muted={digiL.muted}
+          soloOn={digiL.soloOn || digiChannels[1].soloOn}
+          phasePositive={digiL.phasePositive}
+          colorId={digiL.colorId}
+          faderDb={digiL.faderDb}
+          faderPosition={digiL.faderPosition}
+          pan={digiL.pan}
+          meterDb={digiL.meterDb}
+          peakDb={digiL.peakDb}
+          clipped={digiL.clipUntil > Date.now()}
+          eqState={digiProcessorState.eq}
+          disabled={!isConnected && appStage !== "demo"}
+          onToggleMute={toggleDigiMute}
+          onToggleSolo={toggleDigiSolo}
+          onTogglePhase={toggleDigiPhase}
+          onFaderChange={handleDigiFaderChange}
+          onPanChange={handleDigiPanChange}
+          onOpenDetail={() => setDetailView({ type: "digi" })}
+          onOpenEditMenu={() => openCustomization({ section: "digi", index: 1 })}
         />
       </div>
     );
@@ -14587,7 +15347,7 @@ function App() {
           meterDb={fxState.meterDb}
           peakDb={fxState.peakDb}
           clipped={fxState.clipUntil > Date.now()}
-          disabled={!isConnected}
+          disabled={!isConnected && appStage !== "demo"}
           onToggleMute={() => toggleStripMute("fx", fxNumber)}
           onToggleSolo={() => toggleStripSolo("fx", fxNumber)}
           onFaderChange={(position) =>
@@ -14655,7 +15415,7 @@ function App() {
           peakDb={auxState.peakDb}
           clipped={auxState.clipUntil > Date.now()}
           isLinked={isLinked}
-          disabled={!isConnected}
+          disabled={!isConnected && appStage !== "demo"}
           eqState={auxProcessorStates[auxNumber - 1].eq}
           onToggleMute={() => toggleStripMute("aux", auxNumber)}
           onToggleSolo={() => toggleStripSolo("aux", auxNumber)}
@@ -14699,7 +15459,7 @@ function App() {
           active={group.enabled}
           faderPosition={group.faderPosition}
           accentColor={dcaAccentColorFromId(dcaColorIds[id - 1], DCA_DEFAULT_COLOR_IDS[id])}
-          disabled={!isConnected}
+          disabled={!isConnected && appStage !== "demo"}
           onToggleActive={() => handleDcaGroupToggleEnabled(id)}
           onFaderChange={(value) => handleDcaGroupFaderChange(id, value)}
           onOpenDetail={() => {
@@ -14754,7 +15514,7 @@ function App() {
         peakDbR={masterPeakDbR}
         clippedL={masterClipL}
         clippedR={masterClipR}
-        disabled={!isConnected}
+        disabled={!isConnected && appStage !== "demo"}
         muteGroups={getMuteIdsForActiveProfile().map((id) => ({
           id,
           active: muteGroups[id - 1]?.active ?? false,
@@ -14793,14 +15553,15 @@ function App() {
 
     for (let start = 1; start <= channelCount; start += inputSlotsPerTab) {
       const end = Math.min(start + inputSlotsPerTab - 1, channelCount);
+      const channelItems = Array.from({ length: end - start + 1 }, (_, index) =>
+        renderInputStrip(start + index)
+      );
       tabs.push({
         id: `ch-${start}-${end}`,
         label: `CH ${start}-${end}`,
-        itemCount: end - start + 1,
+        itemCount: channelItems.length,
         visibleSlots: inputSlotsPerTab,
-        items: Array.from({ length: end - start + 1 }, (_, index) =>
-          renderInputStrip(start + index)
-        ),
+        items: channelItems,
       });
     }
 
@@ -14836,6 +15597,14 @@ function App() {
         items: activeDcaIds.map((id, index) => renderDcaStripNode(id, index)),
       });
     }
+
+    tabs.push({
+      id: "digi",
+      label: "DIGI",
+      itemCount: 1,
+      visibleSlots: inputSlotsPerTab,
+      items: [renderDigiStrip()],
+    });
 
     return tabs;
   }
@@ -14918,7 +15687,7 @@ function App() {
                   type="button"
                   role="tab"
                   aria-selected={active}
-                  disabled={!isConnected}
+                  disabled={!isConnected && appStage !== "demo"}
                   onClick={() => {
                     if (isAux) {
                       setSelectedAuxSendsTarget(destination);
@@ -14998,7 +15767,7 @@ function App() {
                 peakDb={selectedAuxStrip.peakDb}
                 clipped={selectedAuxStrip.clipUntil > Date.now()}
                 isLinked={selectedAuxLinked}
-                disabled={!isConnected}
+                disabled={!isConnected && appStage !== "demo"}
                 eqState={selectedBusProcessorState.eq}
                 onToggleMute={() => toggleStripMute("aux", selectedBus)}
                 onToggleSolo={() => toggleStripSolo("aux", selectedBus)}
@@ -15029,7 +15798,7 @@ function App() {
                 meterDb={selectedFxStrip.meterDb}
                 peakDb={selectedFxStrip.peakDb}
                 clipped={selectedFxStrip.clipUntil > Date.now()}
-                disabled={!isConnected}
+                disabled={!isConnected && appStage !== "demo"}
                 onToggleMute={() => toggleStripMute("fx", selectedBus)}
                 onToggleSolo={() => toggleStripSolo("fx", selectedBus)}
                 onFaderChange={(position) => handleStripFaderChange("fx", selectedBus, position)}
@@ -15055,7 +15824,7 @@ function App() {
             <ChannelProcessors
               activeModule="sends"
               state={selectedBusProcessorState}
-              disabled={!isConnected}
+              disabled={!isConnected && appStage !== "demo"}
               hideGate={true}
               hideComp={true}
               hideModuleTabs={true}
@@ -15128,19 +15897,27 @@ function App() {
           title: "Editar DCA",
           allowZeroColorSelection: false,
         }
-      : {
-          defaultName: getDefaultDisplayName(
-            customizationView.section === "inputs"
-              ? { type: "channel", channel: customizationView.index }
-              : customizationView.section === "aux"
-                ? { type: "aux", aux: customizationView.index }
-                : { type: "fx", fx: customizationView.index }
-          ),
-          channelName: getSectionStrips(customizationView.section)[customizationView.index - 1].channelName,
-          colorId: getSectionStrips(customizationView.section)[customizationView.index - 1].colorId,
-          title: "Editar Canal",
-          allowZeroColorSelection: false,
-        }
+      : customizationView.section === "digi"
+        ? {
+            defaultName: "DIGI",
+            channelName: digiChannels[0].channelName,
+            colorId: digiChannels[0].colorId,
+            title: "Editar DIGI",
+            allowZeroColorSelection: false,
+          }
+        : {
+            defaultName: getDefaultDisplayName(
+              customizationView.section === "inputs"
+                ? { type: "channel", channel: customizationView.index }
+                : customizationView.section === "aux"
+                  ? { type: "aux", aux: customizationView.index }
+                  : { type: "fx", fx: customizationView.index }
+            ),
+            channelName: getSectionStrips(customizationView.section)[customizationView.index - 1].channelName,
+            colorId: getSectionStrips(customizationView.section)[customizationView.index - 1].colorId,
+            title: "Editar Canal",
+            allowZeroColorSelection: false,
+          }
     : null;
 
   useEffect(() => {
@@ -15946,11 +16723,6 @@ function App() {
         </div>
 
         <div className="top-nav__actions" data-node-id="73:2723">
-          {appStage === "demo" && (
-            <button type="button" className="demo-exit-btn" onClick={exitDemoMode}>
-              Sair do Demo
-            </button>
-          )}
           <AxHeaderStatusTag
             status={
               isConnected
@@ -16000,20 +16772,33 @@ function App() {
                 >
                   Scenes
                 </button>
-                <button
-                  type="button"
-                  className={`settings-dropdown__item${isConnected ? " settings-dropdown__item--danger" : ""}`}
-                  onClick={() => {
-                    if (isConnected) {
-                      handleDisconnect();
-                    } else {
-                      void attemptAutoReconnect();
-                    }
-                    setSettingsDropdownOpen(false);
-                  }}
-                >
-                  {isConnected ? "Desconectar" : "Reconectar"}
-                </button>
+                {appStage === "demo" ? (
+                  <button
+                    type="button"
+                    className="settings-dropdown__item settings-dropdown__item--danger"
+                    onClick={() => {
+                      exitDemoMode();
+                      setSettingsDropdownOpen(false);
+                    }}
+                  >
+                    Sair do Demo
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className={`settings-dropdown__item${isConnected ? " settings-dropdown__item--danger" : ""}`}
+                    onClick={() => {
+                      if (isConnected) {
+                        handleDisconnect();
+                      } else {
+                        void attemptAutoReconnect();
+                      }
+                      setSettingsDropdownOpen(false);
+                    }}
+                  >
+                    {isConnected ? "Desconectar" : "Reconectar"}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -16027,7 +16812,9 @@ function App() {
             ? renderAuxDetail()
             : detailView.type === "fx"
               ? renderFxDetail()
-              : renderMasterDetail()
+              : detailView.type === "digi"
+                ? renderDigiDetail()
+                : renderMasterDetail()
         : mainView === "auxSends"
           ? renderGlobalSendsView("aux")
           : mainView === "fxSends"
@@ -16057,6 +16844,11 @@ function App() {
           onSave={(patch) => {
             if (customizationView.section === "dca") {
               handleDcaCustomizerSave(customizationView.index as DcaGroupId, patch);
+              return;
+            }
+
+            if (customizationView.section === "digi") {
+              handleDigiCustomizerSave(patch);
               return;
             }
 

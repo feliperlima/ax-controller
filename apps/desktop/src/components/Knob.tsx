@@ -1,4 +1,4 @@
-import { useId, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 
 type KnobProps = {
   label: string;
@@ -63,7 +63,7 @@ export function Knob({
   size = 44,
   pixelsPerStep = 3.5,
   valueStep = 1,
-  
+
   discreteStepMode = false,
   continuous = false,
   accentColor,
@@ -81,6 +81,40 @@ export function Knob({
     pendingDeltaY: number;
     previousUserSelect: string;
   } | null>(null);
+
+  const svgRef = useRef<SVGSVGElement>(null);
+  const valueRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+  valueRef.current = value;
+  onChangeRef.current = onChange;
+
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+
+    function handleWheel(e: WheelEvent) {
+      if (disabled) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const currentValue = valueRef.current;
+      const clamp = (v: number) => Math.max(min, Math.min(max, v));
+
+      if (discreteStepMode) {
+        const direction = e.deltaY < 0 ? 1 : -1;
+        const next = clamp(snapToStep(currentValue + direction * valueStep, min, valueStep));
+        if (next !== currentValue) onChangeRef.current(next);
+      } else {
+        const delta = (-e.deltaY / Math.max(0.0001, pixelsPerStep)) * valueStep;
+        const rawValue = currentValue + delta;
+        const next = continuous ? clamp(rawValue) : clamp(snapToStep(rawValue, min, valueStep));
+        if (next !== currentValue) onChangeRef.current(next);
+      }
+    }
+
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [min, max, pixelsPerStep, valueStep, continuous, discreteStepMode, disabled]);
 
   const normalized = (value - min) / (max - min);
   const angleDeg = MIN_DEG + normalized * TOTAL_DEG;
@@ -193,6 +227,7 @@ export function Knob({
       </div>
 
       <svg
+        ref={svgRef}
         width={size}
         height={size}
         style={{

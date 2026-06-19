@@ -34,6 +34,7 @@ export function VerticalFader({
   const faderRef = useRef<HTMLDivElement | null>(null);
   const thumbRef = useRef<HTMLDivElement | null>(null);
   const onChangeRef = useRef(onChange);
+  const displayValueRef = useRef(value);
   const isDraggingRef = useRef(false);
   const pendingValueRef = useRef(value);
   const lastEmittedValueRef = useRef(value);
@@ -60,6 +61,7 @@ export function VerticalFader({
 
     pendingValueRef.current = value;
     lastEmittedValueRef.current = value;
+    displayValueRef.current = value;
     setDisplayValue(value);
   }, [value]);
 
@@ -70,6 +72,34 @@ export function VerticalFader({
       }
     };
   }, []);
+
+  useEffect(() => {
+    const el = faderRef.current;
+    if (!el) return;
+
+    function handleWheel(e: WheelEvent) {
+      if (disabled) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const PIXELS_PER_PERCENT = 4;
+      const delta = (-e.deltaY / PIXELS_PER_PERCENT);
+      const current = displayValueRef.current;
+      const rawValue = current + delta;
+      const snapped = applySnap(Math.max(0, Math.min(100, rawValue)));
+      const nextValue = Math.max(0, Math.min(100, snapped));
+
+      if (Math.abs(nextValue - current) >= 0.05) {
+        displayValueRef.current = nextValue;
+        setDisplayValue(nextValue);
+        onChangeRef.current(nextValue);
+      }
+    }
+
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [disabled, snapPoints, snapThreshold]);
 
   function clamp(nextValue: number) {
     return Math.max(0, Math.min(100, nextValue));
@@ -142,6 +172,7 @@ export function VerticalFader({
     const snappedValue = applySnap(rawValue);
     const nextValue = clamp(snappedValue);
 
+    displayValueRef.current = nextValue;
     setDisplayValue(nextValue);
     scheduleChange(nextValue);
 

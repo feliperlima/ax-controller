@@ -387,6 +387,7 @@ export const DIGI_SOLO_AX16_24 = {
 // ─── Meter Parameters ─────────────────────────────────────────────────────────
 // For polling only; not sent to mixer.
 export const AUX_METER_BASE_AX16_24 = 2854;
-export const FX_METER_BASE_AX16_24 = 2868;
+// 2868-2869 not present in EXE defaults table; 2849-2850 are best binary-analysis candidates
+export const FX_METER_BASE_AX16_24 = 2849;
 export const AX32_AUX_METER_PARAMS = [2854, 2855, 2856, 2857, 2858, 2859, 2860] as const;
 export const AX32_FX_METER_PARAMS = [2864, 2865, 2866, 2867] as const;
