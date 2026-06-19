@@ -41,11 +41,14 @@ type MuteGroupsViewProps = {
   fxNames?: string[];
   fxColorIds?: number[];
   masterColorIds?: [number, number];
+  digiName?: string;
+  digiColorId?: number;
   rawParamStore?: UniversalRawParamStore;
   domainSelectors?: DomainSelectors;
 };
 
 function rowBadgeColorFromId(row: MatrixRow): string {
+  if (row.id === "DIGI") return stripColorForScope(row.colorId, "channel");
   if (row.id.startsWith("AUX_")) return stripColorForScope(row.colorId, "aux");
   if (row.id.startsWith("FX_")) return stripColorForScope(row.colorId, "fx");
   if (row.id.startsWith("MASTER_")) return stripColorForScope(row.colorId, "master");
@@ -67,6 +70,8 @@ export function MuteGroupsView({
   fxNames,
   fxColorIds,
   masterColorIds,
+  digiName,
+  digiColorId,
   rawParamStore,
   domainSelectors,
 }: MuteGroupsViewProps) {
@@ -103,6 +108,13 @@ export function MuteGroupsView({
       colorId: channelColorIds?.[index],
       disabled: !isMemberSelectable(id),
     })),
+    {
+      id: "DIGI" as AssignableMemberId,
+      tag: "DIGI",
+      name: digiName?.trim() || "DIGI",
+      colorId: digiColorId,
+      disabled: false,
+    },
     ...auxIds.map((id, index) => ({
       id,
       tag: `AUX ${index + 1}`,
@@ -137,6 +149,7 @@ export function MuteGroupsView({
   const channelSplit = Math.ceil(channelRows.length / 2);
   const channelCol1 = channelRows.slice(0, channelSplit);
   const channelCol2 = channelRows.slice(channelSplit);
+  const digiRows = matrixRows.filter((row) => row.id === "DIGI");
   const auxRows = matrixRows.filter((row) => row.id.startsWith("AUX_"));
   const fxRows = matrixRows.filter((row) => row.id.startsWith("FX_"));
   const masterRows = matrixRows.filter((row) => row.id.startsWith("MASTER_"));
@@ -258,7 +271,7 @@ export function MuteGroupsView({
               type="button"
               className="groups-view__action-btn"
               disabled={!isConnected}
-              onClick={() => onMembersChange(selectedGroup, [...channelRows, ...auxRows, ...fxRows, ...masterRows].filter((r) => !r.disabled).map((r) => r.id))}
+              onClick={() => onMembersChange(selectedGroup, [...channelRows, ...digiRows, ...auxRows, ...fxRows, ...masterRows].filter((r) => !r.disabled).map((r) => r.id))}
             >
               SELECT ALL
             </button>
@@ -292,6 +305,7 @@ export function MuteGroupsView({
               </div>
               <div className="groups-matrix-col__list">
                 {channelCol2.map((row) => renderMatrixRow(row, "#8b5cf6"))}
+                {digiRows.map((row) => renderMatrixRow(row, "#8b5cf6"))}
               </div>
             </div>
           </div>

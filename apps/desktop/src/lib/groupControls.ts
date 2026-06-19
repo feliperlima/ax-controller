@@ -47,6 +47,8 @@ export const FX_IDS = ["FX_1", "FX_2", "FX_3", "FX_4"] as const;
 
 export const MASTER_IDS = ["MASTER_L", "MASTER_R"] as const;
 
+export const DIGI_IDS = ["DIGI"] as const;
+
 export const DCA_ACCENT_COLORS: Record<DcaGroupId, string> = {
   1: dcaAccentColorFromId(DCA_DEFAULT_COLOR_IDS[1]),
   2: dcaAccentColorFromId(DCA_DEFAULT_COLOR_IDS[2]),
@@ -104,7 +106,7 @@ export function buildAssignableMemberIds(channelCount: number): AssignableMember
   const channelIds = CHANNEL_IDS_MAX.slice(0, Math.max(1, Math.min(CHANNEL_IDS_MAX.length, channelCount))) as GroupMember[];
   const auxIds = AUX_IDS.slice(0, getAuxCountForChannelCount(channelCount));
   const fxIds = FX_IDS.slice(0, getFxCountForChannelCount(channelCount));
-  return [...channelIds, ...auxIds, ...fxIds, ...MASTER_IDS];
+  return [...channelIds, ...DIGI_IDS, ...auxIds, ...fxIds, ...MASTER_IDS];
 }
 
 export function buildVisibleDcaMemberIds(channelCount: number, includeMasterRows = false): AssignableMemberId[] {
@@ -112,12 +114,13 @@ export function buildVisibleDcaMemberIds(channelCount: number, includeMasterRows
   const auxIds = AUX_IDS.slice(0, getAuxCountForChannelCount(channelCount));
   const fxIds = FX_IDS.slice(0, getFxCountForChannelCount(channelCount));
   if (includeMasterRows) {
-    return [...channelIds, ...auxIds, ...fxIds, ...MASTER_IDS];
+    return [...channelIds, ...DIGI_IDS, ...auxIds, ...fxIds, ...MASTER_IDS];
   }
-  return [...channelIds, ...auxIds, ...fxIds];
+  return [...channelIds, ...DIGI_IDS, ...auxIds, ...fxIds];
 }
 
 export function isMemberSelectable(member: AssignableMemberId) {
+  if (member === "DIGI") return true;
   return isMappedGroupMember(member);
 }
 

@@ -50,7 +50,8 @@ export type GroupMember =
   | "AUX_13"
   | "AUX_14"
   | "MASTER_L"
-  | "MASTER_R";
+  | "MASTER_R"
+  | "DIGI";
 
 export type GroupMemberBit = {
   wordIndex: 0 | 1 | 2 | 3;
@@ -221,6 +222,7 @@ const GROUP_MEMBER_BITS_AX16_24: Readonly<Record<GroupMember, GroupMemberBit | n
     isConfirmed: false,
     note: "Provisional: bit value is confirmed in aggregate, side assignment L/R still needs hardware validation.",
   },
+  DIGI: null,
 };
 
 const GROUP_MEMBER_BITS_AX32: Readonly<Record<GroupMember, GroupMemberBit | null>> = {
@@ -273,6 +275,7 @@ const GROUP_MEMBER_BITS_AX32: Readonly<Record<GroupMember, GroupMemberBit | null
     isConfirmed: false,
     note: "Provisional AX32 mapping: MASTER bits placed after AUX_14. Validate on hardware.",
   },
+  DIGI: null,
 };
 
 export const GROUP_MEMBER_BITS = GROUP_MEMBER_BITS_AX32;
@@ -312,9 +315,11 @@ export function getMemberBit(member: GroupMember) {
 
 export function encodeGroupMembers(members: GroupMember[]): [number, number, number, number] {
   const words: [number, number, number, number] = [0, 0, 0, 0];
+  const bits = getActiveGroupMemberBits();
 
   for (const member of members) {
-    const mapped = getMemberBit(member);
+    const mapped = bits[member];
+    if (!mapped) continue;
     words[mapped.wordIndex] = setBit(words[mapped.wordIndex], mapped.bit);
   }
 
