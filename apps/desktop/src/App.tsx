@@ -6531,19 +6531,21 @@ function App() {
       });
     }
 
-    // Sync DIGI name from mixer — use readNameByIndex to bypass channel count validation
-    const [digiChL] = getDigiChannelNumbers();
-    try {
-      const digiMixerName = (await client.readNameByIndex(digiChL - 1, readTimeoutMs)).trim();
-      if (digiMixerName.length > 0 && digiMixerName.toUpperCase() !== "DIGI") {
-        const currentDigiName = digiChannels[0].channelName.trim();
-        const hasUserLocalName = currentDigiName.length > 0 && currentDigiName.toUpperCase() !== "DIGI";
-        const displayName = !forceFromMixer && hasUserLocalName ? currentDigiName : digiMixerName;
-        updateDigiChannelState(0, { channelName: displayName, mixerName: digiMixerName });
-        updateDigiChannelState(1, { channelName: displayName, mixerName: digiMixerName });
+    // Sync DIGI name from mixer — only on AX16/24; on AX32 the name slot index aliases to ch25/26.
+    if (!isAx32ProfileActive()) {
+      const [digiChL] = getDigiChannelNumbers();
+      try {
+        const digiMixerName = (await client.readNameByIndex(digiChL - 1, readTimeoutMs)).trim();
+        if (digiMixerName.length > 0 && digiMixerName.toUpperCase() !== "DIGI") {
+          const currentDigiName = digiChannels[0].channelName.trim();
+          const hasUserLocalName = currentDigiName.length > 0 && currentDigiName.toUpperCase() !== "DIGI";
+          const displayName = !forceFromMixer && hasUserLocalName ? currentDigiName : digiMixerName;
+          updateDigiChannelState(0, { channelName: displayName, mixerName: digiMixerName });
+          updateDigiChannelState(1, { channelName: displayName, mixerName: digiMixerName });
+        }
+      } catch {
+        // DIGI name read failing is non-fatal
       }
-    } catch {
-      // DIGI name read failing is non-fatal
     }
   }
 
@@ -6756,19 +6758,21 @@ function App() {
         }
       }
 
-      // Sync DIGI name from mixer periodically
-      try {
-        const mixerName = (await client.readNameByIndex(digiChL - 1, 800)).trim();
-        const currentName = digiChannels[0].channelName.trim();
-        const currentMixerName = digiChannels[0].mixerName?.trim() ?? "";
-        if (mixerName !== currentMixerName) {
-          const hasUserLocalName = currentName.length > 0 && currentName.toUpperCase() !== "DIGI" && currentName !== currentMixerName;
-          const displayName = hasUserLocalName ? currentName : (mixerName.length > 0 ? mixerName : "DIGI");
-          updateDigiChannelState(0, { channelName: displayName, mixerName });
-          updateDigiChannelState(1, { channelName: displayName, mixerName });
+      // Sync DIGI name from mixer periodically — only AX16/24; AX32 slot aliases to ch25/26.
+      if (!isAx32) {
+        try {
+          const mixerName = (await client.readNameByIndex(digiChL - 1, 800)).trim();
+          const currentName = digiChannels[0].channelName.trim();
+          const currentMixerName = digiChannels[0].mixerName?.trim() ?? "";
+          if (mixerName !== currentMixerName) {
+            const hasUserLocalName = currentName.length > 0 && currentName.toUpperCase() !== "DIGI" && currentName !== currentMixerName;
+            const displayName = hasUserLocalName ? currentName : (mixerName.length > 0 ? mixerName : "DIGI");
+            updateDigiChannelState(0, { channelName: displayName, mixerName });
+            updateDigiChannelState(1, { channelName: displayName, mixerName });
+          }
+        } catch {
+          // non-fatal
         }
-      } catch {
-        // non-fatal
       }
     }
 
@@ -8153,6 +8157,12 @@ function App() {
     if (detailView && activeProcessorModule === "sends") {
       if (detailView.type === "channel") {
         await syncChannelSendsState(detailView.channel);
+        return;
+      }
+
+      if (detailView.type === "digi") {
+        const [digiChL] = getDigiChannelNumbers();
+        await syncChannelSendsState(digiChL);
         return;
       }
 
@@ -12339,9 +12349,12 @@ function App() {
     if (appStage !== "demo") {
       const client = clientRef.current;
       if (!client) return;
-      // Use setNameByIndex to bypass the channel count validation (DIGI ch25/26 > AX16 limit)
-      client.setNameByIndex(chL - 1, mixerName);
-      client.setNameByIndex(chR - 1, mixerName);
+      // setNameByIndex(32/33) on AX32 writes to unexpected firmware slots (aliases ch25/26).
+      // Safe to write name only on AX16/24 where slot = digiChL-1 is verified to map to DIGI.
+      if (!isAx32ProfileActive()) {
+        client.setNameByIndex(chL - 1, mixerName);
+        client.setNameByIndex(chR - 1, mixerName);
+      }
       client.setChannelColor(chL, normalizedColorId);
       client.setChannelColor(chR, normalizedColorId);
     }
@@ -12687,6 +12700,57 @@ function App() {
       clientRef.current?.setPhase(target, nextValue);
       updateChannelState(target, { phasePositive: nextValue });
     });
+  }
+
+  function handleDigiSendValueChange(sendId: SendStripId, nextValue: number) {
+    const [chL, chR] = getDigiChannelNumbers();
+    const clampedValue = Math.max(0, Math.min(1300, Math.round(nextValue)));
+    const parsedBus = parseBusFromSendId(sendId);
+    if (!parsedBus) return;
+
+    const targets = getLinkedAuxSendTargets(sendId);
+    setChannelSendValues((current) => {
+      const next = { ...current };
+      if (parsedBus.busType === "aux") {
+        targets.forEach((target) => { next[target] = clampedValue; });
+      } else {
+        next[sendId] = clampedValue;
+      }
+      return next;
+    });
+
+    targets.forEach((target) => {
+      const tapPoint = sendTapPoints[target] ?? "post";
+      const encoded = encodeSendRawValue(clampedValue, tapPoint);
+      scheduleSendParamWrite(sendIdToParam(chL, target), encoded);
+      scheduleSendParamWrite(sendIdToParam(chR, target), encoded);
+    });
+  }
+
+  function handleDigiSendTapPointToggle(sendId: SendStripId) {
+    const [chL, chR] = getDigiChannelNumbers();
+    const targets = getLinkedAuxSendTargets(sendId);
+    const nextTapByTarget = new Map<SendStripId, SendTapPoint>();
+    targets.forEach((target) => {
+      const currentTap = sendTapPoints[target] ?? "post";
+      nextTapByTarget.set(target, currentTap === "post" ? "pre" : "post");
+    });
+    setSendTapPoints((current) => {
+      const next = { ...current };
+      targets.forEach((target) => { next[target] = nextTapByTarget.get(target) ?? "post"; });
+      return next;
+    });
+    targets.forEach((target) => {
+      const tapPoint = nextTapByTarget.get(target) ?? "post";
+      const baseValue = channelSendValues[target] ?? 1200;
+      const encoded = encodeSendRawValue(baseValue, tapPoint);
+      scheduleSendParamWrite(sendIdToParam(chL, target), encoded, true);
+      scheduleSendParamWrite(sendIdToParam(chR, target), encoded, true);
+    });
+    window.setTimeout(() => {
+      const [ch] = getDigiChannelNumbers();
+      syncChannelSendsState(ch).catch(() => {});
+    }, 180);
   }
 
   function toggleDigiMute() {
@@ -15188,8 +15252,8 @@ function App() {
               onCompChange={(patch) => handleDigiCompChange(patch)}
               onEqChange={(patch) => handleDigiEqChange(patch)}
               onEqBandChange={(band, patch) => handleDigiEqBandChange(band, patch)}
-              onSendValueChange={() => {}}
-              onSendTapPointToggle={() => {}}
+              onSendValueChange={(sendId, value) => handleDigiSendValueChange(sendId as SendStripId, value)}
+              onSendTapPointToggle={(sendId) => handleDigiSendTapPointToggle(sendId as SendStripId)}
               onResetGate={resetDigiGate}
               onResetComp={resetDigiComp}
               onResetEq={resetDigiEq}
