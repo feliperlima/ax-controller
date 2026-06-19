@@ -7,6 +7,7 @@ mod swift_arg;
 mod swift_ret;
 mod types;
 
+#[allow(unused_imports)]
 pub use autorelease::*;
 pub use swift::*;
 pub use swift_arg::*;

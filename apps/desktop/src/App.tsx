@@ -285,11 +285,11 @@ const AX32_AUX_COUNT = 14;
 const AX16_24_FX_COUNT = 2;
 const AX32_FX_COUNT = 4;
 
-// Meter parameter ranges for AUX/FX
-// AUX1-14 meters: sequential from 2854 (AUX1=2854, AUX2=2855, ...)
-const AUX_METER_PARAM_START = 2854;
-// AX16/24 FX meter candidates at 2849-2850 (binary analysis); AX32 uses AX32_FX_METER_PARAMS
-const FX_METER_PARAM_START_AX16_24 = 2849;
+// Meter params — confirmed by manual testing. Source of truth: PROFILE_* in protocolAddressing.ts.
+// AX16/24: low-address packed params (AUX pairs in 43-46, FX L+R in 41-42).
+// AX32: high-address packed params.
+const AX16_24_AUX_METER_PARAMS = [43, 44, 45, 46];
+const AX16_24_FX_METER_PARAMS = [41, 42];
 const AX32_AUX_METER_PARAMS = [2854, 2855, 2856, 2857, 2858, 2859, 2860];
 const AX32_FX_METER_PARAMS = [2864, 2865, 2866, 2867];
 
@@ -465,10 +465,10 @@ type AuxFxMeterConfig = {
 
 const AUX_FX_METER_CONFIGS: Record<"ax16_24" | "ax32", AuxFxMeterConfig> = {
   ax16_24: {
-    auxMeterParams: Array.from({ length: AX16_24_AUX_COUNT }, (_, index) => AUX_METER_PARAM_START + index),
-    fxMeterParams: Array.from({ length: AX16_24_FX_COUNT }, (_, index) => FX_METER_PARAM_START_AX16_24 + index),
-    auxPairCount: AX16_24_AUX_COUNT,
-    isPackedStereo: false,
+    auxMeterParams: AX16_24_AUX_METER_PARAMS,
+    fxMeterParams: AX16_24_FX_METER_PARAMS,
+    auxPairCount: AX16_24_AUX_METER_PARAMS.length,
+    isPackedStereo: true,
   },
   ax32: {
     auxMeterParams: AX32_AUX_METER_PARAMS,
@@ -3227,7 +3227,7 @@ function App() {
     const cacheExpired = isLicenseCacheExpired(cached, installationId);
     const licenseExpiredByDate = isLicenseExpiredByDate(cached?.expiryDate ?? null);
 
-    if (!storedLicenseKey && runtimeCache && bootDecision.isValidated && runtimeCache.licenseType === "trial") {
+    if (!storedLicenseKey && runtimeCache && bootDecision.isValidated) {
       setIsLicenseValidated(true);
       setLicenseFormalState(bootDecision.formalState);
       strictStartupValidationDoneRef.current = true;
@@ -3256,13 +3256,11 @@ function App() {
     }
 
     // If offline: never block the user because of connectivity.
-    // A stored license key is sufficient proof of prior activation — defer
-    // any online validation until the connection is restored.
+    // A stored license key or a prior session (runtimeCache) is sufficient
+    // proof — defer any online validation until the connection is restored.
     if (!isOnline) {
       strictStartupValidationDoneRef.current = true;
-      if (storedLicenseKey) {
-        // Trust the locally cached/stored key. Show a soft hint only when
-        // the cache is actually expired, but never open a mandatory modal.
+      if (storedLicenseKey || runtimeCache) {
         setIsLicenseValidated(true);
         if (hasValidCache && licenseExpiredByDate) {
           setLicenseRevalidationHint("Conecte-se à internet para renovar sua licença.");
@@ -6537,20 +6535,7 @@ function App() {
       });
     }
 
-    // Sync DIGI name from mixer (slot = digiChL - 1, valid on both AX16/24 and AX32).
-    const [digiChL] = getDigiChannelNumbers();
-    try {
-      const digiMixerName = (await client.readNameByIndex(digiChL - 1, readTimeoutMs)).trim();
-      if (digiMixerName.length > 0 && digiMixerName.toUpperCase() !== "DIGI") {
-        const currentDigiName = digiChannels[0].channelName.trim();
-        const hasUserLocalName = currentDigiName.length > 0 && currentDigiName.toUpperCase() !== "DIGI";
-        const displayName = !forceFromMixer && hasUserLocalName ? currentDigiName : digiMixerName;
-        updateDigiChannelState(0, { channelName: displayName, mixerName: digiMixerName });
-        updateDigiChannelState(1, { channelName: displayName, mixerName: digiMixerName });
-      }
-    } catch {
-      // non-fatal
-    }
+    // DIGI name slot index is not mapped for any model — skip mixer name read.
   }
 
   function handleDcaGroupRename(id: DcaGroupId, name: string) {
@@ -6762,19 +6747,6 @@ function App() {
         }
       }
 
-      try {
-        const mixerName = (await client.readNameByIndex(digiChL - 1, 800)).trim();
-        const currentName = digiChannels[0].channelName.trim();
-        const currentMixerName = digiChannels[0].mixerName?.trim() ?? "";
-        if (mixerName !== currentMixerName) {
-          const hasUserLocalName = currentName.length > 0 && currentName.toUpperCase() !== "DIGI" && currentName !== currentMixerName;
-          const displayName = hasUserLocalName ? currentName : (mixerName.length > 0 ? mixerName : "DIGI");
-          updateDigiChannelState(0, { channelName: displayName, mixerName });
-          updateDigiChannelState(1, { channelName: displayName, mixerName });
-        }
-      } catch {
-        // non-fatal
-      }
     }
 
     setProcessorStates((current) => {
@@ -9366,7 +9338,7 @@ function App() {
     }
 
     // Process FX meters
-    const { fxMeterParams } = getAuxFxMeterConfig();
+    const { fxMeterParams, isPackedStereo: fxPackedStereo } = getAuxFxMeterConfig();
     const fxMeterItems = response.filter((item) => fxMeterParams.includes(item.param));
 
     if (fxMeterItems.length > 0) {
@@ -9379,7 +9351,9 @@ function App() {
           if (fxIndex < 0 || fxIndex >= current.length) continue;
 
           const loByte = value & 255;
-          const meterDb = meterByteToDb(loByte);
+          // When packed stereo each param carries L (lo) + R (hi) for the same FX — use peak.
+          const meterByte = fxPackedStereo ? Math.max(loByte, (value >> 8) & 255) : loByte;
+          const meterDb = meterByteToDb(meterByte);
           const meterLevel = meterDbToLevel(meterDb);
           const clipUntil =
             meterDb > 12
