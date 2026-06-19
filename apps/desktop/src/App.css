@@ -1728,6 +1728,13 @@ body {
 
 .patching-matrix-split {
   gap: 6px;
+  flex: none;
+  overflow: visible;
+}
+
+.patching-matrix-col .groups-matrix-col__list {
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
 }
 
 .patching-matrix-list {
@@ -1735,6 +1742,8 @@ body {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  overflow-y: auto;
+  max-height: calc(100vh - 180px);
 }
 
 .patching-structured-row {

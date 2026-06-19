@@ -15,7 +15,7 @@ import {
   getAuxCountForChannelCount,
   getFxCountForChannelCount,
   isMemberSelectable,
-  
+
   type AssignableMemberId,
   type DcaGroupState,
 } from "../lib/groupControls";
@@ -45,11 +45,14 @@ type DcaGroupsViewProps = {
   masterColorIds?: [number, number];
   dcaNames?: string[];
   dcaColorIds?: number[];
+  digiName?: string;
+  digiColorId?: number;
   rawParamStore?: UniversalRawParamStore;
   domainSelectors?: DomainSelectors;
 };
 
 function rowBadgeColorFromId(row: MatrixRow): string {
+  if (row.id === "DIGI") return stripColorForScope(row.colorId, "channel");
   if (row.id.startsWith("AUX_")) return stripColorForScope(row.colorId, "aux");
   if (row.id.startsWith("FX_")) return stripColorForScope(row.colorId, "fx");
   if (row.id.startsWith("MASTER_")) return stripColorForScope(row.colorId, "master");
@@ -72,6 +75,8 @@ export function DcaGroupsView({
   masterColorIds,
   dcaNames,
   dcaColorIds,
+  digiName,
+  digiColorId,
   rawParamStore,
   domainSelectors,
 }: DcaGroupsViewProps) {
@@ -128,6 +133,13 @@ export function DcaGroupsView({
       colorId: channelColorIds?.[index],
       disabled: !isMemberSelectable(id),
     })),
+    {
+      id: "DIGI" as AssignableMemberId,
+      tag: "DIGI",
+      name: digiName?.trim() || "DIGI",
+      colorId: digiColorId,
+      disabled: false,
+    },
     ...auxIds.map((id, index) => ({
       id,
       tag: `AUX ${index + 1}`,
@@ -164,6 +176,7 @@ export function DcaGroupsView({
   const channelSplit = Math.ceil(channelRows.length / 2);
   const channelCol1 = channelRows.slice(0, channelSplit);
   const channelCol2 = channelRows.slice(channelSplit);
+  const digiRows = visibleRows.filter((row) => row.id === "DIGI");
   const auxRows = visibleRows.filter((row) => row.id.startsWith("AUX_"));
   const fxRows = visibleRows.filter((row) => row.id.startsWith("FX_"));
   const masterRows = matrixRows.filter((row) => row.id.startsWith("MASTER_"));
@@ -288,6 +301,7 @@ export function DcaGroupsView({
               </div>
               <div className="groups-matrix-col__list">
                 {channelCol2.map((row) => renderMatrixRow(row, accent))}
+                {digiRows.map((row) => renderMatrixRow(row, accent))}
               </div>
             </div>
           </div>

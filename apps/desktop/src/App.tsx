@@ -4165,7 +4165,13 @@ function App() {
 
     for (const member of managedOrdered) {
       const shouldMute = activeMembersSet.has(member);
-      applyMuteToMember(client, member, shouldMute);
+      if (member === "DIGI") {
+        const [digiChL, digiChR] = getDigiChannelNumbers();
+        client.setMute(digiChL, shouldMute);
+        client.setMute(digiChR, shouldMute);
+      } else {
+        applyMuteToMember(client, member, shouldMute);
+      }
       handleMuteGroupsMemberMuteApplied(member, shouldMute);
     }
 
@@ -4790,7 +4796,7 @@ function App() {
       ...Object.values(paramsR).filter((p): p is number => typeof p === "number"),
     ];
 
-    const response = await client.readParams(allReadParams, 2000);
+    const response = await client.readParams(allReadParams, 1000);
     if (response.length === 0) return;
 
     const values = new Map(response.map((item) => [item.param, item.value]));
@@ -4828,7 +4834,7 @@ function App() {
 
     const procParams = processorParams(chL);
     const procReadParams = Object.values(procParams).filter((p): p is number => typeof p === "number");
-    const procResponse = await client.readParams(procReadParams, 2000);
+    const procResponse = await client.readParams(procReadParams, 1000);
     if (procResponse.length > 0) {
       const procValues = new Map(procResponse.map((item) => [item.param, item.value]));
       const getValue = (param: number, fallback: number) => procValues.get(param) ?? fallback;
@@ -6039,7 +6045,7 @@ function App() {
       await syncMasterProcessorState();
       await syncLinkStates();
       await syncAllAux();
-      await syncDigiChannels();
+      await syncDigiChannels().catch(() => {});
 
       setStatus("Canais, auxiliares e EQ sincronizados com a mesa");
     } catch (error) {
@@ -6531,21 +6537,19 @@ function App() {
       });
     }
 
-    // Sync DIGI name from mixer — only on AX16/24; on AX32 the name slot index aliases to ch25/26.
-    if (!isAx32ProfileActive()) {
-      const [digiChL] = getDigiChannelNumbers();
-      try {
-        const digiMixerName = (await client.readNameByIndex(digiChL - 1, readTimeoutMs)).trim();
-        if (digiMixerName.length > 0 && digiMixerName.toUpperCase() !== "DIGI") {
-          const currentDigiName = digiChannels[0].channelName.trim();
-          const hasUserLocalName = currentDigiName.length > 0 && currentDigiName.toUpperCase() !== "DIGI";
-          const displayName = !forceFromMixer && hasUserLocalName ? currentDigiName : digiMixerName;
-          updateDigiChannelState(0, { channelName: displayName, mixerName: digiMixerName });
-          updateDigiChannelState(1, { channelName: displayName, mixerName: digiMixerName });
-        }
-      } catch {
-        // DIGI name read failing is non-fatal
+    // Sync DIGI name from mixer (slot = digiChL - 1, valid on both AX16/24 and AX32).
+    const [digiChL] = getDigiChannelNumbers();
+    try {
+      const digiMixerName = (await client.readNameByIndex(digiChL - 1, readTimeoutMs)).trim();
+      if (digiMixerName.length > 0 && digiMixerName.toUpperCase() !== "DIGI") {
+        const currentDigiName = digiChannels[0].channelName.trim();
+        const hasUserLocalName = currentDigiName.length > 0 && currentDigiName.toUpperCase() !== "DIGI";
+        const displayName = !forceFromMixer && hasUserLocalName ? currentDigiName : digiMixerName;
+        updateDigiChannelState(0, { channelName: displayName, mixerName: digiMixerName });
+        updateDigiChannelState(1, { channelName: displayName, mixerName: digiMixerName });
       }
+    } catch {
+      // non-fatal
     }
   }
 
@@ -6758,21 +6762,18 @@ function App() {
         }
       }
 
-      // Sync DIGI name from mixer periodically — only AX16/24; AX32 slot aliases to ch25/26.
-      if (!isAx32) {
-        try {
-          const mixerName = (await client.readNameByIndex(digiChL - 1, 800)).trim();
-          const currentName = digiChannels[0].channelName.trim();
-          const currentMixerName = digiChannels[0].mixerName?.trim() ?? "";
-          if (mixerName !== currentMixerName) {
-            const hasUserLocalName = currentName.length > 0 && currentName.toUpperCase() !== "DIGI" && currentName !== currentMixerName;
-            const displayName = hasUserLocalName ? currentName : (mixerName.length > 0 ? mixerName : "DIGI");
-            updateDigiChannelState(0, { channelName: displayName, mixerName });
-            updateDigiChannelState(1, { channelName: displayName, mixerName });
-          }
-        } catch {
-          // non-fatal
+      try {
+        const mixerName = (await client.readNameByIndex(digiChL - 1, 800)).trim();
+        const currentName = digiChannels[0].channelName.trim();
+        const currentMixerName = digiChannels[0].mixerName?.trim() ?? "";
+        if (mixerName !== currentMixerName) {
+          const hasUserLocalName = currentName.length > 0 && currentName.toUpperCase() !== "DIGI" && currentName !== currentMixerName;
+          const displayName = hasUserLocalName ? currentName : (mixerName.length > 0 ? mixerName : "DIGI");
+          updateDigiChannelState(0, { channelName: displayName, mixerName });
+          updateDigiChannelState(1, { channelName: displayName, mixerName });
         }
+      } catch {
+        // non-fatal
       }
     }
 
@@ -7672,11 +7673,9 @@ function App() {
     if (!client) return;
 
     const mappedSendId = `${busType}${busNumber}` as SendStripId;
-    const sendParams = Array.from({ length: channelCount }, (_, index) =>
-      sendIdToParam(index + 1, mappedSendId)
-    );
+    const channelSendParams = Array.from({ length: channelCount }, (_, index) => sendIdToParam(index + 1, mappedSendId));
     const linkMaskParam = getLinkMaskParam();
-    const response = await client.readParams([...sendParams, linkMaskParam], 2200);
+    const response = await client.readParams([...channelSendParams, linkMaskParam], 2200);
     const valuesByParam = new Map(response.map((item) => [item.param, item.value]));
 
     const nextValues = createDefaultChannelInputSendValues(channelCount);
@@ -7689,6 +7688,18 @@ function App() {
       nextValues[id] = decoded.value;
       nextTapPoints[id] = decoded.tapPoint;
     }
+
+    // DIGI send — read separately (non-fatal) so DIGI issues never break regular channel reads
+    try {
+      const [digiChL, digiChR] = getDigiChannelNumbers();
+      const digiParamL = sendIdToParam(digiChL, mappedSendId);
+      const digiParamR = sendIdToParam(digiChR, mappedSendId);
+      const digiResponse = await client.readParams([digiParamL, digiParamR], 800);
+      const digiValuesByParam = new Map(digiResponse.map((item) => [item.param, item.value]));
+      const digiDecoded = decodeSendRawValue(digiValuesByParam.get(digiParamL));
+      nextValues["digi"] = digiDecoded.value;
+      nextTapPoints["digi"] = digiDecoded.tapPoint;
+    } catch { /* non-fatal — DIGI shows default until next sync */ }
 
     const linkMaskValue = valuesByParam.get(linkMaskParam);
     if (linkMaskValue !== undefined) {
@@ -7755,6 +7766,21 @@ function App() {
     nextValue: number
   ) {
     const clampedValue = Math.max(0, Math.min(1300, Math.round(nextValue)));
+    if (sendId === "digi") {
+      const [digiChL, digiChR] = getDigiChannelNumbers();
+      const mappedSendId = `${busType}${busNumber}` as SendStripId;
+      const tapPoint = busType === "aux"
+        ? auxInputSendTapPoints[busNumber]?.["digi"] ?? "post"
+        : fxInputSendTapPoints[busNumber]?.["digi"] ?? "post";
+      const setter = busType === "aux" ? setAuxInputSendValues : setFxInputSendValues;
+      setter((current) => ({
+        ...current,
+        [busNumber]: { ...(current[busNumber] ?? {}), digi: clampedValue },
+      }));
+      scheduleSendParamWrite(sendIdToParam(digiChL, mappedSendId), encodeSendRawValue(clampedValue, tapPoint));
+      scheduleSendParamWrite(sendIdToParam(digiChR, mappedSendId), encodeSendRawValue(clampedValue, tapPoint));
+      return;
+    }
     const sourceChannel = channelFromInputSendId(sendId);
     if (!sourceChannel) return;
 
@@ -7815,6 +7841,32 @@ function App() {
     busNumber: number,
     sendId: SendStripId
   ) {
+    if (sendId === "digi") {
+      const [digiChL, digiChR] = getDigiChannelNumbers();
+      const busTargets = busType === "aux" ? getLinkedAuxTargets(busNumber) : [busNumber];
+      busTargets.forEach((target) => {
+        const currentTap = busType === "aux"
+          ? auxInputSendTapPoints[target]?.["digi"] ?? "post"
+          : fxInputSendTapPoints[target]?.["digi"] ?? "post";
+        const toggled: SendTapPoint = currentTap === "post" ? "pre" : "post";
+        const setter = busType === "aux" ? setAuxInputSendTapPoints : setFxInputSendTapPoints;
+        setter((current) => ({
+          ...current,
+          [target]: { ...(current[target] ?? {}), digi: toggled },
+        }));
+        const baseValue = busType === "aux"
+          ? auxInputSendValues[target]?.["digi"] ?? 1200
+          : fxInputSendValues[target]?.["digi"] ?? 1200;
+        const encoded = encodeSendRawValue(baseValue, toggled);
+        const targetSendId = `${busType}${target}` as SendStripId;
+        scheduleSendParamWrite(sendIdToParam(digiChL, targetSendId), encoded, true);
+        scheduleSendParamWrite(sendIdToParam(digiChR, targetSendId), encoded, true);
+      });
+      window.setTimeout(() => {
+        syncBusInputSendsState(busType, busNumber).catch(() => {});
+      }, 180);
+      return;
+    }
     const busTargets = busType === "aux" ? getLinkedAuxTargets(busNumber) : [busNumber];
     const channelTargets = getLinkedChannelInputTargets(sendId);
     const nextTapByTarget = new Map<string, SendTapPoint>();
@@ -8637,12 +8689,16 @@ function App() {
   }, [detailView, isConnected, isSyncing, mainView]);
 
   useEffect(() => {
-    if (appStage === "demo" || !isConnected || !detailView || detailView.type !== "channel") return;
+    if (appStage === "demo" || !isConnected || !detailView) return;
     if (activeProcessorModule !== "sends") return;
-
-    syncChannelSendsState(detailView.channel).catch(() => {
-      // Keep the existing values when send sync fails transiently.
-    });
+    if (detailView.type === "channel") {
+      syncChannelSendsState(detailView.channel).catch(() => {});
+      return;
+    }
+    if (detailView.type === "digi") {
+      const [digiChL] = getDigiChannelNumbers();
+      syncChannelSendsState(digiChL).catch(() => {});
+    }
   }, [activeProcessorModule, detailView, isConnected]);
 
   useEffect(() => {
@@ -8725,6 +8781,20 @@ function App() {
       window.clearInterval(timer);
     };
   }, [channelCount, isConnected, isSyncing]);
+
+  // Periodic name refresh from mixer during operation (every ~30s).
+  // Colors sync via syncChannelPairVisualState; names need a separate slower cycle.
+  useEffect(() => {
+    if (appStage === "demo" || !isConnected || isSyncing) return;
+
+    const timer = window.setInterval(() => {
+      void syncAllStripNames({ forceFromMixer: false }).catch(() => {});
+    }, 30_000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [isConnected, isSyncing]);
 
   // Fake meter animation for demo mode — no hardware, just makes the UI feel alive.
   useEffect(() => {
@@ -12349,12 +12419,8 @@ function App() {
     if (appStage !== "demo") {
       const client = clientRef.current;
       if (!client) return;
-      // setNameByIndex(32/33) on AX32 writes to unexpected firmware slots (aliases ch25/26).
-      // Safe to write name only on AX16/24 where slot = digiChL-1 is verified to map to DIGI.
-      if (!isAx32ProfileActive()) {
-        client.setNameByIndex(chL - 1, mixerName);
-        client.setNameByIndex(chR - 1, mixerName);
-      }
+      client.setNameByIndex(chL - 1, mixerName);
+      client.setNameByIndex(chR - 1, mixerName);
       client.setChannelColor(chL, normalizedColorId);
       client.setChannelColor(chR, normalizedColorId);
     }
@@ -13214,12 +13280,12 @@ function App() {
   ): SendStripView[] {
     const mirrorLinkedChannels = options?.mirrorLinkedChannels === true;
 
-    return channels.map((channelState, index) => {
+    const channelStrips: SendStripView[] = channels.map((channelState, index) => {
       const channelNumber = index + 1;
       const [odd, even] = getChannelPair(channelNumber);
       const linkKey = pairKey(odd, even);
-      const id = `ch${channelNumber}`;
-      const oddId = `ch${odd}`;
+      const id = `ch${channelNumber}` as SendStripId;
+      const oddId = `ch${odd}` as SendStripId;
       const linked = Boolean(channelLinks[linkKey]);
       const useOddReference = mirrorLinkedChannels && linked && channelNumber === even;
       const valueRefId = useOddReference ? oddId : id;
@@ -13236,6 +13302,20 @@ function App() {
         isLinked: linked,
       };
     });
+
+    const digiStrip: SendStripView = {
+      id: "digi",
+      type: "channel",
+      colorId: digiChannels[0].colorId,
+      label: "DIGI",
+      name: digiChannels[0].channelName?.trim() || "DIGI",
+      contextLabel,
+      value: values["digi"] ?? 1200,
+      tapPoint: tapPoints["digi"] ?? "post",
+      isLinked: false,
+    };
+
+    return [...channelStrips, digiStrip];
   }
 
   function resolveAuxSendsViewSource(auxNumber: number) {
@@ -15949,6 +16029,12 @@ function App() {
 
     if (memberId === "MASTER_R") {
       updateMasterState({ rightMuted: muted });
+      return;
+    }
+
+    if (memberId === "DIGI") {
+      updateDigiChannelState(0, { muted });
+      updateDigiChannelState(1, { muted });
     }
   }
 
@@ -16884,9 +16970,9 @@ function App() {
           : mainView === "fxSends"
             ? renderGlobalSendsView("fx")
             : mainView === "dcaGroups"
-                ? <div className="global-view-shell"><DcaGroupsView isConnected={isConnected} channelCount={channelCount} groups={dcaGroups} onToggleEnabled={handleDcaGroupToggleEnabled} onMembersChange={handleDcaGroupMembersChange} onClear={handleDcaGroupClear} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} dcaNames={dcaNames} dcaColorIds={dcaColorIds} rawParamStore={rawParamStoreRef.current} domainSelectors={domainSelectors} /></div>
+                ? <div className="global-view-shell"><DcaGroupsView isConnected={isConnected} channelCount={channelCount} groups={dcaGroups} onToggleEnabled={handleDcaGroupToggleEnabled} onMembersChange={handleDcaGroupMembersChange} onClear={handleDcaGroupClear} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} dcaNames={dcaNames} dcaColorIds={dcaColorIds} digiName={digiChannels[0]?.channelName} digiColorId={digiChannels[0]?.colorId} rawParamStore={rawParamStoreRef.current} domainSelectors={domainSelectors} /></div>
             : mainView === "muteGroups"
-                ? <div className="global-view-shell"><MuteGroupsView isConnected={isConnected} channelCount={channelCount} groups={muteGroups} onToggleActive={handleMuteGroupToggleActive} onMembersChange={handleMuteGroupMembersChange} onClear={handleMuteGroupClear} onAllMuted={handleMuteGroupAllMuted} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} rawParamStore={rawParamStoreRef.current} domainSelectors={domainSelectors} /></div>
+                ? <div className="global-view-shell"><MuteGroupsView isConnected={isConnected} channelCount={channelCount} groups={muteGroups} onToggleActive={handleMuteGroupToggleActive} onMembersChange={handleMuteGroupMembersChange} onClear={handleMuteGroupClear} onAllMuted={handleMuteGroupAllMuted} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} digiName={digiChannels[0]?.channelName} digiColorId={digiChannels[0]?.colorId} rawParamStore={rawParamStoreRef.current} domainSelectors={domainSelectors} /></div>
             : mainView === "patching"
               ? <div className="global-view-shell"><PatchingView isConnected={isConnected} isAx32ProfileActive={isAx32ProfileActive()} channelCount={channelCount} usbInputToUsbRoutes={usbInputToUsbRoutes} usbReturnRoutes={usbReturnRoutes} inputRoutes={inputPatchRoutes} outputRoutes={outputPatchRoutes} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} onUsbInputToUsbRouteChange={handleUsbInputToUsbRouteChange} onUsbReturnRouteChange={handleUsbReturnRouteChange} onInputRouteChange={handleInputPatchRouteChange} onOutputRouteChange={handleOutputPatchRouteChange} onResetRecordPatchingDefaults={handleResetRecordPatchingDefaults} onResetPlayPatchingDefaults={handleResetPlayPatchingDefaults} resetBusy={patchingResetBusy} /></div>
             : mainView === "scenes"
