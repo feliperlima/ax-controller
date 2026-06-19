@@ -202,7 +202,13 @@ const AX32_FX_BASE = 4873;
 const AX32_FX_STRIDE = 22;
 const AX32_FX_SOLO_BASE = 4893;
 
-// AX16/24 FX preset (single shared selector for all presets).
+// AX16/24 FX preset selectors and controls — per-FX, stride 1 (preset) and 45 (controls).
+// FX1: preset=3097, controlA=2940, controlB=2941
+// FX2: preset=3098, controlA=2985, controlB=2986
+export const AX16_24_FX_PRESET_BASE = 3097;
+export const AX16_24_FX_CONTROL_BASE = 2940;
+export const AX16_24_FX_CONTROL_STRIDE = 45;
+// Keep legacy single-FX exports for backward compatibility.
 export const AX16_24_FX_PRESET_SELECTOR = 3097;
 export const AX16_24_FX_CONTROL_A = 2940;
 export const AX16_24_FX_CONTROL_B = 2941;
@@ -239,14 +245,15 @@ export function resolveFxSoloParams(model: MixerModel, fxNumber: number): { left
 
 export function resolveFxPresetSelectorParam(model: MixerModel, fxNumber: number): number {
   if (model === "AX32") return AX32_FX_PRESET_SELECTORS[fxNumber] ?? 5116;
-  return AX16_24_FX_PRESET_SELECTOR;
+  return AX16_24_FX_PRESET_BASE + (fxNumber - 1);
 }
 
 export function resolveFxControlParams(
   model: MixerModel, fxNumber: number
 ): { controlA: number; controlB: number } {
   if (model === "AX32") return AX32_FX_CONTROLS[fxNumber] ?? AX32_FX_CONTROLS[1];
-  return { controlA: AX16_24_FX_CONTROL_A, controlB: AX16_24_FX_CONTROL_B };
+  const base = AX16_24_FX_CONTROL_BASE + (fxNumber - 1) * AX16_24_FX_CONTROL_STRIDE;
+  return { controlA: base, controlB: base + 1 };
 }
 
 // ─── Master ─────────────────────────────────────────────────────────────────
@@ -386,8 +393,194 @@ export const DIGI_SOLO_AX16_24 = {
 
 // ─── Meter Parameters ─────────────────────────────────────────────────────────
 // For polling only; not sent to mixer.
-export const AUX_METER_BASE_AX16_24 = 2854;
-// 2868-2869 not present in EXE defaults table; 2849-2850 are best binary-analysis candidates
-export const FX_METER_BASE_AX16_24 = 2849;
+// AX16/24: confirmed by manual testing on AX24. Low-address packed params.
+export const AX16_24_AUX_METER_PARAMS = [43, 44, 45, 46] as const;
+export const AX16_24_FX_METER_PARAMS = [41, 42] as const;
+export const AX16_24_MASTER_METER_PARAM = 47;
+// Legacy aliases kept for backward compatibility during migration.
+export const AUX_METER_BASE_AX16_24 = 43;
+export const FX_METER_BASE_AX16_24 = 41;
 export const AX32_AUX_METER_PARAMS = [2854, 2855, 2856, 2857, 2858, 2859, 2860] as const;
 export const AX32_FX_METER_PARAMS = [2864, 2865, 2866, 2867] as const;
+
+// ─── Unified Mixer Profiles ───────────────────────────────────────────────────
+// Single source of truth for all model-specific constants.
+// All sync, polling, meters, names, and colors should derive from the active profile.
+
+export type MixerFxSlot = {
+  readonly fader: number;
+  readonly mute: number;
+  readonly soloL: number;
+  readonly soloR: number;
+  readonly presetSelector: number;
+  readonly controlA: number;
+  readonly controlB: number;
+};
+
+export type MixerProfile = {
+  readonly model: MixerModel;
+  readonly channels: {
+    readonly count: number;
+    readonly base: number;
+    readonly stride: number;
+  };
+  readonly digi: {
+    readonly left: number;   // 1-based internal channel number
+    readonly right: number;
+  };
+  readonly aux: {
+    readonly count: number;
+    readonly base: number;
+    readonly stride: number;
+  };
+  readonly fx: {
+    readonly count: number;
+    readonly slots: ReadonlyArray<MixerFxSlot>;
+  };
+  readonly dca: {
+    readonly count: number;
+    readonly base: number;
+    readonly stride: number;
+  };
+  readonly muteGroups: {
+    readonly count: number;
+    readonly base: number;
+    readonly stride: number;
+  };
+  readonly meters: {
+    readonly inputBase: number;
+    readonly auxParams: ReadonlyArray<number>;
+    readonly fxParams: ReadonlyArray<number>;
+    readonly masterParam: number;
+    readonly isPackedStereo: boolean;
+  };
+  readonly patching: {
+    readonly usbRecIn: { readonly base: number; readonly count: number };
+    readonly usbRecOut: { readonly base: number; readonly count: number };
+    readonly inputPatch: { readonly base: number; readonly count: number };
+    readonly outputPatch: { readonly base: number; readonly count: number };
+  };
+  readonly master: {
+    readonly left: { readonly fader: number; readonly mute: number };
+    readonly right: { readonly fader: number; readonly mute: number };
+  };
+  readonly links: {
+    readonly channelLink: number;
+    readonly outputLink: number;
+    readonly masterLinkBit: number;
+  };
+};
+
+export const PROFILE_AX16: MixerProfile = {
+  model: "AX16",
+  channels: { count: 16, base: 64, stride: 62 },
+  digi: { left: 25, right: 26 },
+  aux: { count: 8, base: 1676, stride: 109 },
+  fx: {
+    count: 2,
+    slots: [
+      { fader: 2899, mute: 2900, soloL: 2911, soloR: 2912, presetSelector: 3097, controlA: 2940, controlB: 2941 },
+      { fader: 2944, mute: 2945, soloL: 2956, soloR: 2957, presetSelector: 3098, controlA: 2985, controlB: 2986 },
+    ],
+  },
+  dca: { count: 4, base: 3019, stride: 9 },
+  muteGroups: { count: 4, base: 3057, stride: 5 },
+  meters: {
+    inputBase: 2,
+    auxParams: [43, 44, 45, 46],
+    fxParams: [41, 42],
+    masterParam: 47,
+    isPackedStereo: true,
+  },
+  patching: {
+    usbRecIn:   { base: 2783, count: 16 },
+    usbRecOut:  { base: 2799, count: 16 },
+    inputPatch: { base: 2863, count: 18 },  // CH1–16 + DIGI L/R
+    outputPatch: { base: 2889, count: 10 },
+  },
+  master: {
+    left:  { fader: 2548, mute: 2550 },
+    right: { fader: 2657, mute: 2659 },
+  },
+  links: { channelLink: 3055, outputLink: 3056, masterLinkBit: 16 },
+};
+
+export const PROFILE_AX24: MixerProfile = {
+  model: "AX24",
+  channels: { count: 24, base: 64, stride: 62 },
+  digi: { left: 25, right: 26 },
+  aux: { count: 8, base: 1676, stride: 109 },
+  fx: {
+    count: 2,
+    slots: [
+      { fader: 2899, mute: 2900, soloL: 2911, soloR: 2912, presetSelector: 3097, controlA: 2940, controlB: 2941 },
+      { fader: 2944, mute: 2945, soloL: 2956, soloR: 2957, presetSelector: 3098, controlA: 2985, controlB: 2986 },
+    ],
+  },
+  dca: { count: 4, base: 3019, stride: 9 },
+  muteGroups: { count: 4, base: 3057, stride: 5 },
+  meters: {
+    inputBase: 2,
+    auxParams: [43, 44, 45, 46],
+    fxParams: [41, 42],
+    masterParam: 47,
+    isPackedStereo: true,
+  },
+  patching: {
+    usbRecIn:   { base: 2783, count: 16 },
+    usbRecOut:  { base: 2799, count: 16 },
+    inputPatch: { base: 2863, count: 26 },  // CH1–24 + DIGI L/R
+    outputPatch: { base: 2889, count: 10 },
+  },
+  master: {
+    left:  { fader: 2548, mute: 2550 },
+    right: { fader: 2657, mute: 2659 },
+  },
+  links: { channelLink: 3055, outputLink: 3056, masterLinkBit: 16 },
+};
+
+export const PROFILE_AX32: MixerProfile = {
+  model: "AX32",
+  channels: { count: 32, base: 63, stride: 72 },
+  digi: { left: 33, right: 34 },
+  aux: { count: 14, base: 2890, stride: 109 },
+  fx: {
+    count: 4,
+    slots: [
+      { fader: 4873, mute: 4874, soloL: 4893, soloR: 4894, presetSelector: 5116, controlA: 2754, controlB: 2755 },
+      { fader: 4895, mute: 4896, soloL: 4915, soloR: 4916, presetSelector: 5117, controlA: 2785, controlB: 2786 },
+      { fader: 4917, mute: 4918, soloL: 4937, soloR: 4938, presetSelector: 5118, controlA: 2816, controlB: 2817 },
+      { fader: 4939, mute: 4940, soloL: 4959, soloR: 4960, presetSelector: 5119, controlA: 2847, controlB: 2848 },
+    ],
+  },
+  dca: { count: 8, base: 4991, stride: 9 },
+  muteGroups: { count: 6, base: 5064, stride: 5 },
+  meters: {
+    inputBase: 2,
+    auxParams: [2854, 2855, 2856, 2857, 2858, 2859, 2860],
+    fxParams: [2864, 2865, 2866, 2867],
+    masterParam: 47,
+    isPackedStereo: true,
+  },
+  patching: {
+    usbRecIn:   { base: 2533, count: 32 },
+    usbRecOut:  { base: 2565, count: 32 },
+    inputPatch: { base: 2693, count: 34 },  // CH1–32 + DIGI L/R
+    outputPatch: { base: 4855, count: 18 },
+  },
+  master: {
+    left:  { fader: 4634, mute: 4636 },
+    right: { fader: 4743, mute: 4745 },
+  },
+  links: { channelLink: 5108, outputLink: 5109, masterLinkBit: 256 },
+};
+
+export const MIXER_PROFILES: Readonly<Record<MixerModel, MixerProfile>> = {
+  AX16: PROFILE_AX16,
+  AX24: PROFILE_AX24,
+  AX32: PROFILE_AX32,
+};
+
+export function getMixerProfile(model: MixerModel): MixerProfile {
+  return MIXER_PROFILES[model];
+}

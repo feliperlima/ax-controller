@@ -243,6 +243,7 @@ fn parse_finder_html(html: &str) -> Vec<DiscoveredMixer> {
         .collect()
 }
 
+#[allow(dead_code)]
 fn parse_ipv4_from_ping_output(output: &str) -> Option<String> {
     let paren_or_bracket_regex = Regex::new(
         r"(?m)[\(\[](?P<ip>(?:\d{1,3}\.){3}\d{1,3})[\)\]]",
@@ -359,6 +360,7 @@ fn resolve_mac_from_arp(ip: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn resolve_finder_ip() -> Option<String> {
     let output = Command::new("ping")
         .args(["-c", "1", "findmixer.local"])
@@ -373,11 +375,13 @@ fn resolve_finder_ip() -> Option<String> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[allow(dead_code)]
 fn resolve_finder_ip() -> Option<String> {
     None
 }
 
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 fn resolve_finder_ip() -> Option<String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -396,6 +400,7 @@ fn resolve_finder_ip() -> Option<String> {
     parse_ipv4_from_ping_output(&stdout)
 }
 
+#[allow(dead_code)]
 async fn fetch_finder_html() -> Result<Option<String>, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(1600))
