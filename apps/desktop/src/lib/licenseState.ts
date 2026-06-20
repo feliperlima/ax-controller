@@ -47,6 +47,8 @@ export type RuntimeLicenseCache = {
   nextRevalidationAt: string | null;
   cachedState: LicenseFormalState;
   feedbackMessage?: string;
+  isFounder?: boolean;
+  featureFlags?: Record<string, boolean>;
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
