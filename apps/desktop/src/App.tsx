@@ -13999,6 +13999,10 @@ function App() {
               { id: "sends", label: "AUX MIX" },
             ]}
             sends={sendsView}
+            onOpenSendDetail={(send) => {
+              if (send.id === "digi") { setDetailView({ type: "digi" }); return; }
+              if (send.type === "channel") goToDetailChannel(Number(send.id.replace("ch", "")));
+            }}
             onModuleChange={setActiveProcessorModule}
             onGateChange={() => {}}
             onCompChange={(patch) => {
@@ -14344,6 +14348,10 @@ function App() {
                 presets: renderFxPresetsContent(),
               }}
               sends={sendsView}
+              onOpenSendDetail={(send) => {
+                if (send.id === "digi") { setDetailView({ type: "digi" }); return; }
+                if (send.type === "channel") goToDetailChannel(Number(send.id.replace("ch", "")));
+              }}
               onModuleChange={setActiveProcessorModule}
               onGateChange={() => {}}
               onCompChange={() => {}}
@@ -15780,6 +15788,10 @@ function App() {
                 { id: "sends", label: isAux ? "AUX MIX" : "SEND MIX" },
               ]}
               sends={sendsView}
+              onOpenSendDetail={(send) => {
+                if (send.id === "digi") { setDetailView({ type: "digi" }); return; }
+                if (send.type === "channel") goToDetailChannel(Number(send.id.replace("ch", "")));
+              }}
               onModuleChange={() => {}}
               onGateChange={() => {}}
               onCompChange={() => {}}
