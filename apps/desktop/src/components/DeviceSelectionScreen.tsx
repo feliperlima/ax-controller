@@ -107,11 +107,9 @@ function isValidIpv4(value: string): boolean {
 
 function KnownDeviceCard({
   mixer,
-  connectBusy,
   onConnect,
 }: {
   mixer: DiscoveredMixer;
-  connectBusy: boolean;
   onConnect: (mixer: DiscoveredMixer) => void;
 }) {
   const modelLabel = resolveMixerModelLabel(mixer);
@@ -145,7 +143,8 @@ function KnownDeviceCard({
         <button
           type="button"
           className="startup-button startup-button--secondary"
-          disabled={connectBusy}
+          disabled
+          title="Mesa da última sessão — não encontrada na rede. Atualize a busca para conectar."
           onClick={() => onConnect(mixer)}
         >
           Conectar
@@ -251,7 +250,6 @@ function DeviceSelectionPanelContent({
                   <KnownDeviceCard
                     key={mixer.id}
                     mixer={mixer}
-                    connectBusy={connectBusy}
                     onConnect={onConnectMixer}
                   />
                 ))
