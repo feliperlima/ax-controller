@@ -13,7 +13,7 @@ use std::process::Command;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
-use tungstenite::{connect, Message};
+use tungstenite::{connect, stream::MaybeTlsStream, Message};
 use uuid::Uuid;
 
 // Chave de autenticação do app compilada em tempo de build via AX_API_KEY env var.
@@ -579,113 +579,83 @@ fn decode_read_params_response(buffer: &[u8]) -> Vec<u16> {
 
 fn probe_channel_capacity_via_ws(ip: &str, timeout_ms: u64) -> Option<u16> {
     let request = format!("ws://{ip}:8088/");
-    eprintln!("[PROBE] Connecting to {}", request);
     let (mut socket, _) = connect(request.as_str()).ok()?;
-    eprintln!("[PROBE] Connected! Sending sentinel params...");
 
-    // Sentinelas por modelo:
-    // - AX16/24: 74 (CH1), 1066 (faixa CH17), 1500 (faixa CH24)
-    // - AX32: 4634/4743 (master faders), 4649/4758 (master EQ enable L/R)
+    // A mesa só responde aos params que o seu próprio modelo possui. Sentinelas:
+    // - AX16: 74 (CH1 mute) — porém este param EXISTE também no AX24, então não é
+    //   exclusivo: só confirma AX16 na AUSÊNCIA dos demais.
+    // - AX24: 1066 (CH17) e 1500 (CH24) — exclusivos do AX24 (AX16 não tem; não
+    //   alinham à grade stride-72 do AX32).
+    // - AX32: 4634/4743 (master faders), 4649/4758 (master EQ enable L/R).
+    //
+    // Read-timeout curto no stream para que socket.read() retorne entre frames e o
+    // laço consiga drenar TODAS as respostas dentro da janela antes de classificar
+    // UMA vez. Sem isso, o param compartilhado 74 chegando antes de 1066/1500 fazia
+    // um AX24/AX32 ser classificado como AX16 (early-return prematuro).
+    if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(60)));
+    }
+
     let packet = build_read_params_packet(&[74, 1066, 1500, 4634, 4743, 4649, 4758]);
     socket.send(Message::Binary(packet.into())).ok()?;
-    eprintln!("[PROBE] Packet sent, waiting for responses (timeout={}ms)...", timeout_ms);
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut observed_params = HashSet::<u16>::new();
-    let mut read_count = 0u32;
+
+    let ax32_hits = |hits: &HashSet<u16>| -> usize {
+        [4634u16, 4743, 4649, 4758]
+            .iter()
+            .filter(|param| hits.contains(param))
+            .count()
+    };
 
     let classify = |hits: &HashSet<u16>| -> Option<u16> {
-        let ax32_sentinels = [4634u16, 4743u16, 4649u16, 4758u16];
-        let ax24_sentinels = [1066u16, 1500u16];
-        let ax16_sentinel = 74u16;
-
-        let ax32_hits = ax32_sentinels
-            .iter()
-            .filter(|param| hits.contains(param))
-            .count();
-        let ax24_hits = ax24_sentinels
-            .iter()
-            .filter(|param| hits.contains(param))
-            .count();
-        let has_ax16 = hits.contains(&ax16_sentinel);
-
-        // Classificacao permissiva para discovery rapido (com timeout curto).
-        let has_ax32 = ax32_hits >= 2;
-        let has_ax24 = ax24_hits >= 1;
-
-        // Se múltiplos modelos responderam, usa o MAIOR (hierarquia: AX32 > AX24 > AX16)
-        // para resolver ambiguidade. Isso é válido porque a mesa AXIOS apenas tem
-        // os parâmetros do seu próprio modelo.
-        if has_ax32 {
-            eprintln!("[PROBE] AX32 detected (34 channels with DIGI) - {} sentinels matched", ax32_hits);
+        // Hierarquia AX32 > AX24 > AX16: se sentinelas de um modelo maior estão
+        // presentes, ele é autoritativo (a mesa só tem os params do seu modelo).
+        if ax32_hits(hits) >= 2 {
             return Some(34); // 32 + 2 DIGI stereo
         }
-
-        if has_ax24 {
-            eprintln!("[PROBE] AX24 detected (26 channels with DIGI) - {} sentinels matched", ax24_hits);
+        if [1066u16, 1500].iter().any(|param| hits.contains(param)) {
             return Some(26); // 24 + 2 DIGI stereo
         }
-
-        if has_ax16 {
-            eprintln!("[PROBE] AX16 detected (18 channels with DIGI)");
+        if hits.contains(&74u16) {
             return Some(18); // 16 + 2 DIGI stereo
         }
-
         None
     };
 
     while Instant::now() < deadline {
-        let message = match socket.read() {
-            Ok(message) => message,
-            Err(e) => {
-                eprintln!("[PROBE] Socket read error: {:?}", e);
-                break;
+        match socket.read() {
+            Ok(Message::Binary(data)) => {
+                for param in decode_read_params_response(&data) {
+                    observed_params.insert(param);
+                }
+                // AX32 é o topo da hierarquia: assim que confirmado, nenhum modelo
+                // maior pode chegar — pode retornar de imediato. AX24/AX16 precisam
+                // da janela inteira para garantir que params atrasados não cheguem.
+                if ax32_hits(&observed_params) >= 2 {
+                    let _ = socket.close(None);
+                    return Some(34);
+                }
             }
-        };
-
-        read_count += 1;
-        let payload = match message {
-            Message::Binary(data) => {
-                eprintln!("[PROBE] Read #{}: Got binary payload ({} bytes)", read_count, data.len());
-                data
-            },
-            Message::Close(_) => {
-                eprintln!("[PROBE] Socket closed by remote");
-                break;
-            },
-            _ => {
-                eprintln!("[PROBE] Read #{}: Got non-binary message (ignoring)", read_count);
+            Ok(Message::Close(_)) => break,
+            Ok(_) => continue,
+            Err(tungstenite::Error::Io(err))
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                // Sem dados nesta fatia do read-timeout: continua até o deadline.
                 continue;
             }
-        };
-
-        let decoded = decode_read_params_response(&payload);
-        eprintln!("[PROBE] Decoded {} params from payload", decoded.len());
-        
-        if decoded.is_empty() {
-            eprintln!("[PROBE] Decode returned empty (payload may be invalid)");
-            continue;
-        }
-
-        for param in decoded {
-            eprintln!("[PROBE]   - Observed param: {}", param);
-            observed_params.insert(param);
-        }
-        
-        eprintln!("[PROBE] Total observed params so far: {:?}", observed_params);
-
-        if let Some(channels) = classify(&observed_params) {
-            let _ = socket.close(None);
-            eprintln!("[PROBE] returning {}", channels);
-            return Some(channels);
+            Err(_) => break,
         }
     }
 
-    eprintln!("[PROBE] Timeout! Total reads: {}, observed params: {:?}", read_count, observed_params);
-
     let result = classify(&observed_params);
     let _ = socket.close(None);
-    eprintln!("[PROBE] final result: {:?}", result);
+    eprintln!("[PROBE] {} -> {:?} (params: {:?})", ip, result, observed_params);
     result
 }
 
@@ -876,7 +846,17 @@ async fn probe_mixer_ip(
     open_timeout_ms: u64,
     allow_http_only_fallback: bool,
 ) -> Option<DiscoveredMixer> {
-    let ws_online = is_ws_port_open(ip, open_timeout_ms);
+    // is_ws_port_open is a BLOCKING TcpStream::connect_timeout. Running it directly
+    // inside an async task occupies a tokio worker thread for the whole timeout, so
+    // concurrency would be capped at the worker-thread count (~CPU cores) no matter
+    // the chunk size. Offloading to the blocking pool lets dozens of port checks run
+    // in parallel, which is what makes the full subnet sweep fast.
+    let port_check_ip = ip.to_string();
+    let ws_online = tauri::async_runtime::spawn_blocking(move || {
+        is_ws_port_open(&port_check_ip, open_timeout_ms)
+    })
+    .await
+    .unwrap_or(false);
 
     if !ws_online && !allow_http_only_fallback {
         return None;
@@ -1021,7 +1001,9 @@ async fn discover_mixers_by_local_probe(preferred_ips: Option<Vec<String>>) -> R
     let mut found = HashMap::<String, DiscoveredMixer>::new();
 
     // Single fast pass: keeps discovery responsive and works well with periodic refresh.
-    for chunk in candidates.chunks(8) {
+    // Chunk wide (64) — the blocking port checks run on the blocking pool (see
+    // probe_mixer_ip), so real concurrency is no longer capped by worker threads.
+    for chunk in candidates.chunks(64) {
         let mut handles = Vec::with_capacity(chunk.len());
 
         for ip in chunk {
