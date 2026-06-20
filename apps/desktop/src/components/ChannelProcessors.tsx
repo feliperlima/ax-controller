@@ -427,8 +427,7 @@ function SendsEditor({
             style={{
               position: "absolute",
               left: 0,
-              bottom: 40,
-              transform: "translateY(2px)",
+              bottom: 36,
               width: 224,
               height: 4,
               borderRadius: "1px",
