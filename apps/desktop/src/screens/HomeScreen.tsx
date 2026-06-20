@@ -3,6 +3,7 @@ import axControlBrand from "../assets/AX-control-Brand-vert.svg";
 import type { LicenseFormalState } from "../lib/licenseState";
 import type { BootstrapMessage, BootstrapVersionInfo } from "../services/bootstrapService";
 import { useFeatureFlag } from "../services/featureFlags";
+import { EarlyAccessModal } from "./EarlyAccessModal";
 
 // ── Inline SVG icons ──────────────────────────────────────────────────────────
 
@@ -305,6 +306,7 @@ type HomeScreenProps = {
 };
 
 export function HomeScreen({
+  version,
   licenseFormalState,
   licenseTrialExpiryAt,
   isFounder = null,
@@ -331,6 +333,19 @@ export function HomeScreen({
   const firstName = userName.trim().split(/\s+/)[0] ?? "";
 
   const showIemBanner = useFeatureFlag("feature_iem_banner");
+
+  const [eaOpen, setEaOpen] = useState(false);
+  const eaPlan = isFounder
+    ? "founder"
+    : licenseFormalState === "PURCHASED_ACTIVE" || licenseFormalState === "PURCHASED_REVALIDATION_DUE"
+      ? "plus"
+      : licenseFormalState === "TRIAL_ACTIVE"
+        ? "trial"
+        : licenseFormalState === "TRIAL_EXPIRED"
+          ? "trial_expired"
+          : "free";
+  const eaDefaultRole: "operador" | "musico" =
+    eaPlan === "founder" || eaPlan === "plus" ? "operador" : "musico";
 
   const visibleMessages = messages.filter((m) => !dismissedBanners.has(m.key));
 
@@ -496,17 +511,29 @@ export function HomeScreen({
                 <ActionCard
                   variant="purple"
                   icon={<IconHeadphones size={24} />}
-                  title="Monitor Pessoal (IEM)"
-                  description="Cada músico no controle da sua própria mix de fone de ouvido."
+                  title="Monitor Pessoal"
+                  description="Cada músico ajusta a própria mix de retorno. O operador continua no controle da mesa."
                   buttonLabel="Avise-me"
                   buttonIcon={<IconBell size={16} />}
                   badge="Em breve"
+                  onClick={() => setEaOpen(true)}
                 />
               )}
             </div>
           </>
         )}
       </main>
+      {eaOpen && (
+        <EarlyAccessModal
+          defaultName={userName}
+          defaultEmail={userEmail}
+          defaultRole={eaDefaultRole}
+          plan={eaPlan}
+          appVersion={version}
+          source="home_card"
+          onClose={() => setEaOpen(false)}
+        />
+      )}
     </div>
   );
 }
