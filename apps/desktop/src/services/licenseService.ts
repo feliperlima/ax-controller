@@ -58,6 +58,7 @@ export type RegisterParams = {
   confirmPassword?: string;
   installationId: string;
   wantsUpgrade: boolean;
+  appVersion?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -519,6 +520,7 @@ export async function apiRegisterLicense(params: RegisterParams): Promise<Regist
     device_name: getDeviceNameLabel(),
     device_platform: getPlatformLabel(),
     wants_upgrade: params.wantsUpgrade,
+    app_version: params.appVersion ?? "",
   };
 
   const confirm = params.confirmPassword?.trim();

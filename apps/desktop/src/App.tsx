@@ -9721,6 +9721,7 @@ function App() {
       confirmPassword: licenseRegisterConfirmPassword,
       installationId: installationId ?? "",
       wantsUpgrade,
+      appVersion: APP_VERSION,
     });
   }
 

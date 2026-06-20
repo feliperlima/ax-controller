@@ -175,12 +175,12 @@ export const MASTER = {
     fader: 2548,
     mute: 2550,
 
-    compEnabled: 2554,
-    compRatio: 2555,
-    compAttack: 2556,
-    compRelease: 2557,
-    compThreshold: 2558,
-    compGain: 2559,
+    compEnabled: 2552,
+    compRatio: 2553,
+    compAttack: 2554,
+    compRelease: 2555,
+    compThreshold: 2556,
+    compGain: 2557,
 
     eqEnabled: 2563,
     hpfTypeSlope: 2565,
@@ -194,12 +194,12 @@ export const MASTER = {
     fader: 2657,
     mute: 2659,
 
-    compEnabled: 2663,
-    compRatio: 2664,
-    compAttack: 2665,
-    compRelease: 2666,
-    compThreshold: 2667,
-    compGain: 2668,
+    compEnabled: 2661,
+    compRatio: 2662,
+    compAttack: 2663,
+    compRelease: 2664,
+    compThreshold: 2665,
+    compGain: 2666,
 
     eqEnabled: 2672, // Hipótese: confirmar contra a mesa.
     hpfTypeSlope: 2674,
