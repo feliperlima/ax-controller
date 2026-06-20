@@ -2,7 +2,8 @@ import { useMemo, useRef } from "react";
 import { Knob } from "./Knob";
 import { VerticalFader } from "./VerticalFader";
 import { MeterBar, MeterScale } from "./Meter";
-import { eqMagnitudeDb, type EqState } from "./ChannelProcessors";
+import { eqMagnitudeDb, type EqState, type CompressorState } from "./ChannelProcessors";
+import { useCompressorMeters } from "../hooks/useCompressorMeters";
 import { stripColorForScope, type StripColorScope } from "./stripColor";
 import { useRawParamSelector } from "../hooks/useRawParamSelector";
 import type { UniversalRawParamStore } from "../lib/universalRawParamStore";
@@ -28,6 +29,7 @@ export type ChannelStripProps = {
   clipped: boolean;
   disabled?: boolean;
   eqState?: EqState;
+  compState?: CompressorState;
   onToggleMute: () => void;
   onToggleSolo: () => void;
   onTogglePhantom: () => void;
@@ -113,6 +115,48 @@ function buildEqPreview(eq: EqState, width: number, height: number, pointCount =
   return { points, zeroY };
 }
 
+// Indicador de redução de ganho do compressor (GR), embaixo do EQ preview.
+// GR é calculado (não há param de GR por canal): inputDb real + threshold/ratio/attack/release.
+function ChannelCompBar({ meterDb, comp }: { meterDb: number; comp: CompressorState }) {
+  const { visualGainReductionDb } = useCompressorMeters({
+    inputDb: meterDb,
+    thresholdDb: comp.threshold,
+    ratio: comp.ratio,
+    attackMs: comp.attack,
+    releaseMs: comp.release,
+    makeupDb: comp.gain,
+    enabled: comp.enabled,
+  });
+  // GR 0..12 dB -> 0..100% (indicador sensível; 12 dB = barra cheia)
+  const fill = Math.max(0, Math.min(1, visualGainReductionDb / 12));
+  return (
+    <div
+      title="Compressor — redução de ganho"
+      style={{
+        width: "100%",
+        height: 6,
+        minHeight: 6,
+        flexShrink: 0,
+        marginTop: 4,
+        borderRadius: 3,
+        background: "rgba(0,0,0,0.55)",
+        overflow: "hidden",
+        opacity: comp.enabled ? 1 : 0.35,
+      }}
+    >
+      <div
+        style={{
+          width: `${(fill * 100).toFixed(1)}%`,
+          height: "100%",
+          borderRadius: 3,
+          background: "#a855f7",
+          transition: "width 70ms linear",
+        }}
+      />
+    </div>
+  );
+}
+
 export function ChannelStrip({
   channel = 1,
   channelName,
@@ -133,6 +177,7 @@ export function ChannelStrip({
   clipped,
   disabled = false,
   eqState,
+  compState,
   onToggleMute,
   onToggleSolo,
   onTogglePhantom,
@@ -326,6 +371,8 @@ export function ChannelStrip({
           )}
         </div>
       )}
+
+      {compState && <ChannelCompBar meterDb={meterDb} comp={compState} />}
 
       {canToggleInputSource && (
         <div
