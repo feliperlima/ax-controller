@@ -14683,11 +14683,6 @@ function App() {
               clippedL={mainMasterMeter.leftClipUntil > Date.now()}
               clippedR={mainMasterMeter.rightClipUntil > Date.now()}
               disabled={!isConnected && appStage !== "demo"}
-              muteGroups={getMuteIdsForActiveProfile().map((id) => ({
-                id,
-                active: muteGroups[id - 1]?.active ?? false,
-              }))}
-              onToggleMuteGroup={(id) => handleMuteGroupToggleActive(id as MuteGroupId)}
               onToggleMainMute={toggleMainMasterMute}
               onToggleMainSolo={toggleMainMasterSolo}
               onToggleLeftMute={toggleMasterLeftMute}
