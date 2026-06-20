@@ -118,6 +118,12 @@ import {
   setBitmaskProtocolProfile,
 } from "./protocol/duonn/bitmask";
 import {
+  getMixerProfile,
+  PROFILE_AX16,
+  type MixerProfile,
+  type MixerModel,
+} from "./protocol/duonn/protocolAddressing";
+import {
   buildClearDcaMembersMessages,
   buildClearMuteGroupMembersMessages,
   buildSetDcaEnabledMessages,
@@ -294,7 +300,17 @@ const AX32_AUX_METER_PARAMS = [2854, 2855, 2856, 2857, 2858, 2859, 2860];
 const AX32_FX_METER_PARAMS = [2864, 2865, 2866, 2867];
 
 let ACTIVE_CHANNEL_PROFILE: AxiosProtocolProfile = "ax16_24";
-let ACTIVE_CHANNEL_COUNT = 24;
+let ACTIVE_MIXER_PROFILE: MixerProfile = PROFILE_AX16;
+
+function channelCountToMixerModel(count: number): MixerModel {
+  if (count >= 32) return "AX32";
+  if (count >= 24) return "AX24";
+  return "AX16";
+}
+
+function getActiveProfile(): MixerProfile {
+  return ACTIVE_MIXER_PROFILE;
+}
 const ENABLE_SEMANTIC_SET_CHANNEL_FADER_PILOT = true;
 const ENABLE_SEMANTIC_SET_CHANNEL_MUTE_PILOT = true;
 
@@ -443,16 +459,12 @@ function channelCountToProtocolProfile(channels: number): AxiosProtocolProfile {
   return channels >= AX32_CHANNEL_COUNT ? "ax32" : "ax16_24";
 }
 
-function isAx32ProfileActive() {
-  return isAx32ProtocolProfile(ACTIVE_CHANNEL_PROFILE);
-}
-
 function getAuxBusCount() {
-  return isAx32ProfileActive() ? AX32_AUX_COUNT : AX16_24_AUX_COUNT;
+  return getActiveProfile().aux.count;
 }
 
 function getFxBusCount() {
-  return isAx32ProfileActive() ? AX32_FX_COUNT : AX16_24_FX_COUNT;
+  return getActiveProfile().fx.count;
 }
 
 type AuxFxMeterConfig = {
@@ -479,20 +491,22 @@ const AUX_FX_METER_CONFIGS: Record<"ax16_24" | "ax32", AuxFxMeterConfig> = {
 };
 
 function getAuxFxMeterConfig(): AuxFxMeterConfig {
-  return isAx32ProfileActive() ? AUX_FX_METER_CONFIGS.ax32 : AUX_FX_METER_CONFIGS.ax16_24;
+  return getActiveProfile().model === "AX32" ? AUX_FX_METER_CONFIGS.ax32 : AUX_FX_METER_CONFIGS.ax16_24;
 }
 
-/** AX16/24: ch25=L, ch26=R. AX32: ch33=L, ch34=R. */
 function getDigiChannelNumbers(): [number, number] {
-  return isAx32ProfileActive() ? [33, 34] : [25, 26];
+  const p = getActiveProfile();
+  return [p.digi.left, p.digi.right];
 }
 
 function getDcaIdsForActiveProfile(): DcaGroupId[] {
-  return isAx32ProtocolProfile(ACTIVE_CHANNEL_PROFILE) ? [1, 2, 3, 4, 5, 6, 7, 8] : [1, 2, 3, 4];
+  const count = getActiveProfile().dca.count;
+  return Array.from({ length: count }, (_, i) => (i + 1) as DcaGroupId);
 }
 
 function getMuteIdsForActiveProfile(): MuteGroupId[] {
-  return isAx32ProtocolProfile(ACTIVE_CHANNEL_PROFILE) ? [1, 2, 3, 4, 5, 6] : [1, 2, 3, 4];
+  const count = getActiveProfile().muteGroups.count;
+  return Array.from({ length: count }, (_, i) => (i + 1) as MuteGroupId);
 }
 
 function faderPositionToDb(position: number) {
@@ -627,30 +641,24 @@ function createDefaultMonitorSoloMeterState(): MonitorSoloMeterState {
 }
 
 function channelParam(channel: number, base: number) {
-  if (isAx32ProfileActive()) {
+  if (getActiveProfile().model === "AX32") {
     const translatedBase = AX32_CHANNEL_BASE_MAP[base] ?? base;
     return translatedBase + (channel - 1) * AX32_CHANNEL_STRIDE;
   }
 
-  return base + (channel - 1) * 62;
+  return base + (channel - 1) * getActiveProfile().channels.stride;
 }
 
-// AX16/AX24: param = 2849 + channelIndex (0-based) = 2848 + channel (1-based).
-//   CH1 → 2849, CH2 → 2850, ..., CH24 → 2872.
+// AX16/AX24: param = 2848 + channel (1-based). CH1 → 2849, ..., CH24 → 2872.
 //   Indexed directly by channel — no patch map indirection.
 // AX32: param = 2660 + usbReturnSlot (1-based slot from Record Out To Channel map).
-//   Slot 1 → 2661, slot 2 → 2662, ..., slot 32 → 2692.
 //   slotOrChannel must come from resolveInputSourceControlChannel(), NOT from channelNumber directly.
 function inputSourceParam(slotOrChannel: number) {
-  return isAx32ProfileActive() ? 2660 + slotOrChannel : 2848 + slotOrChannel;
+  return getActiveProfile().inputSource.base + slotOrChannel;
 }
 
 function channelColorParam(channel: number) {
-  if (isAx32ProfileActive()) {
-    return 5131 + channel - 1;
-  }
-
-  return 3110 + channel - 1;
+  return getActiveProfile().colors.channelBase + channel - 1;
 }
 
 function valueToColorId(value: number) {
@@ -663,141 +671,37 @@ function channelColorBadgeBackground(colorId: number) {
   return `var(--channel-${String(normalized).padStart(2, "0")}, #c96626)`;
 }
 
-const MASTER_PARAMS_AX16 = {
-  leftFader: 2548,
-  leftMute: 2550,
-  rightFader: 2657,
-  rightMute: 2659,
-  leftColor: 3146,
-  rightColor: 3147,
-};
-
-const MASTER_PARAMS_AX24 = {
-  leftFader: 2548,
-  leftMute: 2550,
-  rightFader: 2657,
-  rightMute: 2659,
-  leftColor: 3154,
-  rightColor: 3155,
-};
-
-const MASTER_PARAMS_AX32 = {
-  leftFader: 4634,
-  leftMute: 4636,
-  rightFader: 4743,
-  rightMute: 4745,
-  leftColor: 5185,
-  rightColor: 5186,
-};
-
 function getMasterParams() {
-  if (isAx32ProfileActive()) return MASTER_PARAMS_AX32;
-  if (ACTIVE_CHANNEL_COUNT <= 16) return MASTER_PARAMS_AX16;
-  return MASTER_PARAMS_AX24;
+  const p = getActiveProfile();
+  return {
+    leftFader:  p.master.left.fader,
+    leftMute:   p.master.left.mute,
+    rightFader: p.master.right.fader,
+    rightMute:  p.master.right.mute,
+    leftColor:  p.master.left.colorParam,
+    rightColor: p.master.right.colorParam,
+  };
 }
-
-const MASTER_PROCESSOR_PARAMS_AX16_24 = {
-  compEnabled: 2552,
-  compRatio: 2553,
-  compAttack: 2554,
-  compRelease: 2555,
-  compThreshold: 2556,
-  compGain: 2557,
-  eqEnabled: 2561,
-  hpfTypeSlope: 2563,
-  hpfFreq: 2564,
-  lpfTypeSlope: 2565,
-  lpfFreq: 2566,
-  eqBandBase: 2568,
-};
-
-const MASTER_PROCESSOR_PARAMS_AX32_LEFT = {
-  compEnabled: 4638,
-  compRatio: 4639,
-  compAttack: 4640,
-  compRelease: 4641,
-  compThreshold: 4642,
-  compGain: 4643,
-  eqEnabled: 4649,
-  hpfTypeSlope: 4651,
-  hpfFreq: 4652,
-  lpfTypeSlope: 4653,
-  lpfFreq: 4654,
-  eqBandBase: 4656,
-};
-
-const MASTER_PROCESSOR_AX32_SIDE_STRIDE = 109;
 
 function masterProcessorParams(side: "left" | "right" = "left") {
-  if (!isAx32ProfileActive()) {
-    return MASTER_PROCESSOR_PARAMS_AX16_24;
-  }
-
-  if (side === "right") {
-    const offset = MASTER_PROCESSOR_AX32_SIDE_STRIDE;
-    return {
-      compEnabled: MASTER_PROCESSOR_PARAMS_AX32_LEFT.compEnabled + offset,
-      compRatio: MASTER_PROCESSOR_PARAMS_AX32_LEFT.compRatio + offset,
-      compAttack: MASTER_PROCESSOR_PARAMS_AX32_LEFT.compAttack + offset,
-      compRelease: MASTER_PROCESSOR_PARAMS_AX32_LEFT.compRelease + offset,
-      compThreshold: MASTER_PROCESSOR_PARAMS_AX32_LEFT.compThreshold + offset,
-      compGain: MASTER_PROCESSOR_PARAMS_AX32_LEFT.compGain + offset,
-      eqEnabled: MASTER_PROCESSOR_PARAMS_AX32_LEFT.eqEnabled + offset,
-      hpfTypeSlope: MASTER_PROCESSOR_PARAMS_AX32_LEFT.hpfTypeSlope + offset,
-      hpfFreq: MASTER_PROCESSOR_PARAMS_AX32_LEFT.hpfFreq + offset,
-      lpfTypeSlope: MASTER_PROCESSOR_PARAMS_AX32_LEFT.lpfTypeSlope + offset,
-      lpfFreq: MASTER_PROCESSOR_PARAMS_AX32_LEFT.lpfFreq + offset,
-      eqBandBase: MASTER_PROCESSOR_PARAMS_AX32_LEFT.eqBandBase + offset,
-    };
-  }
-
-  return MASTER_PROCESSOR_PARAMS_AX32_LEFT;
+  const proc = getActiveProfile().master.processor;
+  return (side === "right" ? proc.right : undefined) ?? proc.left;
 }
 
-const FX_COLOR_BASE_AX32 = 5165;
-const AUX_COLOR_BASE_AX32 = 5169;
-
 function fxColorParam(fx: number) {
-  if (isAx32ProfileActive()) {
-    return FX_COLOR_BASE_AX32 + fx - 1;
-  }
-  // AX16: fxBase=0x12=18, AX24: fxBase=0x1A=26 — both share colorBaseParam 3110
-  const fxBase = ACTIVE_CHANNEL_COUNT <= 16 ? 0x12 : 0x1A;
-  return 3110 + fxBase + fx - 1;
+  return getActiveProfile().colors.fxBase + fx - 1;
 }
 
 function auxColorParam(aux: number) {
-  if (isAx32ProfileActive()) return AUX_COLOR_BASE_AX32 + aux - 1;
-  // AX16: auxBase=0x14=20, AX24: auxBase=0x1C=28 — both share colorBaseParam 3110
-  const auxBase = ACTIVE_CHANNEL_COUNT <= 16 ? 0x14 : 0x1C;
-  return 3110 + auxBase + aux - 1;
+  return getActiveProfile().colors.auxBase + aux - 1;
 }
 
-function getFxStateParams(fxNumber: number): {
-  fader: number;
-  mute: number;
-} {
+function getFxStateParams(fxNumber: number): { fader: number; mute: number } {
   const fx = Math.round(fxNumber);
-  const maxFx = getFxBusCount();
-
-  if (fx < 1 || fx > maxFx) {
-    throw new Error(`FX invalido. Use valores de 1 a ${maxFx}.`);
-  }
-
-  if (isAx32ProfileActive()) {
-    const base = 4873 + (fx - 1) * 22;
-    return {
-      fader: base,
-      mute: base + 1,
-    };
-  }
-
-  const table: Record<number, { fader: number; mute: number }> = {
-    1: { fader: 2899, mute: 2900 },
-    2: { fader: 2944, mute: 2945 },
-  };
-
-  return table[fx];
+  const p = getActiveProfile();
+  if (fx < 1 || fx > p.fx.count) throw new Error(`FX invalido. Use valores de 1 a ${p.fx.count}.`);
+  const slot = p.fx.slots[fx - 1];
+  return { fader: slot.fader, mute: slot.mute };
 }
 
 type FxProcessorParams = {
@@ -821,17 +725,11 @@ type FxProcessorParams = {
 };
 
 function getFxProcessorParams(fxNumber: number): FxProcessorParams | undefined {
-  if (!isAx32ProfileActive()) {
-    return undefined;
-  }
-
   const fx = Math.round(fxNumber);
-  if (fx < 1 || fx > 4) {
-    return undefined;
-  }
-
-  // AX32 FX EQ block confirmed from mesa logs. FX buses use stride 31.
-  const base = 2727 + (fx - 1) * 31;
+  const p = getActiveProfile();
+  if (fx < 1 || fx > p.fx.count) return undefined;
+  const base = p.fx.slots[fx - 1].processorBase;
+  if (base === undefined) return undefined;
   return {
     eqEnabled: base,
     hpfTypeSlope: base + 2,
@@ -854,34 +752,10 @@ function getFxProcessorParams(fxNumber: number): FxProcessorParams | undefined {
 }
 
 function getFxPresetParams(fxNumber: number) {
-  if (!isAx32ProfileActive()) {
-    return {
-      preset: 3097,
-      controlA: 2940,
-      controlB: 2941,
-    };
-  }
-
-  const fx = Math.max(1, Math.min(4, Math.round(fxNumber)));
-  const ax32SelectorMap: Record<number, number> = {
-    1: 5116,
-    2: 5117,
-    3: 5118,
-    4: 5119,
-  };
-  // Control A/B were capture-confirmed on AX32 and align with +31 stride across FX blocks.
-  const ax32ControlMap: Record<number, { controlA: number; controlB: number }> = {
-    1: { controlA: 2754, controlB: 2755 },
-    2: { controlA: 2785, controlB: 2786 },
-    3: { controlA: 2816, controlB: 2817 },
-    4: { controlA: 2847, controlB: 2848 },
-  };
-
-  return {
-    preset: ax32SelectorMap[fx],
-    controlA: ax32ControlMap[fx].controlA,
-    controlB: ax32ControlMap[fx].controlB,
-  };
+  const p = getActiveProfile();
+  const fx = Math.max(1, Math.min(p.fx.count, Math.round(fxNumber)));
+  const slot = p.fx.slots[fx - 1];
+  return { preset: slot.presetSelector, controlA: slot.controlA, controlB: slot.controlB };
 }
 
 function warnIfProtocolProfilesOutOfSync(context: string) {
@@ -989,18 +863,6 @@ function shouldPrioritizeLocalControl(target: EventTarget | null) {
 }
 
 
-const AUX_MASTER_FADER_PARAMS: Record<number, number> = {
-  1: 1676,
-  2: 1785,
-  3: 1894,
-  4: 2003,
-  5: 2112,
-  6: 2221,
-  7: 2330,
-  8: 2438,
-};
-
-const AUX_BLOCK_STARTS = AUX_MASTER_FADER_PARAMS;
 const AUX_BLOCK_SIZE = 109;
 const DEFAULT_AUX_COLOR_ID = 8;
 const DEFAULT_FX_COLOR_ID = 7;
@@ -1429,7 +1291,7 @@ function stripLinkedNameSuffix(name: string) {
 }
 
 function getChannelLinkFlag(pairOdd: number, linked: boolean) {
-  if (isAx32ProfileActive()) {
+  if (getActiveProfile().model === "AX32") {
     if (!linked) return 0;
     return Math.max(1, Math.floor((pairOdd + 1) / 2));
   }
@@ -1441,15 +1303,15 @@ function getChannelLinkFlag(pairOdd: number, linked: boolean) {
 }
 
 function getChannelLinkParam() {
-  return isAx32ProfileActive() ? 5108 : 3055;
+  return getActiveProfile().links.channelLink;
 }
 
 function getLinkMaskParam() {
-  return isAx32ProfileActive() ? 5109 : 3056;
+  return getActiveProfile().links.outputLink;
 }
 
 function getMasterLinkBit() {
-  return isAx32ProfileActive() ? 256 : 16;
+  return getActiveProfile().links.masterLinkBit;
 }
 
 function isUsbInputSelectedFromRaw(rawValue: number) {
@@ -1461,56 +1323,39 @@ function rawValueFromUsbInputSelected(usbSelected: boolean) {
 }
 
 function auxBlockStart(aux: number) {
-  if (isAx32ProfileActive()) {
-    return 2890 + (aux - 1) * 109;
-  }
-
-  return AUX_BLOCK_STARTS[aux];
+  const p = getActiveProfile();
+  return p.aux.base + (aux - 1) * p.aux.stride;
 }
 
 function auxSoloLeftParam(aux: number) {
-  if (isAx32ProfileActive()) {
-    return 2902 + (aux - 1) * 109;
-  }
-
-  return 1688 + (aux - 1) * 109;
+  const p = getActiveProfile();
+  return p.aux.base + (aux - 1) * p.aux.stride + 12;
 }
 
 function auxMuteParam(aux: number) {
-  if (isAx32ProfileActive()) {
-    return 2892 + (aux - 1) * 109;
-  }
-
-  return 1678 + (aux - 1) * 109;
+  const p = getActiveProfile();
+  return p.aux.base + (aux - 1) * p.aux.stride + 2;
 }
 
 function fxSoloLeftParam(fx: number) {
-  if (isAx32ProfileActive()) {
-    return 4893 + (fx - 1) * 22;
-  }
-
-  const table: Record<number, number> = {
-    1: 2911,
-    2: 2956,
-  };
-
-  return table[fx] ?? 2911;
+  const p = getActiveProfile();
+  return p.fx.slots[Math.max(0, fx - 1)]?.soloL ?? p.fx.slots[0].soloL;
 }
 
 function masterSoloLeftParam() {
-  return isAx32ProfileActive() ? 4646 : 1575;
+  return getActiveProfile().master.left.soloL;
 }
 
 function masterSoloRightParam() {
-  return isAx32ProfileActive() ? 4755 : 1637;
+  return getActiveProfile().master.right.soloL;
 }
 
 function masterSoloAuxLeftParam() {
-  return isAx32ProfileActive() ? 4647 : 1576;
+  return getActiveProfile().master.left.soloR;
 }
 
 function masterSoloAuxRightParam() {
-  return isAx32ProfileActive() ? 4756 : 1638;
+  return getActiveProfile().master.right.soloR;
 }
 
 const AUX_LINK_BITS: Record<number, number> = {
@@ -1566,16 +1411,6 @@ const AX16_24_BATCH_CHANNEL_CHUNK = 30;
 const AX16_24_BATCH_AUX_CHUNK = 28;
 const AX16_24_FAST_CHANNEL_CHUNK = 34;
 const SEND_PRE_FADER_FLAG = 32768;
-const AX32_INPUT_PATCH_BASE = 2693;
-const AX32_INPUT_PATCH_SIZE = 34;
-const AX32_INPUT_PATCH_VISIBLE_SIZE = 32;
-const AX32_USB_INPUT_PATCH_BASE = 2533;
-const AX32_USB_INPUT_PATCH_SIZE = 32;
-const AX32_USB_RETURN_PATCH_BASE = 2565;
-const AX32_USB_RETURN_PATCH_SIZE = 32;
-const AX32_OUTPUT_PATCH_BASE = 4855;
-const AX32_OUTPUT_PATCH_SIZE = 18;
-const AX32_OUTPUT_PATCH_VISIBLE_SIZE = 14;
 const FX_RETURN_MAPPING: Readonly<{ available: false; reason: string }> = {
   available: false,
   reason: "TODO(types): mapear parametros reais de retorno de FX (level/mute/pan) antes de habilitar controle.",
@@ -1658,15 +1493,15 @@ function encodeSendRawValue(value: number, tapPoint: SendTapPoint) {
 }
 
 function sendIdToParam(channel: number, id: SendStripId) {
-  const channelOffset = (channel - 1) * (isAx32ProfileActive() ? AX32_CHANNEL_STRIDE : 62);
+  const p = getActiveProfile();
+  const channelOffset = (channel - 1) * p.channels.stride;
 
   if (id.startsWith("fx")) {
     const fxNumber = Number(id.replace("fx", ""));
-    const maxFx = getFxBusCount();
-    if (!Number.isFinite(fxNumber) || fxNumber < 1 || fxNumber > maxFx) {
+    if (!Number.isFinite(fxNumber) || fxNumber < 1 || fxNumber > p.fx.count) {
       throw new Error(`FX send inválido para o perfil atual: ${id}`);
     }
-    const base = isAx32ProfileActive()
+    const base = p.model === "AX32"
       ? FX_SEND_BASES_AX32[fxNumber]
       : FX_SEND_BASES_AX16_24[fxNumber];
 
@@ -1682,7 +1517,7 @@ function sendIdToParam(channel: number, id: SendStripId) {
   if (!Number.isFinite(auxNumber) || auxNumber < 1 || auxNumber > maxAux) {
     throw new Error(`AUX send inválido para o perfil atual: ${id}`);
   }
-  const base = isAx32ProfileActive()
+  const base = getActiveProfile().model === "AX32"
     ? 75 + auxNumber // AUX1..14 -> 76..89
     : AUX_SEND_BASES_AX16_24[auxNumber];
 
@@ -1725,7 +1560,7 @@ function isDefaultMixerName(target: NameTarget, mixerName: string) {
   }
 
   if (target.type === "aux") {
-    const ax32CompactAlias = isAx32ProfileActive() && target.aux >= 10
+    const ax32CompactAlias = getActiveProfile().model === "AX32" && target.aux >= 10
       ? `AX${target.aux}`
       : null;
 
@@ -1758,7 +1593,7 @@ function getDefaultDisplayName(target: NameTarget) {
 function getDefaultMixerAlias(target: NameTarget) {
   if (target.type === "channel") return `CH${target.channel}`;
   if (target.type === "aux") {
-    if (isAx32ProfileActive() && target.aux >= 10) {
+    if (getActiveProfile().model === "AX32" && target.aux >= 10) {
       return `AX${target.aux}`;
     }
 
@@ -2203,12 +2038,13 @@ function processorParams(channelNumber: number) {
 
 function auxProcessorParams(auxNumber: number) {
   const aux = Math.round(auxNumber);
+  const p = getActiveProfile();
 
-  if (isAx32ProfileActive()) {
-    const base = 2890 + (aux - 1) * 109;
+  if (p.model === "AX32") {
+    const base = p.aux.base + (aux - 1) * p.aux.stride;
 
-    if (aux < 1 || aux > AX32_AUX_COUNT) {
-      throw new Error("AUX invalido. Use valores de 1 a 14.");
+    if (aux < 1 || aux > p.aux.count) {
+      throw new Error(`AUX invalido. Use valores de 1 a ${p.aux.count}.`);
     }
 
     const params = {
@@ -2708,16 +2544,16 @@ function App() {
   const [patchingResetBusy, setPatchingResetBusy] = useState(false);
   const [settingsDropdownOpen, setSettingsDropdownOpen] = useState(false);
   const [inputPatchRoutes, setInputPatchRoutes] = useState<number[]>(() =>
-    createIdentityRoutes(AX32_INPUT_PATCH_VISIBLE_SIZE)
+    createIdentityRoutes(getActiveProfile().patching.inputPatch.visibleCount)
   );
   const [outputPatchRoutes, setOutputPatchRoutes] = useState<number[]>(() =>
-    createIdentityRoutes(AX32_OUTPUT_PATCH_VISIBLE_SIZE)
+    createIdentityRoutes(getActiveProfile().patching.outputPatch.visibleCount)
   );
   const [usbInputToUsbRoutes, setUsbInputToUsbRoutes] = useState<number[]>(() =>
-    createIdentityRoutes(AX32_INPUT_PATCH_VISIBLE_SIZE)
+    createIdentityRoutes(getActiveProfile().patching.usbRecIn.count)
   );
   const [usbReturnRoutes, setUsbReturnRoutes] = useState<number[]>(() =>
-    createIdentityRoutes(AX32_INPUT_PATCH_VISIBLE_SIZE)
+    createIdentityRoutes(getActiveProfile().patching.usbRecOut.count)
   );
   const [detailView, setDetailView] = useState<DetailView>(null);
   const detailViewRef = useRef<DetailView>(null);
@@ -2899,7 +2735,7 @@ function App() {
       getFxProcessorParams: (fx) => getFxProcessorParams(fx) ?? {},
 
       getFxPresetParams: (fx) => {
-        const selectorParamId = isAx32ProfileActive() ? 5116 + fx - 1 : undefined;
+        const selectorParamId = getActiveProfile().model === "AX32" ? 5116 + fx - 1 : undefined;
         return selectorParamId !== undefined ? { selector: selectorParamId } : {};
       },
 
@@ -4055,7 +3891,7 @@ function App() {
       ]),
     ];
     const values = new Map<number, number>();
-    const chunkSize = isAx32ProfileActive() ? 20 : 44;
+    const chunkSize = getActiveProfile().model === "AX32" ? 20 : 44;
 
     for (let offset = 0; offset < params.length; offset += chunkSize) {
       const chunk = params.slice(offset, offset + chunkSize);
@@ -4464,7 +4300,7 @@ function App() {
 
   function applyMixerChannelProfile(nextChannelCount: number) {
     ACTIVE_CHANNEL_PROFILE = channelCountToProtocolProfile(nextChannelCount);
-    ACTIVE_CHANNEL_COUNT = nextChannelCount;
+    ACTIVE_MIXER_PROFILE = getMixerProfile(channelCountToMixerModel(nextChannelCount));
     setGroupProtocolProfile(ACTIVE_CHANNEL_PROFILE);
     setBitmaskProtocolProfile(ACTIVE_CHANNEL_PROFILE);
     const nextAuxCount = getAuxBusCount();
@@ -4642,7 +4478,7 @@ function App() {
   async function syncChannelPairContext(channelNumber: number) {
     const client = clientRef.current;
     if (!client) return;
-    const isAx32 = isAx32ProfileActive();
+    const isAx32 = getActiveProfile().model === "AX32";
 
     const [odd, even] = getChannelPair(channelNumber);
     const key = pairKey(odd, even);
@@ -4877,104 +4713,59 @@ function App() {
   }
 
   function getUsbReturnPatchParamsForActiveProfile() {
-    if (!isAx32ProfileActive()) return [];
-
-    return Array.from(
-      { length: AX32_INPUT_PATCH_SIZE },
-      (_, index) => AX32_INPUT_PATCH_BASE + index
-    );
+    const { inputPatch } = getActiveProfile().patching;
+    return Array.from({ length: inputPatch.count }, (_, i) => inputPatch.base + i);
   }
 
   function getUsbInputPatchParamsForActiveProfile() {
-    if (!isAx32ProfileActive()) return [];
-
-    return Array.from(
-      { length: AX32_USB_INPUT_PATCH_SIZE },
-      (_, index) => AX32_USB_INPUT_PATCH_BASE + index
-    );
+    const { usbRecIn } = getActiveProfile().patching;
+    return Array.from({ length: usbRecIn.count }, (_, i) => usbRecIn.base + i);
   }
 
   function getUsbReturnOutputPatchParamsForActiveProfile() {
-    if (!isAx32ProfileActive()) return [];
-
-    return Array.from(
-      { length: AX32_USB_RETURN_PATCH_SIZE },
-      (_, index) => AX32_USB_RETURN_PATCH_BASE + index
-    );
+    const { usbRecOut } = getActiveProfile().patching;
+    return Array.from({ length: usbRecOut.count }, (_, i) => usbRecOut.base + i);
   }
 
   function getAx32OutputPatchParamsForActiveProfile() {
-    if (!isAx32ProfileActive()) return [];
-
-    return Array.from(
-      { length: AX32_OUTPUT_PATCH_SIZE },
-      (_, index) => AX32_OUTPUT_PATCH_BASE + index
-    );
+    const { outputPatch } = getActiveProfile().patching;
+    return Array.from({ length: outputPatch.count }, (_, i) => outputPatch.base + i);
   }
 
   function syncVisibleInputPatchRoutes(nextPatchMap: Map<number, number>) {
-    const nextVisible = Array.from(
-      { length: AX32_INPUT_PATCH_VISIBLE_SIZE },
-      (_, index) => {
-        const destination = index + 1;
-        return nextPatchMap.get(destination) ?? destination;
-      }
-    );
+    const { visibleCount } = getActiveProfile().patching.inputPatch;
+    const nextVisible = Array.from({ length: visibleCount }, (_, index) => {
+      const destination = index + 1;
+      return nextPatchMap.get(destination) ?? destination;
+    });
     setInputPatchRoutes(nextVisible);
   }
 
   function syncVisibleUsbInputPatchRoutes(nextPatchMap: Map<number, number>) {
-    const nextVisible = Array.from(
-      { length: AX32_INPUT_PATCH_VISIBLE_SIZE },
-      (_, index) => {
-        const destination = index + 1;
-        return nextPatchMap.get(destination) ?? destination;
-      }
-    );
+    const { usbRecIn } = getActiveProfile().patching;
+    const nextVisible = Array.from({ length: usbRecIn.count }, (_, index) => {
+      const destination = index + 1;
+      return nextPatchMap.get(destination) ?? destination;
+    });
     setUsbInputToUsbRoutes(nextVisible);
   }
 
   function syncVisibleUsbReturnRoutes(nextPatchMap: Map<number, number>) {
-    const nextVisible = Array.from(
-      { length: AX32_INPUT_PATCH_VISIBLE_SIZE },
-      (_, index) => {
-        const destination = index + 1;
-        return nextPatchMap.get(destination) ?? destination;
-      }
-    );
+    const { usbRecOut } = getActiveProfile().patching;
+    const nextVisible = Array.from({ length: usbRecOut.count }, (_, index) => {
+      const destination = index + 1;
+      return nextPatchMap.get(destination) ?? destination;
+    });
     setUsbReturnRoutes(nextVisible);
   }
 
   function syncVisibleOutputPatchRoutes(nextPatchMap: Map<number, number>) {
-    const nextVisible = Array.from(
-      { length: AX32_OUTPUT_PATCH_VISIBLE_SIZE },
-      (_, index) => {
-        const destination = index + 1;
-        return nextPatchMap.get(destination) ?? destination;
-      }
-    );
+    const { visibleCount } = getActiveProfile().patching.outputPatch;
+    const nextVisible = Array.from({ length: visibleCount }, (_, index) => {
+      const destination = index + 1;
+      return nextPatchMap.get(destination) ?? destination;
+    });
     setOutputPatchRoutes(nextVisible);
-  }
-
-  function clearAx32PatchRoutingState() {
-    const hadAnyPatchState =
-      usbReturnPatchMapRef.current.size > 0 ||
-      usbInputToUsbPatchMapRef.current.size > 0 ||
-      usbReturnOutputPatchMapRef.current.size > 0;
-
-    if (!hadAnyPatchState) {
-      return;
-    }
-
-    usbReturnPatchMapRef.current = new Map();
-    usbInputToUsbPatchMapRef.current = new Map();
-    usbReturnOutputPatchMapRef.current = new Map();
-
-    const emptyMap = new Map<number, number>();
-    syncVisibleInputPatchRoutes(emptyMap);
-    syncVisibleUsbInputPatchRoutes(emptyMap);
-    syncVisibleUsbReturnRoutes(emptyMap);
-    syncVisibleOutputPatchRoutes(emptyMap);
   }
 
   function resolveInputSourceControlChannel(channelNumber: number) {
@@ -4982,7 +4773,7 @@ function App() {
       return null;
     }
 
-    if (!isAx32ProfileActive()) {
+    if (getActiveProfile().model !== "AX32") {
       // AX16/AX24: channel maps 1:1 to param index (no patch map indirection).
       return channelNumber;
     }
@@ -5010,7 +4801,7 @@ function App() {
     const client = clientRef.current;
     if (!client || (!isConnected && !options?.ignoreConnectionState)) return;
 
-    if (!isAx32ProfileActive()) {
+    if (getActiveProfile().model !== "AX32") {
       const readParams = Array.from(
         { length: channelCount },
         (_, index) => inputSourceParam(index + 1)
@@ -5047,7 +4838,7 @@ function App() {
       return;
     }
 
-    const timeoutMs = isAx32ProfileActive() ? 700 : 900;
+    const timeoutMs = getActiveProfile().model === "AX32" ? 700 : 900;
     const values = await readValuesMapChunked(client, uniqueReadParams, 24, timeoutMs);
 
     for (const { channelNumber, controlChannel } of pendingUpdates) {
@@ -5068,14 +4859,7 @@ function App() {
     const client = clientRef.current;
     if (!client || (!isConnected && !options?.ignoreConnectionState)) return;
 
-    if (!isAx32ProfileActive()) {
-      clearAx32PatchRoutingState();
-      if (options?.refreshInputStates !== false) {
-        await refreshResolvedInputSourceStates();
-      }
-      return;
-    }
-
+    const { inputPatch } = getActiveProfile().patching;
     const patchParams = getUsbReturnPatchParamsForActiveProfile();
 
     if (patchParams.length === 0) {
@@ -5089,16 +4873,12 @@ function App() {
     const nextPatchMap = new Map<number, number>();
 
     response.forEach(({ param, value }) => {
-      const destinationChannel = param - AX32_INPUT_PATCH_BASE + 1;
-      if (destinationChannel < 1 || destinationChannel > AX32_INPUT_PATCH_VISIBLE_SIZE) {
+      const destinationChannel = param - inputPatch.base + 1;
+      if (destinationChannel < 1 || destinationChannel > inputPatch.visibleCount) {
         return;
       }
 
-      const sourceChannel = normalizePatchRouteValue(
-        value,
-        AX32_INPUT_PATCH_BASE,
-        AX32_INPUT_PATCH_SIZE
-      );
+      const sourceChannel = normalizePatchRouteValue(value, inputPatch.base, inputPatch.count);
       if (sourceChannel === null) {
         return;
       }
@@ -5137,14 +4917,7 @@ function App() {
     const client = clientRef.current;
     if (!client || (!isConnected && !options?.ignoreConnectionState)) return;
 
-    if (!isAx32ProfileActive()) {
-      clearAx32PatchRoutingState();
-      if (options?.refreshInputStates !== false) {
-        await refreshResolvedInputSourceStates();
-      }
-      return;
-    }
-
+    const { usbRecIn } = getActiveProfile().patching;
     const patchParams = getUsbInputPatchParamsForActiveProfile();
     if (patchParams.length === 0) return;
 
@@ -5152,16 +4925,12 @@ function App() {
     const nextPatchMap = new Map<number, number>();
 
     response.forEach(({ param, value }) => {
-      const destinationChannel = param - AX32_USB_INPUT_PATCH_BASE + 1;
-      if (destinationChannel < 1 || destinationChannel > AX32_USB_INPUT_PATCH_SIZE) {
+      const destinationChannel = param - usbRecIn.base + 1;
+      if (destinationChannel < 1 || destinationChannel > usbRecIn.count) {
         return;
       }
 
-      const sourceChannel = normalizePatchRouteValue(
-        value,
-        AX32_USB_INPUT_PATCH_BASE,
-        AX32_USB_INPUT_PATCH_SIZE
-      );
+      const sourceChannel = normalizePatchRouteValue(value, usbRecIn.base, usbRecIn.count);
       if (sourceChannel === null || sourceChannel === 0) {
         return;
       }
@@ -5201,14 +4970,7 @@ function App() {
     const client = clientRef.current;
     if (!client || (!isConnected && !options?.ignoreConnectionState)) return;
 
-    if (!isAx32ProfileActive()) {
-      clearAx32PatchRoutingState();
-      if (options?.refreshInputStates !== false) {
-        await refreshResolvedInputSourceStates();
-      }
-      return;
-    }
-
+    const { usbRecOut } = getActiveProfile().patching;
     const patchParams = getUsbReturnOutputPatchParamsForActiveProfile();
     if (patchParams.length === 0) return;
 
@@ -5216,16 +4978,12 @@ function App() {
     const nextPatchMap = new Map<number, number>();
 
     response.forEach(({ param, value }) => {
-      const destinationChannel = param - AX32_USB_RETURN_PATCH_BASE + 1;
-      if (destinationChannel < 1 || destinationChannel > AX32_USB_RETURN_PATCH_SIZE) {
+      const destinationChannel = param - usbRecOut.base + 1;
+      if (destinationChannel < 1 || destinationChannel > usbRecOut.count) {
         return;
       }
 
-      const sourceChannel = normalizePatchRouteValue(
-        value,
-        AX32_USB_RETURN_PATCH_BASE,
-        AX32_USB_RETURN_PATCH_SIZE
-      );
+      const sourceChannel = normalizePatchRouteValue(value, usbRecOut.base, usbRecOut.count);
       if (sourceChannel === null || sourceChannel === 0) {
         return;
       }
@@ -5262,8 +5020,9 @@ function App() {
 
   async function syncAx32OutputPatchMap(options?: { ignoreConnectionState?: boolean }) {
     const client = clientRef.current;
-    if (!client || (!isConnected && !options?.ignoreConnectionState) || !isAx32ProfileActive()) return;
+    if (!client || (!isConnected && !options?.ignoreConnectionState)) return;
 
+    const { outputPatch } = getActiveProfile().patching;
     const patchParams = getAx32OutputPatchParamsForActiveProfile();
     if (patchParams.length === 0) return;
 
@@ -5271,16 +5030,12 @@ function App() {
     const nextPatchMap = new Map<number, number>();
 
     response.forEach(({ param, value }) => {
-      const destinationOutput = param - AX32_OUTPUT_PATCH_BASE + 1;
-      if (destinationOutput < 1 || destinationOutput > AX32_OUTPUT_PATCH_SIZE) {
+      const destinationOutput = param - outputPatch.base + 1;
+      if (destinationOutput < 1 || destinationOutput > outputPatch.count) {
         return;
       }
 
-      const source = normalizePatchRouteValue(
-        value,
-        AX32_OUTPUT_PATCH_BASE,
-        AX32_OUTPUT_PATCH_SIZE
-      );
+      const source = normalizePatchRouteValue(value, outputPatch.base, outputPatch.count);
       if (source === null) {
         return;
       }
@@ -5555,7 +5310,7 @@ function App() {
     if (!client) return;
 
     const params = getChannelSyncParams(channelNumber);
-    const timeoutMs = isAx32ProfileActive() ? 900 : AX16_24_READ_TIMEOUT_MS;
+    const timeoutMs = getActiveProfile().model === "AX32" ? 900 : AX16_24_READ_TIMEOUT_MS;
     const response = await client.readParams(params, timeoutMs);
     const values = new Map(response.map((item) => [item.param, item.value]));
 
@@ -5571,8 +5326,8 @@ function App() {
       getChannelSyncParams(channelNumber)
     );
 
-    const chunkSize = isAx32ProfileActive() ? 24 : AX16_24_BATCH_CHANNEL_CHUNK;
-    const timeoutMs = isAx32ProfileActive() ? 700 : AX16_24_READ_TIMEOUT_MS;
+    const chunkSize = getActiveProfile().model === "AX32" ? 24 : AX16_24_BATCH_CHANNEL_CHUNK;
+    const timeoutMs = getActiveProfile().model === "AX32" ? 700 : AX16_24_READ_TIMEOUT_MS;
     const values = await readValuesMapChunked(client, params, chunkSize, timeoutMs);
 
     if (values.size === 0) {
@@ -5804,7 +5559,7 @@ function App() {
     const client = clientRef.current;
     if (!client) return;
 
-    const timeoutMs = isAx32ProfileActive() ? 900 : AX16_24_READ_TIMEOUT_MS;
+    const timeoutMs = getActiveProfile().model === "AX32" ? 900 : AX16_24_READ_TIMEOUT_MS;
     const response = await client.readParams(getAuxSyncParams(auxNumber), timeoutMs);
     const values = new Map(response.map((item) => [item.param, item.value]));
 
@@ -5818,8 +5573,8 @@ function App() {
 
     const params = auxNumbers.flatMap((auxNumber) => getAuxSyncParams(auxNumber));
 
-    const chunkSize = isAx32ProfileActive() ? 22 : AX16_24_BATCH_AUX_CHUNK;
-    const timeoutMs = isAx32ProfileActive() ? 700 : AX16_24_READ_TIMEOUT_MS;
+    const chunkSize = getActiveProfile().model === "AX32" ? 22 : AX16_24_BATCH_AUX_CHUNK;
+    const timeoutMs = getActiveProfile().model === "AX32" ? 700 : AX16_24_READ_TIMEOUT_MS;
     const values = await readValuesMapChunked(client, params, chunkSize, timeoutMs);
 
     if (values.size === 0) {
@@ -6018,7 +5773,7 @@ function App() {
       setIsSyncing(true);
       setStatus("Sincronizando canais...");
 
-      if (isAx32ProfileActive()) {
+      if (getActiveProfile().model === "AX32") {
         const channelBatchSize = 6;
         for (let channel = 1; channel <= channelTotal; channel += channelBatchSize) {
           const batch = Array.from(
@@ -6144,7 +5899,7 @@ function App() {
       const channelValues = await readValuesMapChunked(
         client,
         channelParams,
-        isAx32ProfileActive() ? 32 : AX16_24_FAST_CHANNEL_CHUNK,
+        getActiveProfile().model === "AX32" ? 32 : AX16_24_FAST_CHANNEL_CHUNK,
         450
       );
 
@@ -6265,8 +6020,8 @@ function App() {
       .flat()
       .filter((param): param is number => typeof param === "number");
 
-    const channelChunkSize = isAx32ProfileActive() ? 24 : AX16_24_BATCH_CHANNEL_CHUNK;
-    const channelTimeout = isAx32ProfileActive() ? 700 : 1000;
+    const channelChunkSize = getActiveProfile().model === "AX32" ? 24 : AX16_24_BATCH_CHANNEL_CHUNK;
+    const channelTimeout = getActiveProfile().model === "AX32" ? 700 : 1000;
     const channelValues = await readValuesMapChunked(
       client,
       channelParams,
@@ -6290,8 +6045,8 @@ function App() {
     const auxValues = await readValuesMapChunked(
       client,
       auxParams,
-      isAx32ProfileActive() ? 24 : AX16_24_BATCH_AUX_CHUNK,
-      isAx32ProfileActive() ? 700 : 1000
+      getActiveProfile().model === "AX32" ? 24 : AX16_24_BATCH_AUX_CHUNK,
+      getActiveProfile().model === "AX32" ? 700 : 1000
     );
 
     for (let aux = 1; aux <= auxCount; aux++) {
@@ -6587,7 +6342,7 @@ function App() {
   async function syncChannelPairVisualState() {
     const client = clientRef.current;
     if (!client) return;
-    const isAx32 = isAx32ProfileActive();
+    const isAx32 = getActiveProfile().model === "AX32";
 
     const params: number[] = [];
 
@@ -7009,7 +6764,7 @@ function App() {
       return "unknown";
     }
 
-    if (isAx32ProfileActive()) {
+    if (getActiveProfile().model === "AX32") {
       return "AX32";
     }
 
@@ -7144,7 +6899,7 @@ function App() {
     });
 
     // Input Source Mode and related channel params per profile.
-    if (isAx32ProfileActive()) {
+    if (getActiveProfile().model === "AX32") {
       // AX32: Record Out To Channel (2565-2596), Input Source Mode (2661-2692),
       // Physical Input Mapping (2693-2724) — all 32 slots registered unconditionally
       // so params arriving via 0x03 before the record-out map is built are still classified.
@@ -7301,7 +7056,7 @@ function App() {
 
     // Semantic apply — Input Source Mode received from mixer (opcode 0x03 or polling).
     // AX16/AX24: params 2849..(2849 + channelCount - 1), indexed by channel (0-based).
-    if (!isAx32ProfileActive()) {
+    if (getActiveProfile().model !== "AX32") {
       const ax1624InputSourceBase = 2849;
       if (read.param >= ax1624InputSourceBase && read.param < ax1624InputSourceBase + channelCount) {
         const channelNumber = read.param - ax1624InputSourceBase + 1;
@@ -7309,7 +7064,7 @@ function App() {
       }
     }
 
-    if (isAx32ProfileActive()) {
+    if (getActiveProfile().model === "AX32") {
       // AX32: Input Source Mode params 2661..2692 (slot 1..32).
       // Reverse-lookup: find which channel has this USB return slot assigned.
       if (read.param >= 2661 && read.param <= 2692) {
@@ -7336,7 +7091,7 @@ function App() {
     }
 
     if (
-      isAx32ProfileActive() &&
+      getActiveProfile().model === "AX32" &&
       ((read.param >= 2 && read.param <= 255) ||
         read.param === 2862 ||
         read.param === 1947 ||
@@ -8016,7 +7771,7 @@ function App() {
 
   async function syncAllAux() {
     const auxCount = getAuxBusCount();
-    if (isAx32ProfileActive()) {
+    if (getActiveProfile().model === "AX32") {
       const auxBatchSize = 4;
 
       for (let aux = 1; aux <= auxCount; aux += auxBatchSize) {
@@ -8747,7 +8502,7 @@ function App() {
     };
 
     run();
-    const timer = window.setInterval(run, isAx32ProfileActive() ? 1600 : 2200);
+    const timer = window.setInterval(run, getActiveProfile().model === "AX32" ? 1600 : 2200);
 
     return () => {
       window.clearInterval(timer);
@@ -8922,7 +8677,7 @@ function App() {
       });
     }
 
-    if (isAx32ProfileActive()) {
+    if (getActiveProfile().model === "AX32") {
       if (ax32MasterL && ax32MasterR) {
         const leftDb = decodeRawMeterDb(ax32MasterL.value);
         const rightDb = decodeRawMeterDb(ax32MasterR.value);
@@ -8984,7 +8739,7 @@ function App() {
 
       let selected: MasterMeterCandidate;
 
-      if (isAx32ProfileActive()) {
+      if (getActiveProfile().model === "AX32") {
         const processedCandidate = meterCandidates.find(
           (candidate) => candidate.id === "ax32_2862" && candidate.valid
         );
@@ -11152,7 +10907,7 @@ function App() {
       return;
     }
     const expectedRawValue = resolveExpectedInputSourceRawForToggle(nextValue);
-    const controlChannel = isAx32ProfileActive()
+    const controlChannel = getActiveProfile().model === "AX32"
       ? resolveInputSourceControlChannel(channelNumber)
       : channelNumber;
     if (controlChannel === null) {
@@ -11205,7 +10960,7 @@ function App() {
     setVisibleRoutes: (routes: number[]) => void
   ) {
     const client = clientRef.current;
-    if (!client || !isConnected || !isAx32ProfileActive()) return;
+    if (!client || !isConnected) return;
 
     const normalizedDestination = Math.round(destination);
     const normalizedSource = Math.max(0, Math.min(fullSize, Math.round(source)));
@@ -11252,7 +11007,7 @@ function App() {
     setVisibleRoutes: (routes: number[]) => void
   ) {
     const client = clientRef.current;
-    if (!client || !isConnected || !isAx32ProfileActive()) return;
+    if (!client || !isConnected) return;
 
     const normalizedDestination = Math.round(destination);
     const normalizedSource = Math.max(1, Math.min(fullSize, Math.round(source)));
@@ -11287,11 +11042,12 @@ function App() {
   }
 
   function handleInputPatchRouteChange(destination: number, source: number) {
+    const { inputPatch } = getActiveProfile().patching;
     void applyExclusivePatchRoute(
       usbReturnPatchMapRef,
-      AX32_INPUT_PATCH_BASE,
-      AX32_INPUT_PATCH_SIZE,
-      AX32_INPUT_PATCH_VISIBLE_SIZE,
+      inputPatch.base,
+      inputPatch.count,
+      inputPatch.visibleCount,
       destination,
       source,
       setInputPatchRoutes
@@ -11303,11 +11059,12 @@ function App() {
   }
 
   function handleOutputPatchRouteChange(destination: number, source: number) {
+    const { outputPatch } = getActiveProfile().patching;
     void applyExclusivePatchRoute(
       ax32OutputPatchMapRef,
-      AX32_OUTPUT_PATCH_BASE,
-      AX32_OUTPUT_PATCH_SIZE,
-      AX32_OUTPUT_PATCH_VISIBLE_SIZE,
+      outputPatch.base,
+      outputPatch.count,
+      outputPatch.visibleCount,
       destination,
       source,
       setOutputPatchRoutes
@@ -11319,11 +11076,12 @@ function App() {
   }
 
   function handleUsbInputToUsbRouteChange(destination: number, source: number) {
+    const { usbRecIn } = getActiveProfile().patching;
     void applyExclusivePatchRouteWithSwap(
       usbInputToUsbPatchMapRef,
-      AX32_USB_INPUT_PATCH_BASE,
-      AX32_USB_INPUT_PATCH_SIZE,
-      AX32_INPUT_PATCH_VISIBLE_SIZE,
+      usbRecIn.base,
+      usbRecIn.count,
+      usbRecIn.count,
       destination,
       source,
       setUsbInputToUsbRoutes
@@ -11335,11 +11093,12 @@ function App() {
   }
 
   function handleUsbReturnRouteChange(destination: number, source: number) {
+    const { usbRecOut } = getActiveProfile().patching;
     void applyExclusivePatchRouteWithSwap(
       usbReturnOutputPatchMapRef,
-      AX32_USB_RETURN_PATCH_BASE,
-      AX32_USB_RETURN_PATCH_SIZE,
-      AX32_INPUT_PATCH_VISIBLE_SIZE,
+      usbRecOut.base,
+      usbRecOut.count,
+      usbRecOut.count,
       destination,
       source,
       setUsbReturnRoutes
@@ -11352,18 +11111,19 @@ function App() {
 
   async function handleResetRecordPatchingDefaults() {
     const client = clientRef.current;
-    if (!client || !isConnected || !isAx32ProfileActive() || patchingResetBusy) return;
+    if (!client || !isConnected || patchingResetBusy) return;
 
+    const { usbRecIn, usbRecOut } = getActiveProfile().patching;
     setPatchingResetBusy(true);
     setStatus("Aplicando padrao de patching USB...");
 
     try {
-      for (let destination = 1; destination <= AX32_INPUT_PATCH_VISIBLE_SIZE; destination += 1) {
-        client.sendParam(AX32_USB_INPUT_PATCH_BASE + (destination - 1), destination);
+      for (let destination = 1; destination <= usbRecIn.count; destination += 1) {
+        client.sendParam(usbRecIn.base + (destination - 1), destination);
       }
 
-      for (let destination = 1; destination <= AX32_INPUT_PATCH_VISIBLE_SIZE; destination += 1) {
-        client.sendParam(AX32_USB_RETURN_PATCH_BASE + (destination - 1), destination);
+      for (let destination = 1; destination <= usbRecOut.count; destination += 1) {
+        client.sendParam(usbRecOut.base + (destination - 1), destination);
       }
 
       await Promise.all([
@@ -11381,18 +11141,19 @@ function App() {
 
   async function handleResetPlayPatchingDefaults() {
     const client = clientRef.current;
-    if (!client || !isConnected || !isAx32ProfileActive() || patchingResetBusy) return;
+    if (!client || !isConnected || patchingResetBusy) return;
 
+    const { inputPatch, outputPatch } = getActiveProfile().patching;
     setPatchingResetBusy(true);
     setStatus("Aplicando padrao de patching fisico...");
 
     try {
-      for (let source = 1; source <= AX32_INPUT_PATCH_VISIBLE_SIZE; source += 1) {
-        client.sendParam(AX32_INPUT_PATCH_BASE + (source - 1), source);
+      for (let source = 1; source <= inputPatch.visibleCount; source += 1) {
+        client.sendParam(inputPatch.base + (source - 1), source);
       }
 
-      for (let destination = 1; destination <= AX32_OUTPUT_PATCH_VISIBLE_SIZE; destination += 1) {
-        client.sendParam(AX32_OUTPUT_PATCH_BASE + (destination - 1), destination);
+      for (let destination = 1; destination <= outputPatch.visibleCount; destination += 1) {
+        client.sendParam(outputPatch.base + (destination - 1), destination);
       }
 
       await Promise.all([
@@ -11527,7 +11288,7 @@ function App() {
 
   async function toggleChannelLink(channelNumber: number) {
     const client = clientRef.current;
-    const isAx32 = isAx32ProfileActive();
+    const isAx32 = getActiveProfile().model === "AX32";
     const [odd, even] = getChannelPair(channelNumber);
     const key = pairKey(odd, even);
     const isLinked = Boolean(channelLinks[key]);
@@ -16948,7 +16709,7 @@ function App() {
             : mainView === "muteGroups"
                 ? <div className="global-view-shell"><MuteGroupsView isConnected={isConnected} channelCount={channelCount} groups={muteGroups} onToggleActive={handleMuteGroupToggleActive} onMembersChange={handleMuteGroupMembersChange} onClear={handleMuteGroupClear} onAllMuted={handleMuteGroupAllMuted} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} fxNames={fxStrips.map((f) => f.channelName)} fxColorIds={fxStrips.map((f) => f.colorId)} masterColorIds={[master.leftColorId, master.rightColorId]} digiName={digiChannels[0]?.channelName} digiColorId={digiChannels[0]?.colorId} rawParamStore={rawParamStoreRef.current} domainSelectors={domainSelectors} /></div>
             : mainView === "patching"
-              ? <div className="global-view-shell"><PatchingView isConnected={isConnected} isAx32ProfileActive={isAx32ProfileActive()} channelCount={channelCount} usbInputToUsbRoutes={usbInputToUsbRoutes} usbReturnRoutes={usbReturnRoutes} inputRoutes={inputPatchRoutes} outputRoutes={outputPatchRoutes} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} onUsbInputToUsbRouteChange={handleUsbInputToUsbRouteChange} onUsbReturnRouteChange={handleUsbReturnRouteChange} onInputRouteChange={handleInputPatchRouteChange} onOutputRouteChange={handleOutputPatchRouteChange} onResetRecordPatchingDefaults={handleResetRecordPatchingDefaults} onResetPlayPatchingDefaults={handleResetPlayPatchingDefaults} resetBusy={patchingResetBusy} /></div>
+              ? <div className="global-view-shell"><PatchingView isConnected={isConnected} channelCount={channelCount} usbInputToUsbRoutes={usbInputToUsbRoutes} usbReturnRoutes={usbReturnRoutes} inputRoutes={inputPatchRoutes} outputRoutes={outputPatchRoutes} channelNames={channels.map((c) => c.channelName)} channelColorIds={channels.map((c) => c.colorId)} auxNames={auxStrips.map((a) => a.channelName)} auxColorIds={auxStrips.map((a) => a.colorId)} onUsbInputToUsbRouteChange={handleUsbInputToUsbRouteChange} onUsbReturnRouteChange={handleUsbReturnRouteChange} onInputRouteChange={handleInputPatchRouteChange} onOutputRouteChange={handleOutputPatchRouteChange} onResetRecordPatchingDefaults={handleResetRecordPatchingDefaults} onResetPlayPatchingDefaults={handleResetPlayPatchingDefaults} resetBusy={patchingResetBusy} /></div>
             : mainView === "scenes"
               ? <div className="global-view-shell"><ScenesView client={clientRef.current} isConnected={isConnected} cacheScopeKey={activeMixerCacheIdentity} onCallScene={handleSceneCall} onSaveScene={handleSceneSave} /></div>
         : <MixerTabs
