@@ -85,6 +85,7 @@ type ChannelProcessorsProps = {
   customModuleContent?: Partial<Record<ProcessorModule, ReactNode>>;
   channelInputDb?: number;
   sends?: SendStripView[];
+  onOpenSendDetail?: (send: SendStripView) => void;
   onModuleChange: (module: ProcessorModule) => void;
   onGateChange: (patch: Partial<GateState>) => void;
   onCompChange: (patch: Partial<CompressorState>) => void;
@@ -246,11 +247,13 @@ function getSendStripFooterColor(send: SendStripView) {
 function SendsEditor({
   sends,
   disabled,
+  onOpenSendDetail,
   onSendValueChange,
   onSendTapPointToggle,
 }: {
   sends: SendStripView[];
   disabled?: boolean;
+  onOpenSendDetail?: (send: SendStripView) => void;
   onSendValueChange?: (id: SendStripId, nextValue: number) => void;
   onSendTapPointToggle?: (id: SendStripId) => void;
 }) {
@@ -650,6 +653,8 @@ function SendsEditor({
           </div>
 
           <div
+            onClick={onOpenSendDetail ? () => onOpenSendDetail(send) : undefined}
+            title={onOpenSendDetail ? "Abrir detalhe" : undefined}
             style={{
               width: "100%",
               height: "40px",
@@ -668,6 +673,7 @@ function SendsEditor({
               minHeight: "40px",
               fontFamily: "Inter, system-ui, sans-serif",
               boxSizing: "border-box",
+              cursor: onOpenSendDetail ? "pointer" : "default",
             }}
           >
             <span
@@ -3757,6 +3763,7 @@ export function ChannelProcessors({
   customModuleContent,
   channelInputDb,
   sends,
+  onOpenSendDetail,
   onModuleChange,
   onGateChange,
   onCompChange,
@@ -3893,6 +3900,7 @@ export function ChannelProcessors({
             <SendsEditor
               sends={sends}
               disabled={disabled}
+              onOpenSendDetail={onOpenSendDetail}
               onSendValueChange={onSendValueChange}
               onSendTapPointToggle={onSendTapPointToggle}
             />
