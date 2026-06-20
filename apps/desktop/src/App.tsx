@@ -882,6 +882,7 @@ const LICENSE_DEVICES_CACHE_STORAGE_KEY = "ax_license_devices_cache";
 const PENDING_TRIAL_ACTIVATION_STORAGE_KEY = "ax_pending_trial_activation";
 const PIX_PENDING_PAYMENT_STORAGE_KEY = "ax_pending_pix_payment_id";
 const PIX_PURCHASE_CONFIRMED_STORAGE_KEY = "ax_pix_purchase_confirmed";
+const PIX_GUARD_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours — auto-expires if backend never confirms
 const TRIAL_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const TRIAL_UPGRADE_PROMPT_DATE_KEY = "ax_trial_upgrade_prompt_date";
 const USER_NAME_STORAGE_KEY = "ax_user_name";
@@ -2891,6 +2892,8 @@ function App() {
         setLicenseUserEmail(boot.user.email);
       }
       setIsFounder(boot.user.is_founder);
+    } else {
+      setIsFounder(null);
     }
 
     if (boot.public_key && boot.certificate?.sig_v != null) {
@@ -10449,6 +10452,9 @@ function App() {
     localStorage.removeItem(LICENSE_DEVICES_CACHE_STORAGE_KEY);
     setLicenseRevalidationHint("");
     setLicenseValidationMessage({ kind: "idle", text: "" });
+    setIsFounder(null);
+    setBootstrapFeatureFlags({});
+    setBootstrapMessages([]);
     setLicenseModalMandatory(true);
     setLicenseModalMode("onboarding");
     setLicenseModalOpen(true);
@@ -10514,8 +10520,8 @@ function App() {
 
     localStorage.removeItem(PIX_PENDING_PAYMENT_STORAGE_KEY);
     // Guard flag: prevents background revalidation from downgrading to trial
-    // before the server confirms the purchased status.
-    localStorage.setItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY, licenseKey);
+    // before the server confirms the purchased status. Stores timestamp for TTL.
+    localStorage.setItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY, String(Date.now()));
 
     // Apply purchased state immediately so the UI never reverts to trial.
     const syntheticSnapshot: LicenseSnapshot = {
@@ -10681,8 +10687,8 @@ function App() {
     lastBackgroundRevalidationAtRef.current = now;
 
     try {
-      const pixPurchaseConfirmedKey = localStorage.getItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
-      const pixPurchaseGuardActive = Boolean(pixPurchaseConfirmedKey);
+      const pixConfirmedAt = Number(localStorage.getItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY) ?? "0");
+      const pixPurchaseGuardActive = pixConfirmedAt > 0 && (Date.now() - pixConfirmedAt) < PIX_GUARD_TTL_MS;
 
       if (LICENSE_API_BASE_URL) {
         const statusSnapshot = await requestLicenseStatus(false, licenseValue);

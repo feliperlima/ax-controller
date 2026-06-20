@@ -92,6 +92,10 @@ export function readRuntimeLicenseCacheFromStorage(storageKey: string): RuntimeL
       nextRevalidationAt: typeof parsed.nextRevalidationAt === "string" ? parsed.nextRevalidationAt : null,
       cachedState: parsed.cachedState,
       feedbackMessage: typeof parsed.feedbackMessage === "string" ? parsed.feedbackMessage : "",
+      isFounder: typeof parsed.isFounder === "boolean" ? parsed.isFounder : undefined,
+      featureFlags: parsed.featureFlags && typeof parsed.featureFlags === "object" && !Array.isArray(parsed.featureFlags)
+        ? (parsed.featureFlags as Record<string, boolean>)
+        : undefined,
     };
   } catch {
     return null;
