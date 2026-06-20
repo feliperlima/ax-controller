@@ -2508,8 +2508,8 @@ function App() {
   const [licenseDeviceActionBusy, setLicenseDeviceActionBusy] = useState<string | null>(null);
   const [licenseUserName, setLicenseUserName] = useState(() => localStorage.getItem(USER_NAME_STORAGE_KEY) ?? "");
   const [licenseUserEmail, setLicenseUserEmail] = useState(() => localStorage.getItem(USER_EMAIL_STORAGE_KEY) ?? "");
-  const [isFounder, setIsFounder] = useState<boolean | null>(null);
-  const [bootstrapFeatureFlags, setBootstrapFeatureFlags] = useState<Record<string, boolean>>({});
+  const [isFounder, setIsFounder] = useState<boolean | null>(() => readRuntimeLicenseCache()?.isFounder ?? null);
+  const [bootstrapFeatureFlags, setBootstrapFeatureFlags] = useState<Record<string, boolean>>(() => readRuntimeLicenseCache()?.featureFlags ?? {});
   const [bootstrapMessages, setBootstrapMessages] = useState<import("./services/bootstrapService").BootstrapMessage[]>([]);
   const [bootstrapVersionInfo, setBootstrapVersionInfo] = useState<import("./services/bootstrapService").BootstrapVersionInfo | null>(null);
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
@@ -2957,6 +2957,8 @@ function App() {
         lastValidatedAt: nowIso,
         nextRevalidationAt: null,
         cachedState: formalState,
+        isFounder: boot.user?.is_founder,
+        featureFlags: boot.feature_flags,
       });
     }
   }
@@ -3140,13 +3142,22 @@ function App() {
   }, [installationId]);
 
   useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
+    let offlineTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const handleOnline = () => {
+      if (offlineTimer) { clearTimeout(offlineTimer); offlineTimer = null; }
+      setIsOnline(true);
+    };
+    const handleOffline = () => {
+      // 2 s debounce: brief network switches (WiFi → 4G) don't count as offline
+      offlineTimer = setTimeout(() => setIsOnline(false), 2000);
+    };
 
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
 
     return () => {
+      if (offlineTimer) clearTimeout(offlineTimer);
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
@@ -9606,6 +9617,7 @@ function App() {
     const blocked = isLicenseStateBlocked(formalState);
     setIsLicenseValidated(!blocked);
 
+    const existingCache = readRuntimeLicenseCache();
     const cache: RuntimeLicenseCache = {
       installationUuid: installationId,
       licenseKey,
@@ -9615,6 +9627,8 @@ function App() {
       nextRevalidationAt: resolvedNextRevalidationAt,
       cachedState: formalState,
       feedbackMessage: sourceMessage ?? snapshot.message,
+      isFounder: existingCache?.isFounder,
+      featureFlags: existingCache?.featureFlags,
     };
     writeRuntimeLicenseCache(cache);
 
@@ -10625,6 +10639,8 @@ function App() {
     // License state is only enforced on the Home screen — never interrupt an active mixer session.
     if (isConnectedRef.current) return false;
     if (backgroundLicenseRevalidationBusyRef.current) return false;
+    // If installationId hasn't loaded yet, defer — sending an empty deviceId to the API is invalid.
+    if (!installationId) return false;
 
     const now = Date.now();
     if (!force && !strict && now - lastBackgroundRevalidationAtRef.current < LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS) {
@@ -10763,17 +10779,12 @@ function App() {
     } catch (err) {
       const knownErrText = licenseApiErrorText(err);
       if (knownErrText) {
+        // Known protocol errors (invalid app key, session expired, rate limit) — surface to user.
+        // isAppKeyError and isSessionExpiredError will also call enforceLicenseBlock via their own paths.
         setLicenseValidationMessage({ kind: "error", text: knownErrText });
-      } else if (strict) {
-        localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
-        setIsLicenseValidated(false);
-        setLicenseRevalidationHint("");
-        setLicenseValidationMessage({
-          kind: "error",
-          text: "Falha ao validar na API. Acesso bloqueado até nova validação.",
-        });
-        enforceLicenseBlock("Falha ao validar na API. Acesso bloqueado até nova validação.");
       }
+      // Generic network errors (timeout, no connectivity, server unreachable) are silently swallowed.
+      // The session stays valid — a transient network failure is not proof the license is revoked.
     } finally {
       backgroundLicenseRevalidationBusyRef.current = false;
     }
