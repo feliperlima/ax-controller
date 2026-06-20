@@ -543,37 +543,29 @@ fn build_read_params_packet(params: &[u16]) -> Vec<u8> {
     data
 }
 
-fn decode_read_params_response(buffer: &[u8]) -> Vec<u16> {
+// Devolve pares (param, valor). A mesa ecoa qualquer param pedido, então o VALOR
+// (0 = param inexistente) é o que distingue um param real de um eco.
+fn decode_read_params_response(buffer: &[u8]) -> Vec<(u16, u16)> {
     if buffer.len() < 9 || buffer[0] != 128 {
-        if buffer.len() < 9 {
-            eprintln!("[DECODE] Buffer too short: {} bytes", buffer.len());
-        } else {
-            eprintln!("[DECODE] Invalid frame marker: {} (expected 128)", buffer[0]);
-        }
         return Vec::new();
     }
 
     let expected_len = buffer[1] as usize + 2;
     if expected_len > buffer.len() || buffer[2] != 6 {
-        if expected_len > buffer.len() {
-            eprintln!("[DECODE] Frame length mismatch: expected {}, have {}", expected_len, buffer.len());
-        } else {
-            eprintln!("[DECODE] Invalid opcode: {} (expected 6)", buffer[2]);
-        }
         return Vec::new();
     }
 
-    let mut params = Vec::<u16>::new();
+    let mut params = Vec::<(u16, u16)>::new();
     let frame = &buffer[..expected_len];
 
     let mut index = 3usize;
     while index + 3 < frame.len().saturating_sub(2) {
         let param = ((frame[index] as u16) << 8) | frame[index + 1] as u16;
-        params.push(param);
+        let value = ((frame[index + 2] as u16) << 8) | frame[index + 3] as u16;
+        params.push((param, value));
         index += 4;
     }
 
-    eprintln!("[DECODE] Extracted {} params: {:?}", params.len(), params);
     params
 }
 
@@ -600,25 +592,29 @@ fn probe_channel_capacity_via_ws(ip: &str, timeout_ms: u64) -> Option<u16> {
     socket.send(Message::Binary(packet.into())).ok()?;
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut observed_params = HashSet::<u16>::new();
+    // A mesa ECOA qualquer param pedido, devolvendo 0 para os que NÃO existem.
+    // Por isso classificamos por VALOR != 0, não por presença do ID. Os params do
+    // master do AX32 (4634+) ficam acima de todo o espaço de params do 16/24, então
+    // num 16/24 voltam 0 (eco) e não contam — só um AX32 real devolve != 0.
+    let mut observed = HashMap::<u16, u16>::new();
 
-    let ax32_hits = |hits: &HashSet<u16>| -> usize {
+    let ax32_hits = |obs: &HashMap<u16, u16>| -> usize {
         [4634u16, 4743, 4649, 4758]
             .iter()
-            .filter(|param| hits.contains(param))
+            .filter(|param| obs.get(param).copied().unwrap_or(0) != 0)
             .count()
     };
 
-    let classify = |hits: &HashSet<u16>| -> Option<u16> {
-        // Hierarquia AX32 > AX24 > AX16: se sentinelas de um modelo maior estão
-        // presentes, ele é autoritativo (a mesa só tem os params do seu modelo).
-        if ax32_hits(hits) >= 2 {
+    let classify = |obs: &HashMap<u16, u16>| -> Option<u16> {
+        let nz = |param: u16| obs.get(&param).copied().unwrap_or(0) != 0;
+        // Hierarquia AX32 > AX24 > AX16 (sempre por valor != 0).
+        if ax32_hits(obs) >= 2 {
             return Some(34); // 32 + 2 DIGI stereo
         }
-        if [1066u16, 1500].iter().any(|param| hits.contains(param)) {
+        if nz(1066) || nz(1500) {
             return Some(26); // 24 + 2 DIGI stereo
         }
-        if hits.contains(&74u16) {
+        if nz(74) {
             return Some(18); // 16 + 2 DIGI stereo
         }
         None
@@ -627,13 +623,15 @@ fn probe_channel_capacity_via_ws(ip: &str, timeout_ms: u64) -> Option<u16> {
     while Instant::now() < deadline {
         match socket.read() {
             Ok(Message::Binary(data)) => {
-                for param in decode_read_params_response(&data) {
-                    observed_params.insert(param);
+                for (param, value) in decode_read_params_response(&data) {
+                    // Mantém o primeiro valor != 0 visto para cada param.
+                    let entry = observed.entry(param).or_insert(0);
+                    if *entry == 0 {
+                        *entry = value;
+                    }
                 }
-                // AX32 é o topo da hierarquia: assim que confirmado, nenhum modelo
-                // maior pode chegar — pode retornar de imediato. AX24/AX16 precisam
-                // da janela inteira para garantir que params atrasados não cheguem.
-                if ax32_hits(&observed_params) >= 2 {
+                // AX32 confirmado (>=2 sentinelas do master com valor != 0): retorna já.
+                if ax32_hits(&observed) >= 2 {
                     let _ = socket.close(None);
                     return Some(34);
                 }
@@ -653,9 +651,8 @@ fn probe_channel_capacity_via_ws(ip: &str, timeout_ms: u64) -> Option<u16> {
         }
     }
 
-    let result = classify(&observed_params);
+    let result = classify(&observed);
     let _ = socket.close(None);
-    eprintln!("[PROBE] {} -> {:?} (params: {:?})", ip, result, observed_params);
     result
 }
 
@@ -676,16 +673,16 @@ fn resolve_channels_from_identity_or_probe(
     let (_, inferred_channels) = infer_model_and_channels(identity_name);
     let identity_channels = current_channels.or(inferred_channels);
 
-    // Probe WebSocket é a FONTE DE VERDADE (autoridade obrigatória)
-    // Se probe tem resultado, usa diretamente sem scoring ou ambiguidade
-    if let Some(probed) = probed_channels {
-        return Some(normalize_detected_channels(probed));
+    // CAMADA 1 — o NOME do finder manda. Se a mesa se anuncia como AXIOS<N>
+    // (ex.: AXIOS16, AXIOS24E, AXIOS32), esse número é a verdade e o probe NÃO
+    // sobrepõe. A mesa ecoa qualquer param, então o probe vira só desempate para
+    // nomes genéricos ("Mixer Axios").
+    if let Some(name_channels) = identity_channels {
+        return Some(normalize_detected_channels(name_channels));
     }
 
-    // Se probe falhou, fallback para identidade (nome do device)
-    let result = identity_channels.map(normalize_detected_channels);
-
-    result
+    // Nome genérico/desconhecido: usa o probe (endurecido por valor != 0).
+    probed_channels.map(normalize_detected_channels)
 }
 
 // Fixed addresses the mixer assigns itself when a device joins its own access-point
@@ -1093,7 +1090,7 @@ async fn discover_mixers_by_preferred_ips(preferred_ips: &[String]) -> Result<Ve
 
 #[cfg(test)]
 mod tests {
-        use super::{parse_finder_html, parse_ipv4_from_ping_output};
+        use super::{parse_finder_html, parse_ipv4_from_ping_output, resolve_channels_from_identity_or_probe};
 
         #[test]
         fn parses_finder_table_rows() {
@@ -1123,6 +1120,18 @@ mod tests {
                 let output = "PING findmixer.local (192.168.1.20): 56 data bytes\n64 bytes from 192.168.1.20: icmp_seq=0 ttl=64 time=3.2 ms\n";
 
                 assert_eq!(parse_ipv4_from_ping_output(output).as_deref(), Some("192.168.1.20"));
+        }
+
+        #[test]
+        fn name_is_authoritative_over_probe() {
+                // Regressão: AXIOS24E/16E foram mal-detectadas como 32 pelo probe.
+                // O NOME do finder manda; o probe só decide em nome genérico.
+                assert_eq!(resolve_channels_from_identity_or_probe("AXIOS24E", None, Some(32)), Some(24));
+                assert_eq!(resolve_channels_from_identity_or_probe("AXIOS16", None, Some(32)), Some(16));
+                assert_eq!(resolve_channels_from_identity_or_probe("AXIOS32", None, None), Some(32));
+                // Nome genérico: aí sim cai no probe.
+                assert_eq!(resolve_channels_from_identity_or_probe("Mixer Axios", None, Some(32)), Some(32));
+                assert_eq!(resolve_channels_from_identity_or_probe("Mixer Axios", None, None), None);
         }
 }
 
