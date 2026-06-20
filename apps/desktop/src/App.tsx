@@ -13583,7 +13583,6 @@ function App() {
               usbInputOn={channelState.usbInputOn}
               colorId={channelState.colorId}
               eqState={processorState.eq}
-              compState={processorState.comp}
               faderDb={channelState.faderDb}
               faderPosition={channelState.faderPosition}
               pan={channelState.pan}
