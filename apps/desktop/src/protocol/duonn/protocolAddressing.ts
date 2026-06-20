@@ -320,8 +320,9 @@ export function resolveMasterColorParam(model: MixerModel, side: "left" | "right
 // ─── Input Source ────────────────────────────────────────────────────────────
 
 // Physical input source routing param. channel 1-based.
+// AX16/24: param = 2848 + channel  (CH1 → 2849). AX32: param = 2660 + slot  (slot 1 → 2661).
 export function resolveInputSourceParam(model: MixerModel, channel: number): number {
-  return model === "AX32" ? 2662 + channel : 2846 + channel;
+  return model === "AX32" ? 2660 + channel : 2848 + channel;
 }
 
 // ─── Links ───────────────────────────────────────────────────────────────────
@@ -407,6 +408,21 @@ export const AX32_FX_METER_PARAMS = [2864, 2865, 2866, 2867] as const;
 // Single source of truth for all model-specific constants.
 // All sync, polling, meters, names, and colors should derive from the active profile.
 
+export type MasterProcessorBlock = {
+  readonly compEnabled: number;
+  readonly compRatio: number;
+  readonly compAttack: number;
+  readonly compRelease: number;
+  readonly compThreshold: number;
+  readonly compGain: number;
+  readonly eqEnabled: number;
+  readonly hpfTypeSlope: number;
+  readonly hpfFreq: number;
+  readonly lpfTypeSlope: number;
+  readonly lpfFreq: number;
+  readonly eqBandBase: number;
+};
+
 export type MixerFxSlot = {
   readonly fader: number;
   readonly mute: number;
@@ -415,6 +431,8 @@ export type MixerFxSlot = {
   readonly presetSelector: number;
   readonly controlA: number;
   readonly controlB: number;
+  /** AX32 only: base param for the FX bus EQ/processor block. */
+  readonly processorBase?: number;
 };
 
 export type MixerProfile = {
@@ -455,19 +473,35 @@ export type MixerProfile = {
     readonly isPackedStereo: boolean;
   };
   readonly patching: {
-    readonly usbRecIn: { readonly base: number; readonly count: number };
-    readonly usbRecOut: { readonly base: number; readonly count: number };
-    readonly inputPatch: { readonly base: number; readonly count: number };
-    readonly outputPatch: { readonly base: number; readonly count: number };
+    readonly usbRecIn:    { readonly base: number; readonly count: number };
+    readonly usbRecOut:   { readonly base: number; readonly count: number };
+    readonly inputPatch:  { readonly base: number; readonly count: number; readonly visibleCount: number; readonly supportsUnpatched: boolean };
+    readonly outputPatch: { readonly base: number; readonly count: number; readonly visibleCount: number; readonly supportsUnpatched: boolean };
   };
   readonly master: {
-    readonly left: { readonly fader: number; readonly mute: number };
-    readonly right: { readonly fader: number; readonly mute: number };
+    readonly left:  { readonly fader: number; readonly mute: number; readonly colorParam: number; readonly soloL: number; readonly soloR: number };
+    readonly right: { readonly fader: number; readonly mute: number; readonly colorParam: number; readonly soloL: number; readonly soloR: number };
+    readonly processor: {
+      readonly left: MasterProcessorBlock;
+      readonly right?: MasterProcessorBlock;  // AX32 only
+    };
   };
   readonly links: {
     readonly channelLink: number;
     readonly outputLink: number;
     readonly masterLinkBit: number;
+  };
+  readonly colors: {
+    /** Base param for channel color (ch 1 = base, ch N = base + N - 1). */
+    readonly channelBase: number;
+    /** Base param for FX bus color (FX 1 = base, FX N = base + N - 1). */
+    readonly fxBase: number;
+    /** Base param for AUX bus color (AUX 1 = base, AUX N = base + N - 1). */
+    readonly auxBase: number;
+  };
+  readonly inputSource: {
+    /** param = base + channel (1-based). AX16/24: 2848, AX32: 2660. */
+    readonly base: number;
   };
 };
 
@@ -493,16 +527,26 @@ export const PROFILE_AX16: MixerProfile = {
     isPackedStereo: true,
   },
   patching: {
-    usbRecIn:   { base: 2783, count: 16 },
-    usbRecOut:  { base: 2799, count: 16 },
-    inputPatch: { base: 2863, count: 18 },  // CH1–16 + DIGI L/R
-    outputPatch: { base: 2889, count: 10 },
+    usbRecIn:    { base: 2783, count: 16 },
+    usbRecOut:   { base: 2799, count: 16 },
+    inputPatch:  { base: 2863, count: 18, visibleCount: 16, supportsUnpatched: true },  // CH1–16 + DIGI L/R
+    outputPatch: { base: 2889, count: 10, visibleCount: 10, supportsUnpatched: true },
   },
   master: {
-    left:  { fader: 2548, mute: 2550 },
-    right: { fader: 2657, mute: 2659 },
+    left:  { fader: 2548, mute: 2550, colorParam: 3146, soloL: 1575, soloR: 1576 },
+    right: { fader: 2657, mute: 2659, colorParam: 3147, soloL: 1637, soloR: 1638 },
+    processor: {
+      left: {
+        compEnabled: 2552, compRatio: 2553, compAttack: 2554, compRelease: 2555,
+        compThreshold: 2556, compGain: 2557,
+        eqEnabled: 2561, hpfTypeSlope: 2563, hpfFreq: 2564,
+        lpfTypeSlope: 2565, lpfFreq: 2566, eqBandBase: 2568,
+      },
+    },
   },
   links: { channelLink: 3055, outputLink: 3056, masterLinkBit: 16 },
+  colors: { channelBase: 3110, fxBase: 3128, auxBase: 3130 },
+  inputSource: { base: 2848 },
 };
 
 export const PROFILE_AX24: MixerProfile = {
@@ -527,16 +571,26 @@ export const PROFILE_AX24: MixerProfile = {
     isPackedStereo: true,
   },
   patching: {
-    usbRecIn:   { base: 2783, count: 16 },
-    usbRecOut:  { base: 2799, count: 16 },
-    inputPatch: { base: 2863, count: 26 },  // CH1–24 + DIGI L/R
-    outputPatch: { base: 2889, count: 10 },
+    usbRecIn:    { base: 2783, count: 16 },
+    usbRecOut:   { base: 2799, count: 16 },
+    inputPatch:  { base: 2863, count: 26, visibleCount: 24, supportsUnpatched: true },  // CH1–24 + DIGI L/R
+    outputPatch: { base: 2889, count: 10, visibleCount: 10, supportsUnpatched: true },
   },
   master: {
-    left:  { fader: 2548, mute: 2550 },
-    right: { fader: 2657, mute: 2659 },
+    left:  { fader: 2548, mute: 2550, colorParam: 3154, soloL: 1575, soloR: 1576 },
+    right: { fader: 2657, mute: 2659, colorParam: 3155, soloL: 1637, soloR: 1638 },
+    processor: {
+      left: {
+        compEnabled: 2552, compRatio: 2553, compAttack: 2554, compRelease: 2555,
+        compThreshold: 2556, compGain: 2557,
+        eqEnabled: 2561, hpfTypeSlope: 2563, hpfFreq: 2564,
+        lpfTypeSlope: 2565, lpfFreq: 2566, eqBandBase: 2568,
+      },
+    },
   },
   links: { channelLink: 3055, outputLink: 3056, masterLinkBit: 16 },
+  colors: { channelBase: 3110, fxBase: 3136, auxBase: 3138 },
+  inputSource: { base: 2848 },
 };
 
 export const PROFILE_AX32: MixerProfile = {
@@ -547,10 +601,10 @@ export const PROFILE_AX32: MixerProfile = {
   fx: {
     count: 4,
     slots: [
-      { fader: 4873, mute: 4874, soloL: 4893, soloR: 4894, presetSelector: 5116, controlA: 2754, controlB: 2755 },
-      { fader: 4895, mute: 4896, soloL: 4915, soloR: 4916, presetSelector: 5117, controlA: 2785, controlB: 2786 },
-      { fader: 4917, mute: 4918, soloL: 4937, soloR: 4938, presetSelector: 5118, controlA: 2816, controlB: 2817 },
-      { fader: 4939, mute: 4940, soloL: 4959, soloR: 4960, presetSelector: 5119, controlA: 2847, controlB: 2848 },
+      { fader: 4873, mute: 4874, soloL: 4893, soloR: 4894, presetSelector: 5116, controlA: 2754, controlB: 2755, processorBase: 2727 },
+      { fader: 4895, mute: 4896, soloL: 4915, soloR: 4916, presetSelector: 5117, controlA: 2785, controlB: 2786, processorBase: 2758 },
+      { fader: 4917, mute: 4918, soloL: 4937, soloR: 4938, presetSelector: 5118, controlA: 2816, controlB: 2817, processorBase: 2789 },
+      { fader: 4939, mute: 4940, soloL: 4959, soloR: 4960, presetSelector: 5119, controlA: 2847, controlB: 2848, processorBase: 2820 },
     ],
   },
   dca: { count: 8, base: 4991, stride: 9 },
@@ -563,16 +617,32 @@ export const PROFILE_AX32: MixerProfile = {
     isPackedStereo: true,
   },
   patching: {
-    usbRecIn:   { base: 2533, count: 32 },
-    usbRecOut:  { base: 2565, count: 32 },
-    inputPatch: { base: 2693, count: 34 },  // CH1–32 + DIGI L/R
-    outputPatch: { base: 4855, count: 18 },
+    usbRecIn:    { base: 2533, count: 32 },
+    usbRecOut:   { base: 2565, count: 32 },
+    inputPatch:  { base: 2693, count: 34, visibleCount: 32, supportsUnpatched: true },  // CH1–32 + DIGI L/R
+    outputPatch: { base: 4855, count: 18, visibleCount: 14, supportsUnpatched: true },
   },
   master: {
-    left:  { fader: 4634, mute: 4636 },
-    right: { fader: 4743, mute: 4745 },
+    left:  { fader: 4634, mute: 4636, colorParam: 5185, soloL: 4646, soloR: 4647 },
+    right: { fader: 4743, mute: 4745, colorParam: 5186, soloL: 4755, soloR: 4756 },
+    processor: {
+      left: {
+        compEnabled: 4638, compRatio: 4639, compAttack: 4640, compRelease: 4641,
+        compThreshold: 4642, compGain: 4643,
+        eqEnabled: 4649, hpfTypeSlope: 4651, hpfFreq: 4652,
+        lpfTypeSlope: 4653, lpfFreq: 4654, eqBandBase: 4656,
+      },
+      right: {
+        compEnabled: 4747, compRatio: 4748, compAttack: 4749, compRelease: 4750,
+        compThreshold: 4751, compGain: 4752,
+        eqEnabled: 4758, hpfTypeSlope: 4760, hpfFreq: 4761,
+        lpfTypeSlope: 4762, lpfFreq: 4763, eqBandBase: 4765,
+      },
+    },
   },
   links: { channelLink: 5108, outputLink: 5109, masterLinkBit: 256 },
+  colors: { channelBase: 5131, fxBase: 5165, auxBase: 5169 },
+  inputSource: { base: 2660 },
 };
 
 export const MIXER_PROFILES: Readonly<Record<MixerModel, MixerProfile>> = {

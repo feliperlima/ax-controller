@@ -3,7 +3,6 @@ import { stripColorForScope } from "./stripColor";
 
 type PatchingViewProps = {
   isConnected: boolean;
-  isAx32ProfileActive: boolean;
   resetBusy?: boolean;
   channelCount?: number;
   usbInputToUsbRoutes: number[];
@@ -28,7 +27,6 @@ function sourceLabel(prefix: string, source: number) {
 
 export function PatchingView({
   isConnected,
-  isAx32ProfileActive,
   resetBusy = false,
   channelCount = 32,
   usbInputToUsbRoutes,
@@ -46,23 +44,12 @@ export function PatchingView({
   onResetRecordPatchingDefaults,
   onResetPlayPatchingDefaults,
 }: PatchingViewProps) {
-  if (!isAx32ProfileActive) {
-    return (
-      <section className="patching-view patching-view--unavailable">
-        <h2 className="patching-view__title">Patching</h2>
-        <p className="patching-view__hint">
-          Disponivel somente para AX32 no momento.
-        </p>
-      </section>
-    );
-  }
-
-  const visibleChannelCount = Math.max(1, Math.min(32, channelCount));
+  const visibleChannelCount = Math.max(1, channelCount);
   const outputVisibleCount = outputRoutes.length;
-  const usbReturnVisibleCount = Math.min(usbReturnRoutes.length, visibleChannelCount);
-  const usbRouteMax = 32;
-  const inputSourceMax = 32;
-  const outputSourceMax = 14;
+  const usbReturnVisibleCount = usbReturnRoutes.length;
+  const usbRouteMax = usbInputToUsbRoutes.length;
+  const inputSourceMax = inputRoutes.length;
+  const outputSourceMax = outputRoutes.length;
   const [activeTab, setActiveTab] = useState<"record" | "play">("record");
 
   const channels = Array.from({ length: visibleChannelCount }, (_, index) => {
