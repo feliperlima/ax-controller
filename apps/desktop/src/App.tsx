@@ -1588,6 +1588,7 @@ function getDefaultDisplayName(target: NameTarget) {
   if (target.type === "aux") return `Auxiliar ${target.aux}`;
   if (target.type === "fx") return `Efeito ${target.fx}`;
   if (target.type === "master") return `Master ${target.side === "left" ? "L" : "R"}`;
+  if (target.type === "digi") return "DIGI";
   return `DCA ${target.dca}`;
 }
 
@@ -1602,6 +1603,7 @@ function getDefaultMixerAlias(target: NameTarget) {
   }
   if (target.type === "fx") return `FX${target.fx}`;
   if (target.type === "master") return target.side === "left" ? "MASTERL" : "MASTERR";
+  if (target.type === "digi") return "DIGI";
   return `DCA${target.dca}`;
 }
 
@@ -2867,20 +2869,21 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appStage, isConnected]);
 
-  async function runBootstrap(id: string, { showToasts = false } = {}) {
-    if (!navigator.onLine) return;
+  async function runBootstrap(id: string, { showToasts = false } = {}): Promise<boolean> {
+    if (!navigator.onLine) return false;
     const licenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
     const boot = await fetchBootstrap({
       installationId: id,
       appVersion: APP_VERSION,
       licenseKey,
-    }).catch((err: unknown) => {
-      if (err instanceof Error && (err as { isUnauthenticated?: boolean }).isUnauthenticated) {
-        handleLogout();
-      }
+    }).catch(() => {
+      // A bootstrap failure — including a transient 401 before the device finishes
+      // registering — must NOT log the user out. License validity is enforced by
+      // runBackgroundLicenseRevalidation; bootstrap is informational (flags/founder/cert).
+      // Returning null lets the caller retry until the device activation lands.
       return null;
     });
-    if (!boot) return;
+    if (!boot) return false;
 
     if (boot.user) {
       if (boot.user.name) {
@@ -2964,6 +2967,10 @@ function App() {
         featureFlags: boot.feature_flags,
       });
     }
+
+    // Success only when authenticated data actually arrived (boot.user present), or
+    // it was an anonymous call (no key). A key present but no user = failed auth → retry.
+    return licenseKey === "" || Boolean(boot.user);
   }
   const runBootstrapRef = useRef(runBootstrap);
   useEffect(() => { runBootstrapRef.current = runBootstrap; });
@@ -3125,13 +3132,36 @@ function App() {
     void runBackgroundLicenseRevalidation(true, true);
   }, [installationId, isOnline]);
 
-  // Run bootstrap once the license is validated — session is guaranteed active at this point.
-  const bootstrapRanAfterValidationRef = useRef(false);
+  // Re-run bootstrap whenever the ACTIVE license key changes (first login, trial
+  // activation, account switch) — not just once. A one-shot guard here left
+  // is_founder/feature_flags stale: e.g. a free user who activated a trial (key
+  // arrived after isLicenseValidated was already true) kept is_founder=null and
+  // saw the founder price; switching accounts never re-bootstrapped either.
+  const lastBootstrappedKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!isLicenseValidated || !installationId || bootstrapRanAfterValidationRef.current) return;
-    bootstrapRanAfterValidationRef.current = true;
-    void runBootstrapRef.current(installationId, { showToasts: true });
-  }, [isLicenseValidated, installationId]);
+    if (!isLicenseValidated || !installationId) return;
+    const key = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    if (!key) return; // no key yet → the anonymous effect handles flags/messages
+    if (lastBootstrappedKeyRef.current === key) return;
+
+    // Retry until the authenticated bootstrap succeeds. On first login the device
+    // activation can land a beat after the license key, so the first attempt may come
+    // back unauthenticated — without this the founder badge / feature flags (IEM banner,
+    // PIX) would stay missing until the next app focus. Mark the key only on success.
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    const run = async () => {
+      if (cancelled) return;
+      const ok = await runBootstrapRef.current(installationId, { showToasts: attempt === 0 });
+      if (cancelled) return;
+      if (ok) { lastBootstrappedKeyRef.current = key; return; }
+      attempt += 1;
+      if (attempt <= 4) timer = setTimeout(run, 1500 * attempt);
+    };
+    void run();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [isLicenseValidated, installationId, licenseKeyInput]);
 
   // For free/anonymous users (no license key, isLicenseValidated never fires):
   // run bootstrap once to load feature flags and messages without user data.
@@ -4724,6 +4754,16 @@ function App() {
       };
       setDigiProcessorState(parsedState);
     }
+
+    // DIGI name — slot = channelCount + side (confirmed AX32 via WS capture: idx 32).
+    // Non-fatal: if nothing is stored at that slot, keep the local/default "DIGI".
+    try {
+      const digiName = (await client.readDigiName("left", 800)).trim();
+      if (digiName.length > 0) {
+        updateDigiChannelState(0, { channelName: digiName, mixerName: digiName });
+        updateDigiChannelState(1, { channelName: digiName, mixerName: digiName });
+      }
+    } catch { /* keep local/default DIGI name */ }
   }
 
   function getUsbReturnPatchParamsForActiveProfile() {
@@ -6304,7 +6344,8 @@ function App() {
       });
     }
 
-    // DIGI name slot index is not mapped for any model — skip mixer name read.
+    // DIGI name is read/written separately in syncDigiChannels / handleDigiCustomizerSave
+    // (slot = channelCount + side), not through this channel/aux/fx name loop.
   }
 
   function handleDcaGroupRename(id: DcaGroupId, name: string) {
@@ -6499,7 +6540,8 @@ function App() {
       return next;
     });
 
-    // Sync DIGI color + name alongside regular channel color refresh (runs every ~2.2s)
+    // Sync DIGI color alongside regular channel color refresh (runs every ~2.2s).
+    // DIGI name is synced in syncDigiChannels (slot = channelCount + side).
     {
       const [digiChL, digiChR] = getDigiChannelNumbers();
       const digiColorResponse = await client.readParams(
@@ -10455,6 +10497,8 @@ function App() {
     setIsFounder(null);
     setBootstrapFeatureFlags({});
     setBootstrapMessages([]);
+    lastBootstrappedKeyRef.current = null;
+    bootstrapRanAnonymousRef.current = false;
     setLicenseModalMandatory(true);
     setLicenseModalMode("onboarding");
     setLicenseModalOpen(true);
@@ -12171,8 +12215,11 @@ function App() {
     if (appStage !== "demo") {
       const client = clientRef.current;
       if (!client) return;
-      client.setNameByIndex(chL - 1, mixerName);
-      client.setNameByIndex(chR - 1, mixerName);
+      // DIGI name slot = channelCount + side (L/R). Confirmed on AX32 via WS capture
+      // (DIGI L = idx 32); same pattern lands in a safe post-channel gap on AX16
+      // (16/17) and AX24 (24/25). Write both halves so the desk stores it consistently.
+      client.setDigiName("left", mixerName);
+      client.setDigiName("right", mixerName);
       client.setChannelColor(chL, normalizedColorId);
       client.setChannelColor(chR, normalizedColorId);
     }
@@ -12584,14 +12631,14 @@ function App() {
   }
 
   function toggleDigiSolo() {
-    const [chL] = getDigiChannelNumbers();
+    const [chL, chR] = getDigiChannelNumbers();
     const nextValue = !(digiChannels[0].soloOn || digiChannels[1].soloOn);
     updateDigiChannelState(0, { soloOn: nextValue });
     updateDigiChannelState(1, { soloOn: nextValue });
     if (appStage === "demo") return;
     const client = clientRef.current;
     if (!client) return;
-    client.setChannelSoloPair(chL, nextValue, { db: 0, tapPoint: "post" });
+    client.setDigiSoloPair(chL, chR, nextValue, { db: 0, tapPoint: "post" });
   }
 
   function handleDigiFaderChange(position: number) {
@@ -13943,6 +13990,7 @@ function App() {
             state={processorState}
             disabled={!isConnected && appStage !== "demo"}
             hideGate={true}
+            hideCompMeters={true}
             moduleItems={[
               { id: "eq", label: "EQ" },
               { id: "comp", label: "COMP" },
@@ -14657,6 +14705,7 @@ function App() {
               state={masterProcessorState}
               disabled={!isConnected && appStage !== "demo"}
               hideGate={true}
+              hideCompMeters={true}
               moduleItems={[
                 { id: "eq", label: "EQ" },
                 { id: "comp", label: "COMP" },
@@ -15836,8 +15885,11 @@ function App() {
   }, [detailView, isConnected]);
 
   // null = bootstrap ainda não chegou → usar preço founder (nunca cobrar a mais por incerteza)
-  const UPGRADE_PRICE_LABEL = isFounder === false ? REGULAR_PRICE_LABEL : FOUNDER_PRICE_LABEL;
-  const pixAmountBRL = isFounder === false ? 189.90 : 99.90;
+  // Safety: only the FOUNDER price when is_founder is confirmed true. null/unknown
+  // → regular price, so a non-founder (or a not-yet-bootstrapped session) is never
+  // undercharged at the founder price.
+  const UPGRADE_PRICE_LABEL = isFounder === true ? FOUNDER_PRICE_LABEL : REGULAR_PRICE_LABEL;
+  const pixAmountBRL = isFounder === true ? 99.90 : 189.90;
 
   const trialDaysRemaining = getTrialRemainingDays(licenseTrialExpiryAt);
   const trialIsActive = licenseFormalState === "TRIAL_ACTIVE";

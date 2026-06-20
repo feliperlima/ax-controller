@@ -12,7 +12,8 @@ export type NameTarget =
   | { type: "fx"; fx: number }
   | { type: "aux"; aux: number }
   | { type: "master"; side: "left" | "right" }
-  | { type: "dca"; dca: number };
+  | { type: "dca"; dca: number }
+  | { type: "digi"; side: "left" | "right" };
 
 export type AxiosProtocolProfile = "ax16_24" | "ax32" | "ax32_experimental";
 
@@ -760,6 +761,15 @@ function getNameTargetIndex(target: NameTarget) {
     if (isAx32) return 0x37 + dca;  // DCA1=0x38
     if (isAx16) return 0x25 + dca;  // DCA1=0x26
     return 0x2D + dca;              // DCA1=0x2E (AX24)
+  }
+
+  if (target.type === "digi") {
+    // DIGI fica logo após o último canal na tabela de nomes (slot = channelCount + lado).
+    // Confirmado no AX32 via captura do WS: DIGI L = 32 (= channelCount). Mesmo padrão
+    // se aplica ao AX16 (16/17) e AX24 (24/25). NÃO usar (canal DIGI - 1): AX16 e AX24
+    // compartilham os ids de canal 25/26, então essa fórmula cairia em 24/25, colidindo
+    // com os slots de nome de AUX5/AUX6 no AX16.
+    return channelCount + (target.side === "left" ? 0 : 1);
   }
 
   throw new Error("Tipo de target inválido.");
@@ -1653,6 +1663,14 @@ export class Axios16Client {
     this.setName({ type: "fx", fx }, displayName);
   }
 
+  readDigiName(side: "left" | "right", timeoutMs = 1200) {
+    return this.readName({ type: "digi", side }, timeoutMs);
+  }
+
+  setDigiName(side: "left" | "right", displayName: string) {
+    this.setName({ type: "digi", side }, displayName);
+  }
+
   async readChannelNames(channelCount = this.capabilities.channelCount, timeoutMs = 1200) {
     const result: Record<number, string> = {};
     const safeChannelCount = Math.max(
@@ -2099,6 +2117,37 @@ export class Axios16Client {
     this.sendParam(oddParams.right, offValue);
     this.sendParam(evenParams.left, offValue);
     this.sendParam(evenParams.right, onValue);
+  }
+
+  // DIGI is a stereo input beyond the visible channel range (AX16/24: ch25/26, AX32: ch33/34),
+  // so it can't go through setChannelSoloPair, which caps at the visible channel count / 32 and
+  // would throw. Compute its solo params straight from the channel formula — the exact block the
+  // realtime readback reads (channelParam(ch, 87/88)) — so write and read stay in sync.
+  setDigiSoloPair(
+    leftChannel: number,
+    rightChannel: number,
+    enabled: boolean,
+    options?: { db?: number | "-inf"; tapPoint?: MonitorTapPoint }
+  ) {
+    const tapPoint = options?.tapPoint ?? "post";
+    const onValue = monitorSendValue(options?.db ?? 0, tapPoint);
+    const offValue = monitorSendValue("-inf", tapPoint);
+    const leftSoloL = chParam(Math.round(leftChannel), 87);
+    const rightSoloL = chParam(Math.round(rightChannel), 87);
+
+    if (!enabled) {
+      this.sendParam(leftSoloL, offValue);
+      this.sendParam(leftSoloL + 1, offValue);
+      this.sendParam(rightSoloL, offValue);
+      this.sendParam(rightSoloL + 1, offValue);
+      return;
+    }
+
+    // Stereo solo: DIGI L → left monitor bus, DIGI R → right monitor bus.
+    this.sendParam(leftSoloL, onValue);
+    this.sendParam(leftSoloL + 1, offValue);
+    this.sendParam(rightSoloL, offValue);
+    this.sendParam(rightSoloL + 1, onValue);
   }
 
   setAuxMasterFader(auxNumber: number, db: number | "-inf") {
