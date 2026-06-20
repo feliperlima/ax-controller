@@ -15725,6 +15725,7 @@ function App() {
                 isLinked={selectedAuxLinked}
                 disabled={!isConnected && appStage !== "demo"}
                 eqState={selectedBusProcessorState.eq}
+                onOpenDetail={goToDetailAux}
                 onToggleMute={() => toggleStripMute("aux", selectedBus)}
                 onToggleSolo={() => toggleStripSolo("aux", selectedBus)}
                 onToggleLink={() => {
@@ -15747,6 +15748,7 @@ function App() {
                 colorId={selectedFxStrip.colorId}
                 channelName={selectedFxStrip.channelName}
                 eqState={selectedBusProcessorState.eq}
+                onOpenDetail={goToDetailFx}
                 muted={selectedFxStrip.muted}
                 soloOn={selectedFxStrip.soloOn}
                 faderDb={selectedFxStrip.faderDb}
