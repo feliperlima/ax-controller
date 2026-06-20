@@ -539,8 +539,8 @@ export const PROFILE_AX16: MixerProfile = {
       left: {
         compEnabled: 2552, compRatio: 2553, compAttack: 2554, compRelease: 2555,
         compThreshold: 2556, compGain: 2557,
-        eqEnabled: 2561, hpfTypeSlope: 2563, hpfFreq: 2564,
-        lpfTypeSlope: 2565, lpfFreq: 2566, eqBandBase: 2568,
+        eqEnabled: 2563, hpfTypeSlope: 2565, hpfFreq: 2566,
+        lpfTypeSlope: 2567, lpfFreq: 2568, eqBandBase: 2570,
       },
     },
   },
@@ -583,8 +583,8 @@ export const PROFILE_AX24: MixerProfile = {
       left: {
         compEnabled: 2552, compRatio: 2553, compAttack: 2554, compRelease: 2555,
         compThreshold: 2556, compGain: 2557,
-        eqEnabled: 2561, hpfTypeSlope: 2563, hpfFreq: 2564,
-        lpfTypeSlope: 2565, lpfFreq: 2566, eqBandBase: 2568,
+        eqEnabled: 2563, hpfTypeSlope: 2565, hpfFreq: 2566,
+        lpfTypeSlope: 2567, lpfFreq: 2568, eqBandBase: 2570,
       },
     },
   },
