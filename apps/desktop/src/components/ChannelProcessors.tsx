@@ -76,6 +76,8 @@ type ChannelProcessorsProps = {
   state: ProcessorState;
   disabled?: boolean;
   hideComp?: boolean;
+  // Hide the compressor GR/OUT meter bars (AUX/MASTER — desk has no real post-comp data there).
+  hideCompMeters?: boolean;
   hideGate?: boolean;
   hideSends?: boolean;
   hideModuleTabs?: boolean;
@@ -3056,12 +3058,16 @@ function CompressorEditor({
   onChange,
   onReset,
   channelInputDb,
+  showMeters = true,
 }: {
   comp: CompressorState;
   disabled?: boolean;
   onChange: (patch: Partial<CompressorState>) => void;
   onReset: () => void;
   channelInputDb?: number;
+  // GR/OUT meters are only meaningful where the desk exposes real post-comp data
+  // (channels). AUX/MASTER have no real GR/output, so hide those bars there.
+  showMeters?: boolean;
 }) {
   const controllersDisabled = disabled || !comp.enabled;
   const metersDisabled = disabled || !comp.enabled;
@@ -3152,7 +3158,7 @@ function CompressorEditor({
               padding: 32,
               boxSizing: "border-box",
               display: "grid",
-              gridTemplateColumns: "minmax(0, 1fr) auto",
+              gridTemplateColumns: showMeters ? "minmax(0, 1fr) auto" : "minmax(0, 1fr)",
               alignItems: "stretch",
               gap: 12,
               borderRadius: 4,
@@ -3161,6 +3167,7 @@ function CompressorEditor({
             }}
           >
             <CompressorGraph comp={comp} disabled={disabled} onChange={onChange} />
+            {showMeters && (
             <div
               style={{
                 minHeight: 0,
@@ -3190,6 +3197,7 @@ function CompressorEditor({
                 <MeterScale clipped={outClipped} />
               </div>
             </div>
+            )}
           </div>
         </div>
 
@@ -3741,6 +3749,7 @@ export function ChannelProcessors({
   state,
   disabled = false,
   hideComp = false,
+  hideCompMeters = false,
   hideGate = false,
   hideSends = false,
   hideModuleTabs = false,
@@ -3858,6 +3867,7 @@ export function ChannelProcessors({
             onChange={onCompChange}
             onReset={onResetComp}
             channelInputDb={channelInputDb}
+            showMeters={!hideCompMeters}
           />
         )}
 
