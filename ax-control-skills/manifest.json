@@ -1,0 +1,48 @@
+{
+  "name": "ax-control-skills",
+  "version": "0.2.0",
+  "created_at": "2026-06-21",
+  "updated_at": "2026-06-21",
+  "owner": "Felipe Rocha Lima",
+  "company": "AX Control",
+  "purpose": "Skills estratégicas, técnicas, operacionais e criativas para orientar decisões e execução da AX Control.",
+  "aligned_with": "ax-controller @ v1.1.0",
+  "shared": [
+    "shared/ax-control-context.md",
+    "shared/product-principles.md",
+    "shared/brand-voice.md",
+    "shared/roadmap-context.md"
+  ],
+  "skills": [
+    {
+      "id": "vision-chief",
+      "role": "Vision Chief",
+      "scope": "Visão, posicionamento, modelo de negócio, parceria DUONN, priorização macro."
+    },
+    {
+      "id": "head-of-audio-product",
+      "role": "Head of Audio Product",
+      "scope": "UX e fluxos de áudio ao vivo: Mixer, AUX, FX, DCA, Mute, Scenes, IEM, RTA, permissões."
+    },
+    {
+      "id": "cmo-growth",
+      "role": "CMO Growth",
+      "scope": "Posicionamento, comunidade, conteúdo, prova social, lançamento e conversão."
+    },
+    {
+      "id": "coo-orchestrator",
+      "role": "COO Orchestrator",
+      "scope": "Processos, backlog, bugs, rotina, release e métricas para fundador solo."
+    },
+    {
+      "id": "cto-architect",
+      "role": "CTO Architect",
+      "scope": "Arquitetura, licença/certificado, PIX, protocolo da mesa, feature flags, segurança."
+    },
+    {
+      "id": "ax-ai-lab",
+      "role": "AX AI Lab",
+      "scope": "IA aplicada ao áudio: Feedback Alert, Auto EQ, RTA inteligente, Sound Check Assist."
+    }
+  ]
+}
