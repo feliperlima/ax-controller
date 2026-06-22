@@ -348,7 +348,13 @@ export function getDeviceNameLabel() {
 export function buildLicenseApiUrl(path: string) {
   if (!LICENSE_API_BASE_URL) return "";
   const base = LICENSE_API_BASE_URL.endsWith("/") ? LICENSE_API_BASE_URL.slice(0, -1) : LICENSE_API_BASE_URL;
-  const suffix = path.startsWith("/") ? path : `/${path}`;
+  let suffix = path.startsWith("/") ? path : `/${path}`;
+  // Blindagem: se a base já termina em /api e o path também começa com /api,
+  // remove a duplicata (evita .../api/api/... → 404). Vale pra qualquer path/plataforma.
+  if (/\/api$/i.test(base)) {
+    suffix = suffix.replace(/^\/api(?=\/|$)/i, "");
+    if (suffix === "") suffix = "/";
+  }
   return `${base}${suffix}`;
 }
 
@@ -396,13 +402,8 @@ export function buildLocalhostApiCandidates(fileName: string) {
 
 export function resolveDeviceEndpointUrl(phpFile: string): string {
   if (/^https?:\/\//i.test(phpFile)) return phpFile;
-  if (phpFile.startsWith("/")) {
-    try {
-      return `${new URL(LICENSE_API_BASE_URL).origin}${phpFile}`;
-    } catch {
-      return phpFile;
-    }
-  }
+  // Roteia tudo pelo builder blindado (única fonte de verdade de URL): aceita path
+  // com ou sem /api e nunca duplica. Antes usava .origin e exigia /api no path.
   return buildLicenseApiUrl(phpFile);
 }
 

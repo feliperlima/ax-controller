@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { iemInterestAlreadyRegistered } from "../services/telemetryService";
 import axControlBrand from "../assets/AX-control-Brand-vert.svg";
 import type { LicenseFormalState } from "../lib/licenseState";
 import type { BootstrapMessage, BootstrapVersionInfo } from "../services/bootstrapService";
@@ -77,6 +78,14 @@ function IconBell({ size = 16 }: { size?: number }) {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
       <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+    </svg>
+  );
+}
+
+function IconCheck({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="20 6 9 17 4 12" />
     </svg>
   );
 }
@@ -302,6 +311,7 @@ type HomeScreenProps = {
   onLogout?: () => void;
   onUpgrade?: () => void;
   onStartTrial?: () => void;
+  onIemInterest?: () => void;
 };
 
 export function HomeScreen({
@@ -323,8 +333,10 @@ export function HomeScreen({
   onLogout,
   onUpgrade,
   onStartTrial,
+  onIemInterest,
 }: HomeScreenProps) {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [iemSubscribed, setIemSubscribed] = useState(() => iemInterestAlreadyRegistered());
   const [dismissedBanners, setDismissedBanners] = useState<Set<string>>(new Set());
   const badge = resolveBadge(licenseFormalState, licenseTrialExpiryAt);
   const initials = getInitials(userName);
@@ -498,9 +510,13 @@ export function HomeScreen({
                   icon={<IconHeadphones size={24} />}
                   title="Monitor Pessoal (IEM)"
                   description="Cada músico no controle da sua própria mix de fone de ouvido."
-                  buttonLabel="Avise-me"
-                  buttonIcon={<IconBell size={16} />}
+                  buttonLabel={iemSubscribed ? "Inscrito" : "Avise-me"}
+                  buttonIcon={iemSubscribed ? <IconCheck size={16} /> : <IconBell size={16} />}
                   badge="Em breve"
+                  onClick={iemSubscribed ? undefined : () => {
+                    setIemSubscribed(true);
+                    onIemInterest?.();
+                  }}
                 />
               )}
             </div>

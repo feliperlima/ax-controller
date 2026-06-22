@@ -17,7 +17,11 @@ function buildHeaders(appKey: string): Record<string, string> {
 }
 
 function joinUrl(base: string, path: string): string {
-  return base.replace(/\/$/, "") + "/" + path.replace(/^\//, "");
+  const b = base.replace(/\/$/, "");
+  let p = "/" + path.replace(/^\//, "");
+  // Blindagem: nunca duplicar /api se a base já terminar em /api.
+  if (/\/api$/i.test(b)) p = p.replace(/^\/api(?=\/|$)/i, "") || "/";
+  return b + p;
 }
 
 export async function apiCreatePixPayment(

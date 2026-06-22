@@ -95,10 +95,11 @@ export function getMixerCompatibility(mixer: DiscoveredMixer): MixerCompatibilit
 
   const collisions = findChannelParamCollisions(channelCount);
   if (collisions.length > 0) {
-    const firstCollision = collisions[0];
+    // Detalhe técnico (colisão de parâmetro no mapa) só em dev — nunca exposto ao usuário.
+    if (import.meta.env.DEV) console.debug("[AX] mixer incompat:", channelCount, "ch, collision at", collisions[0]);
     return {
       supported: false,
-      reason: `Modelo com ${channelCount} canais nao suportado no mapa atual (colisao de parametro em ${firstCollision}).`,
+      reason: `Esta mesa de ${channelCount} canais ainda não é suportada nesta versão.`,
     };
   }
 

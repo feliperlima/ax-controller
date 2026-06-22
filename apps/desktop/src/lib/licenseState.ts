@@ -250,7 +250,12 @@ export function resolveLicenseFormalState(input: {
 
   if (codeUpper === "LICENSE_NOT_FOUND") return "LICENSE_NOT_FOUND";
   if (codeUpper === "LICENSE_FREE") return "LICENSE_NOT_FOUND";
+  // Expired trial is free tier, never a hard block. The server may emit either
+  // LICENSE_EXPIRED or TRIAL_EXPIRED — both must resolve here, BEFORE the
+  // status==="blocked" / !valid guards below (the server sends state="blocked",
+  // valid=false for expired trials, which would otherwise classify as LICENSE_BLOCKED).
   if (codeUpper === "LICENSE_EXPIRED") return "TRIAL_EXPIRED";
+  if (codeUpper === "TRIAL_EXPIRED") return "TRIAL_EXPIRED";
   if (codeUpper === "LICENSE_INACTIVE") return "LICENSE_BLOCKED";
   if (codeUpper === "LICENSE_PENDING") return "LICENSE_BLOCKED";
   if (codeUpper === "ACTIVATION_LIMIT_REACHED") return "LICENSE_BLOCKED";
