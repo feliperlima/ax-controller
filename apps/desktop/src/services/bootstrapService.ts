@@ -60,6 +60,8 @@ export type BootstrapResult = {
   version: BootstrapVersionInfo | null;
   public_key: string | null;
   maintenance: { active: boolean; message: string | null };
+  /** True when this device has already used a trial (any account) — hide the trial offer. */
+  device_trial_used: boolean;
   server_time: string | null;
 };
 
@@ -174,6 +176,7 @@ export async function fetchBootstrap(params: {
         active: Boolean(rawMaint?.["active"]),
         message: typeof rawMaint?.["message"] === "string" ? rawMaint["message"] : null,
       },
+      device_trial_used: Boolean(b["device_trial_used"]),
       server_time: typeof b["server_time"] === "string" ? b["server_time"] : null,
     };
   } catch {

@@ -59,6 +59,8 @@ export type GroupMemberBit = {
   value: number;
   isConfirmed: boolean;
   note?: string;
+  /** Extra bits set/decoded together with the primary bit (e.g. stereo L+R). */
+  extraBits?: Array<{ wordIndex: 0 | 1 | 2 | 3; bit: number }>;
 };
 
 export type BitmaskProtocolProfile = "ax16_24" | "ax32" | "ax32_experimental";
@@ -222,7 +224,14 @@ const GROUP_MEMBER_BITS_AX16_24: Readonly<Record<GroupMember, GroupMemberBit | n
     isConfirmed: false,
     note: "Provisional: bit value is confirmed in aggregate, side assignment L/R still needs hardware validation.",
   },
-  DIGI: null,
+  DIGI: {
+    wordIndex: 1,
+    bit: 8,
+    value: 256,
+    isConfirmed: false,
+    note: "Inferred AX16/24: DIGI L=word1 bit8, R=word1 bit9 (immediately before FX_1 at bit10, same relative position as AX32). Validate on hardware.",
+    extraBits: [{ wordIndex: 1, bit: 9 }],
+  },
 };
 
 const GROUP_MEMBER_BITS_AX32: Readonly<Record<GroupMember, GroupMemberBit | null>> = {
@@ -275,7 +284,14 @@ const GROUP_MEMBER_BITS_AX32: Readonly<Record<GroupMember, GroupMemberBit | null
     isConfirmed: false,
     note: "Provisional AX32 mapping: MASTER bits placed after AUX_14. Validate on hardware.",
   },
-  DIGI: null,
+  DIGI: {
+    wordIndex: 2,
+    bit: 0,
+    value: 1,
+    isConfirmed: true,
+    note: "CONFIRMED AX32: DIGI L=word2 bit0, R=word2 bit1 (value=3 when only DIGI selected). Both bits encoded/decoded together.",
+    extraBits: [{ wordIndex: 2, bit: 1 }],
+  },
 };
 
 export const GROUP_MEMBER_BITS = GROUP_MEMBER_BITS_AX32;
@@ -321,6 +337,11 @@ export function encodeGroupMembers(members: GroupMember[]): [number, number, num
     const mapped = bits[member];
     if (!mapped) continue;
     words[mapped.wordIndex] = setBit(words[mapped.wordIndex], mapped.bit);
+    if (mapped.extraBits) {
+      for (const extra of mapped.extraBits) {
+        words[extra.wordIndex] = setBit(words[extra.wordIndex], extra.bit);
+      }
+    }
   }
 
   return words;

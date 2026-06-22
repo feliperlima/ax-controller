@@ -31,6 +31,8 @@ export type LicenseSnapshot = {
   trialExpiryAt: string | null;
   installationUuid: string;
   nextRevalidationAt: string | null;
+  /** When this device was revoked (validate.php LICENSE_REVOKED) — for the "device revoked" modal. */
+  revokedAt: string | null;
   activeDevices: number | null;
   remainingActivations: number | null;
   unlimitedActivations: boolean;
@@ -218,6 +220,7 @@ export function parseLicenseSnapshot(payload: Record<string, unknown>): LicenseS
       normalizeIsoDate(revalidation.next_due_at) ||
       normalizeIsoDate(scoped.next_revalidation_at) ||
       normalizeIsoDate(body.next_revalidation_at),
+    revokedAt: normalizeIsoDate(scoped.revoked_at) || normalizeIsoDate(body.revoked_at),
     activeDevices:
       toNumberValue(activation.active_devices) ?? toNumberValue(scoped.active_devices) ?? toNumberValue(body.active_devices),
     remainingActivations:
@@ -258,7 +261,7 @@ export function resolveLicenseFormalState(input: {
   if (codeUpper === "TRIAL_EXPIRED") return "TRIAL_EXPIRED";
   if (codeUpper === "LICENSE_INACTIVE") return "LICENSE_BLOCKED";
   if (codeUpper === "LICENSE_PENDING") return "LICENSE_BLOCKED";
-  if (codeUpper === "ACTIVATION_LIMIT_REACHED") return "LICENSE_BLOCKED";
+  if (codeUpper === "ACTIVATION_LIMIT_REACHED" || codeUpper === "MAX_DEVICES_REACHED") return "LICENSE_BLOCKED";
   if (codeUpper === "LICENSE_REVOKED" || statusLower === "revoked") return "LICENSE_REVOKED";
   if (codeUpper === "LICENSE_SUSPENDED" || statusLower === "suspended") return "LICENSE_SUSPENDED";
   if (codeUpper === "LICENSE_BLOCKED" || statusLower === "blocked") return "LICENSE_BLOCKED";

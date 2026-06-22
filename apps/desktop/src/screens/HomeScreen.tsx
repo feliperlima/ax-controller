@@ -312,6 +312,8 @@ type HomeScreenProps = {
   onUpgrade?: () => void;
   onStartTrial?: () => void;
   onIemInterest?: () => void;
+  /** When true, this device already used a trial — show "buy/keep free" instead of the trial offer. */
+  deviceTrialUsed?: boolean;
 };
 
 export function HomeScreen({
@@ -334,6 +336,7 @@ export function HomeScreen({
   onUpgrade,
   onStartTrial,
   onIemInterest,
+  deviceTrialUsed = false,
 }: HomeScreenProps) {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [iemSubscribed, setIemSubscribed] = useState(() => iemInterestAlreadyRegistered());
@@ -399,7 +402,7 @@ export function HomeScreen({
           );
         })()}
 
-        {licenseFormalState === "LICENSE_NOT_FOUND" && (
+        {licenseFormalState === "LICENSE_NOT_FOUND" && !deviceTrialUsed && (
           <div className="hs-upgrade-card">
             <div className="hs-upgrade-card__icon" aria-hidden="true">✦</div>
             <div className="hs-upgrade-card__text">
@@ -408,6 +411,19 @@ export function HomeScreen({
             </div>
             <button type="button" className="hs-upgrade-card__btn" onClick={onStartTrial ?? onNavLicense}>
               Iniciar teste grátis
+            </button>
+          </div>
+        )}
+
+        {licenseFormalState === "LICENSE_NOT_FOUND" && deviceTrialUsed && (
+          <div className="hs-upgrade-card">
+            <div className="hs-upgrade-card__icon" aria-hidden="true">✦</div>
+            <div className="hs-upgrade-card__text">
+              <p className="hs-upgrade-card__title">Tenha o AX Control+</p>
+              <p className="hs-upgrade-card__desc">Este dispositivo já usou o teste grátis. Ative o Plus para o controle completo — ou siga no plano grátis.</p>
+            </div>
+            <button type="button" className="hs-upgrade-card__btn" onClick={onUpgrade ?? onNavLicense}>
+              Ativar Plus
             </button>
           </div>
         )}

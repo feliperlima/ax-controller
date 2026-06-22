@@ -12,6 +12,8 @@ type LicensePanelProps = {
   onStartPixPayment: () => void;
   onContactForUpgrade: () => void;
   onStartTrial: () => void;
+  /** When true, this device already used a trial — hide the trial offer, keep purchase. */
+  deviceTrialUsed?: boolean;
 };
 
 function formatDate(iso: string | null): string {
@@ -73,12 +75,16 @@ export function LicensePanel({
   onStartPixPayment,
   onContactForUpgrade,
   onStartTrial,
+  deviceTrialUsed = false,
 }: LicensePanelProps) {
   const pixEnabled = useFeatureFlag("pix_payment_enabled");
   const plan = resolvePlanLabel(licenseFormalState);
   const status = resolveStatusLabel(licenseFormalState);
   const isTrial = licenseFormalState === "TRIAL_ACTIVE" || licenseFormalState === "TRIAL_EXPIRED";
-  const canStartTrial = licenseFormalState === "LICENSE_NOT_FOUND";
+  // Trial só é oferecido em um device que ainda não usou trial. Se este device já usou
+  // (qualquer conta), escondemos o trial mas mantemos a compra (free pode comprar Plus).
+  const canStartTrial = licenseFormalState === "LICENSE_NOT_FOUND" && !deviceTrialUsed;
+  const canBuy = isTrial || (licenseFormalState === "LICENSE_NOT_FOUND" && deviceTrialUsed);
   const expiryDate = isTrial ? licenseTrialExpiryAt : licenseNextRevalidationAt;
   const expiryLabel = isTrial ? "Validade do teste" : "Próxima revalidação";
 
@@ -113,7 +119,7 @@ export function LicensePanel({
           )}
         </div>
 
-        {(canStartTrial || isTrial) && (
+        {(canStartTrial || canBuy) && (
           <div className="startup-card home-panel__card">
             <div className="home-panel__field home-panel__actions">
               {canStartTrial && (
@@ -121,7 +127,7 @@ export function LicensePanel({
                   Iniciar teste grátis de 7 dias
                 </button>
               )}
-              {isTrial && (
+              {canBuy && (
                 <>
                   {!isOnline && (
                     <p className="home-panel__hint home-panel__hint--error">

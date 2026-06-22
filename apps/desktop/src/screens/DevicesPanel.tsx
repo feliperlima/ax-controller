@@ -29,7 +29,6 @@ export function DevicesPanel({
   installationId,
   deviceLimit,
   isUnlimited,
-  isTrial,
   canReactivate,
   onRefresh,
   onRevoke,
@@ -37,11 +36,9 @@ export function DevicesPanel({
 }: DevicesPanelProps) {
   const limitLabel = isUnlimited
     ? "Sem limite de dispositivos"
-    : isTrial
-      ? "O teste grátis permite apenas 1 dispositivo."
-      : deviceLimit !== null
-        ? `Esta licença permite até ${deviceLimit} dispositivos.`
-        : "Número de dispositivos definido pela sua licença.";
+    : deviceLimit !== null
+      ? `Esta licença permite até ${deviceLimit} dispositivo${deviceLimit === 1 ? "" : "s"}.`
+      : "Número de dispositivos definido pela sua licença.";
 
   return (
     <div className="home-panel">

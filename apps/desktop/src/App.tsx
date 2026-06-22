@@ -60,6 +60,7 @@ import { DeviceSelectionPanel } from "./components/DeviceSelectionScreen";
 import { HomeScreen, type HomeNavView } from "./screens/HomeScreen";
 import { LicensePanel } from "./screens/LicensePanel";
 import { DevicesPanel } from "./screens/DevicesPanel";
+import { DeviceGateModal } from "./screens/DeviceGateModal";
 import { SettingsPanel } from "./screens/SettingsPanel";
 import { UpgradeModal } from "./screens/UpgradeModal";
 import { TrialActivatedModal } from "./screens/TrialActivatedModal";
@@ -674,6 +675,20 @@ function channelColorBadgeBackground(colorId: number) {
   return `var(--channel-${String(normalized).padStart(2, "0")}, #c96626)`;
 }
 
+const BADGE_FALLBACK_ID: Record<string, number> = { channel: 0, aux: 8, fx: 7, master: 10 };
+const BADGE_FALLBACK_CSS: Record<string, string> = {
+  channel: "#7B7B7B",
+  aux: "var(--brand-primary)",
+  fx: "var(--module-fx-primary)",
+  master: "var(--module-master-primary)",
+};
+function badgeBackgroundForScope(colorId: number, scope: "channel" | "aux" | "fx" | "master") {
+  const normalized = Math.max(0, Math.min(12, Math.round(colorId)));
+  const effective = normalized !== 0 ? normalized : BADGE_FALLBACK_ID[scope];
+  if (effective === 0) return BADGE_FALLBACK_CSS[scope];
+  return `var(--channel-${String(effective).padStart(2, "0")}, ${BADGE_FALLBACK_CSS[scope]})`;
+}
+
 function getMasterParams() {
   const p = getActiveProfile();
   return {
@@ -887,7 +902,7 @@ const DEFAULT_FX_COLOR_ID = 7;
 const MASTER_FIXED_COLOR_ID = 10;
 const DEFAULT_MIXER_IP = "";
 const SPLASH_MIN_DURATION_MS = 2000;
-const APP_VERSION = "1.1.1";
+const APP_VERSION = "1.1.2";
 const INSTALLATION_ID_STORAGE_KEY = "ax_installation_id";
 const LICENSE_VALIDATED_STORAGE_KEY = "ax_license_validated";
 const DCA_NAMES_STORAGE_KEY_BASE = "ax_dca_group_names";
@@ -1595,6 +1610,14 @@ function isDefaultMixerName(target: NameTarget, mixerName: string) {
       normalized === `FX${target.fx}` ||
       normalized === `EFFECT${target.fx}` ||
       normalized === `EFEITO${target.fx}`
+    );
+  }
+
+  if (target.type === "dca") {
+    return (
+      normalized === `DCA${target.dca}` ||
+      normalized === `DCAGROUP${target.dca}` ||
+      normalized === `GROUP${target.dca}`
     );
   }
 
@@ -2533,6 +2556,13 @@ function App() {
   const [bootstrapFeatureFlags, setBootstrapFeatureFlags] = useState<Record<string, boolean>>(() => readRuntimeLicenseCache()?.featureFlags ?? {});
   const [bootstrapMessages, setBootstrapMessages] = useState<import("./services/bootstrapService").BootstrapMessage[]>([]);
   const [bootstrapVersionInfo, setBootstrapVersionInfo] = useState<import("./services/bootstrapService").BootstrapVersionInfo | null>(null);
+  // Elegibilidade de trial por dispositivo (vem do bootstrap): um device só pode iniciar
+  // trial uma vez. Quando true, escondemos a oferta de trial — resta Comprar / Continuar grátis.
+  const [deviceTrialUsed, setDeviceTrialUsed] = useState(false);
+  // Hard-gate de dispositivos: overlay mandatório quando este device bateu o limite
+  // ("limit") ou foi revogado por outro dispositivo enquanto offline ("revoked"). Bloqueia
+  // o uso até o usuário remover/reativar — barreira contra compartilhamento de conta.
+  const [deviceGate, setDeviceGate] = useState<{ mode: "limit" | "revoked"; revokedAt: string | null } | null>(null);
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [upgradeModalFeature, setUpgradeModalFeature] = useState<import("./screens/UpgradeModal").PaywallFeatureKey | undefined>(undefined);
   const [trialActivatedModalOpen, setTrialActivatedModalOpen] = useState(false);
@@ -2695,6 +2725,13 @@ function App() {
   const meterUpdateLastAtRef = useRef(0);
   const isChannelsDraggingRef = useRef(false);
   const isConnectedRef = useRef(false);
+  // Espelha appStage para checagens dentro de closures (revalidação em background): o Demo
+  // é 100% local e NUNCA aplica trava de licença — o gate de dispositivos não pode abrir nele.
+  const appStageRef = useRef<AppStage>("splash");
+  // O gate de dispositivos disparado pelo BACKGROUND só pode abrir quando o usuário está
+  // parado no dashboard do Home (não conectando, não no mixer, não no demo). Conectar à mesa
+  // NUNCA é interrompido — o gate aguarda o retorno ao Home. (O login abre o gate direto.)
+  const deviceGateAllowedRef = useRef(false);
   const mixerChannelsScrollerRef = useRef<HTMLElement | null>(null);
   const mixerChannelsScrollLeftRef = useRef(0);
   const dragScrollRafRef = useRef<number | null>(null);
@@ -2932,6 +2969,7 @@ function App() {
     }
 
     setBootstrapFeatureFlags(boot.feature_flags);
+    setDeviceTrialUsed(boot.device_trial_used);
 
     const messages = [...boot.messages];
     if (boot.maintenance?.active && !messages.find((m) => m.key === "maintenance_active" && m.channel === "banner")) {
@@ -2955,7 +2993,6 @@ function App() {
     }
 
     // Update license state from bootstrap — server is always source of truth when online.
-    console.log("[AX bootstrap] license from server:", boot.license, "flags:", boot.feature_flags);
     if (boot.license && !isConnectedRef.current) {
       const { status, plan, trial_expires_at } = boot.license;
       let formalState: LicenseFormalState;
@@ -3449,6 +3486,15 @@ function App() {
   useEffect(() => {
     isConnectedRef.current = isConnected;
   }, [isConnected]);
+
+  useEffect(() => {
+    appStageRef.current = appStage;
+  }, [appStage]);
+
+  useEffect(() => {
+    deviceGateAllowedRef.current =
+      appStage === "home" && homeSubView === "home" && connectingSource === null && !isConnected;
+  }, [appStage, homeSubView, connectingSource, isConnected]);
 
   useEffect(() => {
     return () => {
@@ -6251,10 +6297,12 @@ function App() {
     const readTimeoutMs = options?.readTimeoutMs ?? 1200;
     const pendingNameWrites: Array<{ target: NameTarget; mixerName: string }> = [];
 
-    const [channelNames, auxNames, fxNames] = await Promise.all([
+    const dcaTotal = getDcaIdsForActiveProfile().length;
+    const [channelNames, auxNames, fxNames, dcaNamesFromMixer] = await Promise.all([
       client.readChannelNames(channelTotal, readTimeoutMs),
       client.readAuxNames(readTimeoutMs, getAuxBusCount()),
       client.readFxNames(readTimeoutMs, getFxBusCount()),
+      client.readDcaNames(readTimeoutMs, dcaTotal),
     ]);
 
     setChannels((current) =>
@@ -6347,6 +6395,40 @@ function App() {
       })
     );
 
+    const storageKey = getScopedStorageKey(DCA_NAMES_STORAGE_KEY_BASE, activeMixerCacheIdentity);
+    setDcaNames((current) => {
+      const next = [...current];
+      let changed = false;
+      for (let dca = 1; dca <= dcaTotal; dca++) {
+        const target: NameTarget = { type: "dca", dca };
+        const mixerName = (dcaNamesFromMixer[dca] ?? "").trim();
+        const mixerIsDefault = isDefaultMixerName(target, mixerName);
+        const localName = (current[dca - 1] ?? "").trim();
+        const hasUserLocalName =
+          localName.length > 0 && !isLocalDefaultDisplayName(target, localName);
+        if (writeBackDefaults && (mixerName.length === 0 || mixerIsDefault)) {
+          pendingNameWrites.push({
+            target,
+            mixerName: hasUserLocalName ? toMixerSafeName(current[dca - 1]) : getDefaultMixerAlias(target),
+          });
+        }
+        const displayName =
+          !forceFromMixer && hasUserLocalName && (mixerName.length === 0 || mixerIsDefault)
+            ? current[dca - 1]
+            : mixerName.length > 0 && !mixerIsDefault
+              ? mixerName
+              : getDefaultDcaGroupName(dca - 1);
+        if (displayName !== current[dca - 1]) {
+          next[dca - 1] = displayName;
+          changed = true;
+        }
+      }
+      if (changed && storageKey) {
+        try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* ignore */ }
+      }
+      return changed ? next : current;
+    });
+
     if (pendingNameWrites.length > 0) {
       pendingNameWrites.forEach(({ target, mixerName }) => {
         if (target.type === "channel") {
@@ -6361,6 +6443,11 @@ function App() {
 
         if (target.type === "fx") {
           client.setFxName(target.fx, mixerName);
+          return;
+        }
+
+        if (target.type === "dca") {
+          client.setDcaName(target.dca, mixerName);
         }
       });
     }
@@ -9854,7 +9941,8 @@ function App() {
     // higher-scored cached snapshot that was valid at a different point in time.
     const revokeSignal = validCandidates.find((s) => {
       const c = s.code.toUpperCase();
-      return c === "LICENSE_REVOKED" || c === "LICENSE_BLOCKED" || c === "LICENSE_SUSPENDED";
+      return c === "LICENSE_REVOKED" || c === "LICENSE_BLOCKED" || c === "LICENSE_SUSPENDED"
+        || c === "MAX_DEVICES_REACHED" || c === "ACTIVATION_LIMIT_REACHED";
     });
     if (revokeSignal) return revokeSignal;
 
@@ -9946,7 +10034,7 @@ function App() {
         return;
       }
 
-      if (code === "ACTIVATION_LIMIT_REACHED") {
+      if (code === "ACTIVATION_LIMIT_REACHED" || code === "MAX_DEVICES_REACHED") {
         setLicenseValidationMessage({
           kind: "error",
           text: "Limite de dispositivos atingido. Revogue outro dispositivo antes de reativar este.",
@@ -10000,6 +10088,65 @@ function App() {
       ["DEVICE_REACTIVATED", "DEVICE_ALREADY_ACTIVE"],
       "Dispositivo reativado com sucesso."
     );
+  }
+
+  // ── Hard-gate de dispositivos ────────────────────────────────────────────────
+  // Abre o overlay mandatório (limite atingido OU este device revogado), salva a
+  // credencial e carrega a lista de dispositivos para o usuário remover/reativar.
+  function openDeviceGate(mode: "limit" | "revoked", revokedAt: string | null, key?: string) {
+    // Defesa: nunca abrir o gate no Demo (operação 100% local, sem licença).
+    if (appStageRef.current === "demo") return;
+    if (key) {
+      localStorage.setItem(LICENSE_KEY_STORAGE_KEY, key);
+      setLicenseKeyInput(key);
+    }
+    localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+    setHasLicenseActivatedOnce(true);
+    setLicenseModalOpen(false);
+    setLicenseModalMandatory(false);
+    setUpgradeModalOpen(false);
+    setDeviceGate({ mode, revokedAt });
+    setAppStage("home");
+    void handleRefreshLicenseStatus();
+  }
+
+  // Após remover/reativar, revalida ESTE device. Se o servidor liberar (entrou sob o
+  // limite / reativado), fecha o gate e segue. Senão, recarrega a lista (segue bloqueado).
+  async function tryResolveDeviceGate() {
+    const key = licenseKeyInput.trim() || (localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "");
+    if (!key || !installationId) return;
+    const snap = await apiValidateLicense(key, installationId, APP_VERSION);
+    if (!snap) return;
+    const state = resolveLicenseFormalState({
+      snapshot: snap,
+      warningDays: LICENSE_REVALIDATE_WARNING_DAYS,
+      fallbackTrialExpiryAt: licenseTrialExpiryAt,
+      fallbackNextRevalidationAt: licenseNextRevalidationAt,
+    });
+    if (!isLicenseStateBlocked(state)) {
+      applyLicenseSnapshot(snap, key, "Dispositivo ativado com sucesso.");
+      setDeviceGate(null);
+      setHomeSubView("home");
+      showToast("Dispositivo ativado com sucesso.");
+    } else {
+      void handleRefreshLicenseStatus();
+    }
+  }
+
+  async function handleDeviceGateRemove(targetDeviceId: string) {
+    await callDeviceEndpoint(REVOKE_DEVICE_PATH, targetDeviceId, ["DEVICE_REVOKED"], "Dispositivo removido.");
+    await tryResolveDeviceGate();
+  }
+
+  async function handleDeviceGateReactivateThis() {
+    if (!installationId) return;
+    await callDeviceEndpoint(
+      REACTIVATE_DEVICE_PATH,
+      installationId,
+      ["DEVICE_REACTIVATED", "DEVICE_ALREADY_ACTIVE"],
+      "Dispositivo reativado com sucesso."
+    );
+    await tryResolveDeviceGate();
   }
 
   function buildUpgradeDraft() {
@@ -10147,7 +10294,7 @@ function App() {
   // Starts the 7-day trial for an account that already exists — registration is a
   // separate, mandatory-online step. This action itself works offline: it flips local
   // state immediately and queues a sync so the backend learns about it once online.
-  async function startTrialNow() {
+  async function startTrialNow(): Promise<boolean> {
     const nowIso = new Date().toISOString();
     const trialExpiryAt = new Date(Date.now() + TRIAL_DURATION_MS).toISOString();
 
@@ -10177,16 +10324,52 @@ function App() {
 
     if (!isOnline || !installationId) {
       writePendingTrialActivation({ queuedAt: nowIso });
-      return;
+      return true;
     }
 
     const userEmail = localStorage.getItem(USER_EMAIL_STORAGE_KEY)?.trim() ?? "";
     const activated = await apiActivateTrial(installationId, userEmail);
+
+    // 409 = recusa definitiva do servidor (este device já usou trial, a conta já usou,
+    // ou já existe licença ativa). Não adianta repetir: desfaz o trial otimista e cai
+    // pro plano grátis. O free continua funcionando — só não há trial novo.
+    if (activated && activated.httpStatus === 409) {
+      clearPendingTrialActivation();
+      const code = (activated.snapshot?.code ?? "").toUpperCase();
+      writeRuntimeLicenseCache({
+        installationUuid: installationId,
+        licenseKey: localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "",
+        licenseType: "unknown",
+        trialExpiryAt: null,
+        lastValidatedAt: nowIso,
+        nextRevalidationAt: null,
+        cachedState: "LICENSE_NOT_FOUND",
+      });
+      setLicenseFormalState("LICENSE_NOT_FOUND");
+      setIsLicenseValidated(true);
+      setLicenseTrialExpiryAt(null);
+      setLicenseNextRevalidationAt(null);
+      if (code === "DEVICE_TRIAL_USED") {
+        setDeviceTrialUsed(true);
+        setLicenseValidationMessage({
+          kind: "error",
+          text: "Este dispositivo já utilizou o teste grátis. Adquira o AX Control+ ou continue no plano grátis.",
+        });
+      } else {
+        setLicenseValidationMessage({
+          kind: "error",
+          text: activated.backendMessage || "Não foi possível iniciar o teste grátis.",
+        });
+      }
+      return false;
+    }
+
     if (!activated || activated.httpStatus >= 400 || !activated.success) {
-      // Endpoint missing/unreachable/rejected — keep the trial running locally and
+      // Endpoint missing/unreachable/transient — keep the trial running locally and
       // let the background sync effect retry once the backend side is ready.
       writePendingTrialActivation({ queuedAt: nowIso });
     }
+    return true;
   }
 
   async function handleRequestLicenseRegistration() {
@@ -10446,6 +10629,20 @@ function App() {
       });
 
       if (isLicenseStateBlocked(resolvedState)) {
+        const code = snapshotToApply.code.toUpperCase();
+
+        // Limite de dispositivos → hard-gate mandatório: o usuário tem que remover um
+        // dispositivo para liberar este. Sem navegar livre (barreira anti-compartilhamento).
+        if (returnedKey && (code === "MAX_DEVICES_REACHED" || code === "ACTIVATION_LIMIT_REACHED")) {
+          openDeviceGate("limit", null, returnedKey);
+          return;
+        }
+        // Este dispositivo foi revogado por outro → modal de revogação (com data + reativar).
+        if (returnedKey && code === "LICENSE_REVOKED") {
+          openDeviceGate("revoked", snapshotToApply.revokedAt, returnedKey);
+          return;
+        }
+
         setLicenseValidationMessage({
           kind: "error",
           text: snapshotToApply.message || "Sua licença está bloqueada. Regularize para continuar.",
@@ -10591,6 +10788,8 @@ function App() {
     setIsFounder(null);
     setBootstrapFeatureFlags({});
     setBootstrapMessages([]);
+    setDeviceTrialUsed(false);
+    setDeviceGate(null);
     lastBootstrappedKeyRef.current = null;
     bootstrapRanAnonymousRef.current = false;
     setLicenseModalMandatory(true);
@@ -10673,6 +10872,7 @@ function App() {
       trialExpiryAt: null,
       installationUuid: installationId ?? "",
       nextRevalidationAt: null,
+      revokedAt: null,
       activeDevices: null,
       remainingActivations: null,
       unlimitedActivations: false,
@@ -10780,6 +10980,9 @@ function App() {
   }
 
   async function runBackgroundLicenseRevalidation(force = false, strict = false): Promise<boolean> {
+    // Demo é 100% local e NUNCA aplica licença — não revalidar nem abrir gate aqui.
+    // Ao sair do demo, o boot/foco re-dispara a revalidação normalmente.
+    if (appStageRef.current === "demo") return false;
     // License state is only enforced on the Home screen — never interrupt an active mixer session.
     if (isConnectedRef.current) return false;
     if (backgroundLicenseRevalidationBusyRef.current) return false;
@@ -10829,7 +11032,7 @@ function App() {
       const pixPurchaseGuardActive = pixConfirmedAt > 0 && (Date.now() - pixConfirmedAt) < PIX_GUARD_TTL_MS;
 
       if (LICENSE_API_BASE_URL) {
-        const statusSnapshot = await requestLicenseStatus(false, licenseValue);
+        const statusSnapshot = await requestLicenseStatus(true, licenseValue);
         if (statusSnapshot) {
           // If a Pix purchase was recently confirmed, don't downgrade to trial
           // until the backend explicitly confirms purchased status.
@@ -10851,8 +11054,45 @@ function App() {
           applyLicenseSnapshot(statusSnapshot, licenseValue, statusSnapshot.message || "Status de licença atualizado.");
 
           if (!isLicenseStateBlocked(formalState)) {
+            // status.php é nível-licença. Garante que ESTE dispositivo está entre os ativos —
+            // um device não-registrado (ou barrado no limite) não pode entrar só no cache de
+            // "licença válida". Se não estiver, escala pro validate.php (checagem por device),
+            // que registra (se houver vaga) ou abre o hard-gate (se no limite). Nunca em
+            // sessão ao vivo (não interrompe palco).
+            const thisDeviceActive = statusSnapshot.devices.some(
+              (d) => d.deviceId === installationId && d.active
+            );
+            if (!thisDeviceActive && !deviceGate && !statusSnapshot.unlimitedActivations && deviceGateAllowedRef.current) {
+              const vSnap = await apiValidateLicense(licenseValue, installationId, APP_VERSION);
+              if (vSnap) {
+                const vCode = vSnap.code.toUpperCase();
+                if (vCode === "MAX_DEVICES_REACHED" || vCode === "ACTIVATION_LIMIT_REACHED") {
+                  openDeviceGate("limit", null);
+                  return false;
+                }
+                if (vCode === "LICENSE_REVOKED") {
+                  openDeviceGate("revoked", vSnap.revokedAt);
+                  return false;
+                }
+                // validate registrou este device (havia vaga) — aplica o snapshot atualizado.
+                applyLicenseSnapshot(vSnap, licenseValue, vSnap.message || "Dispositivo validado.");
+              }
+            }
             localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
             return true;
+          }
+
+          // Gates de DISPOSITIVO (este device revogado por outro / limite atingido): a
+          // licença em si segue válida — não zerar cache nem interromper sessão ao vivo.
+          // Em sessão (conectado à mesa) adia; fora de sessão, abre o hard-gate mandatório.
+          {
+            const gateCode = statusSnapshot.code.toUpperCase();
+            if (gateCode === "LICENSE_REVOKED" || gateCode === "MAX_DEVICES_REACHED" || gateCode === "ACTIVATION_LIMIT_REACHED") {
+              // Só abre o gate no Home idle; durante connect/mixer/demo, adia (não interrompe).
+              if (!deviceGateAllowedRef.current) return false;
+              openDeviceGate(gateCode === "LICENSE_REVOKED" ? "revoked" : "limit", gateCode === "LICENSE_REVOKED" ? statusSnapshot.revokedAt : null);
+              return false;
+            }
           }
 
           localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
@@ -13870,7 +14110,7 @@ function App() {
               <div
                 className="dca-matrix-row__tag"
                 style={{
-                  background: channelColorBadgeBackground(auxState.colorId),
+                  background: badgeBackgroundForScope(auxState.colorId, "aux"),
                 }}
               >
                 {`AUX ${auxNumber}`}
@@ -14328,7 +14568,7 @@ function App() {
               </div>
               <div
                 className="dca-matrix-row__tag"
-                style={{ background: channelColorBadgeBackground(fxState.colorId) }}
+                style={{ background: badgeBackgroundForScope(fxState.colorId, "fx") }}
               >
                 {`FX ${fxNumber}`}
               </div>
@@ -14690,8 +14930,9 @@ function App() {
               <div
                 className="dca-matrix-row__tag"
                 style={{
-                  background: channelColorBadgeBackground(
-                    master.leftColorId || master.rightColorId
+                  background: badgeBackgroundForScope(
+                    master.leftColorId || master.rightColorId,
+                    "master"
                   ),
                 }}
               >
@@ -15763,7 +16004,9 @@ function App() {
                     flex: "0 0 auto",
                   }}
                 >
-                  {`${isAux ? "AUX" : "FX"} ${destination}`}
+                  {isAux
+                    ? (auxStrips[destination - 1]?.channelName?.trim() || `AUX ${destination}`)
+                    : (fxStrips[destination - 1]?.channelName?.trim() || `FX ${destination}`)}
                 </button>
               );
             })}
@@ -15813,6 +16056,7 @@ function App() {
                 disabled={!isConnected && appStage !== "demo"}
                 eqState={selectedBusProcessorState.eq}
                 onOpenDetail={goToDetailAux}
+                onOpenEditMenu={(n) => openCustomization({ section: "aux", index: n })}
                 onToggleMute={() => toggleStripMute("aux", selectedBus)}
                 onToggleSolo={() => toggleStripSolo("aux", selectedBus)}
                 onToggleLink={() => {
@@ -15836,6 +16080,7 @@ function App() {
                 channelName={selectedFxStrip.channelName}
                 eqState={selectedBusProcessorState.eq}
                 onOpenDetail={goToDetailFx}
+                onOpenEditMenu={(n) => openCustomization({ section: "fx", index: n })}
                 muted={selectedFxStrip.muted}
                 soloOn={selectedFxStrip.soloOn}
                 faderDb={selectedFxStrip.faderDb}
@@ -16025,13 +16270,12 @@ function App() {
     });
   })();
   const hasUnlimitedActivations = licenseUnlimitedActivations || licenseLinkedUserType === "admin";
-  const defaultDeviceLimit = isTrialLicense ? 1 : 2;
+  // Limite = max_devices do servidor (= ativos + restantes). NÃO derivar do tamanho da lista
+  // exibida: ela inclui o "este dispositivo" injetado, o que inflava o limite (mostrava "4").
+  const defaultDeviceLimit = 3;
   const apiDeviceLimit =
-    !hasUnlimitedActivations && licenseRemainingActivations !== null
-      ? Math.max(
-          visibleAssociatedDevices.length,
-          (licenseActiveDevicesCount ?? visibleAssociatedDevices.length) + licenseRemainingActivations
-        )
+    !hasUnlimitedActivations && licenseActiveDevicesCount !== null && licenseRemainingActivations !== null
+      ? licenseActiveDevicesCount + licenseRemainingActivations
       : null;
   const associatedDeviceLimit = hasUnlimitedActivations ? null : (apiDeviceLimit ?? defaultDeviceLimit);
   const activeDeviceCount = visibleAssociatedDevices.filter((d) => d.active).length;
@@ -16577,6 +16821,7 @@ function App() {
           licenseFormalState={licenseFormalState}
           licenseTrialExpiryAt={licenseTrialExpiryAt}
           hasActivatedOnce={hasLicenseActivatedOnce}
+          deviceTrialUsed={deviceTrialUsed}
           isFounder={isFounder}
           userName={licenseUserName || (localStorage.getItem(USER_NAME_STORAGE_KEY) ?? "")}
           userEmail={licenseUserEmail || (localStorage.getItem(USER_EMAIL_STORAGE_KEY) ?? "")}
@@ -16598,7 +16843,8 @@ function App() {
           }}
           onStartTrial={() => {
             setTrialActivatedFromFeature(undefined);
-            void startTrialNow().then(() => {
+            void startTrialNow().then((ok) => {
+              if (!ok) return;
               showToast("Teste grátis ativado com sucesso.");
               setTrialActivatedModalOpen(true);
             });
@@ -16647,6 +16893,7 @@ function App() {
                   }}
                   onContactForUpgrade={() => void handleContactForUpgrade()}
                   onStartTrial={() => void startTrialNow()}
+                  deviceTrialUsed={deviceTrialUsed}
                 />
               );
             }
@@ -16680,6 +16927,21 @@ function App() {
           onLogout={handleLogout}
         />
         {licenseModalNode}
+        {deviceGate && (
+          <DeviceGateModal
+            mode={deviceGate.mode}
+            revokedAt={deviceGate.revokedAt}
+            devices={visibleAssociatedDevices}
+            installationId={normalizedInstallationId}
+            loading={licenseDevicesLoading}
+            actionBusy={licenseDeviceActionBusy}
+            feedback={licenseValidationMessage.kind === "error" ? licenseValidationMessage.text : null}
+            onRefresh={() => void handleRefreshLicenseStatus()}
+            onRevoke={(id) => void handleDeviceGateRemove(id)}
+            onReactivateThis={() => void handleDeviceGateReactivateThis()}
+            onLogout={handleLogout}
+          />
+        )}
         <ToastRenderer />
       </>
       </FeatureFlagsContext.Provider>
@@ -16930,7 +17192,7 @@ function App() {
       {upgradeModalOpen && (
         <UpgradeModal
           featureKey={upgradeModalFeature}
-          canStartTrial={licenseFormalState === "LICENSE_NOT_FOUND"}
+          canStartTrial={licenseFormalState === "LICENSE_NOT_FOUND" && !deviceTrialUsed}
           onUpgrade={() => {
             setUpgradeModalOpen(false);
             setAppStage("home");
@@ -16939,7 +17201,8 @@ function App() {
           onStartTrial={() => {
             setUpgradeModalOpen(false);
             setTrialActivatedFromFeature(upgradeModalFeature);
-            void startTrialNow().then(() => {
+            void startTrialNow().then((ok) => {
+              if (!ok) return;
               showToast("Teste grátis ativado com sucesso.");
               setTrialActivatedModalOpen(true);
             });

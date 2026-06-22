@@ -1784,6 +1784,18 @@ export class Axios16Client {
     return result;
   }
 
+  async readDcaNames(timeoutMs = 1200, dcaCount?: number) {
+    const result: Record<number, string> = {};
+    const maxDca = this.profile === "ax32_experimental" ? 8 : 4;
+    const safeDcaCount = Math.max(1, Math.min(maxDca, Math.round(dcaCount ?? maxDca)));
+
+    for (let dca = 1; dca <= safeDcaCount; dca++) {
+      result[dca] = await this.readName({ type: "dca", dca }, timeoutMs);
+    }
+
+    return result;
+  }
+
   async readSceneNames(timeoutMs = 1200, sceneCount = 12) {
     const result: Record<number, string> = {};
     const safeSceneCount = Math.max(1, Math.min(16, Math.round(sceneCount)));

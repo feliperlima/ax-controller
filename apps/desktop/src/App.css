@@ -1336,6 +1336,57 @@ body {
   color: var(--text-secondary);
 }
 
+/* ── Device Gate Modal (limite de dispositivos / dispositivo revogado) ─────── */
+.dgate-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(var(--spacing-5) * 1px);
+  background: var(--surface-overlay-soft);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.dgate-card {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing-4) * 1px);
+  width: 100%;
+  max-width: 480px;
+  max-height: 86vh;
+  padding: calc(var(--spacing-6) * 1px);
+  border-radius: calc(var(--radius-lg) * 1px);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-default);
+  font-family: var(--font-family-base), Inter, sans-serif;
+}
+
+.dgate-listhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(var(--spacing-3) * 1px);
+}
+
+.dgate-count {
+  font-size: calc(var(--font-size-label-small) * 1px);
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.dgate-list {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing-2) * 1px);
+  overflow-y: auto;
+  min-height: 0;
+}
+
 /* ── Trial Activated Modal ───────────────────────────────────────────────── */
 
 .trial-activated-overlay {
