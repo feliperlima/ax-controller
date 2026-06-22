@@ -504,6 +504,18 @@ fn is_ws_port_open(ip: &str, timeout_ms: u64) -> bool {
     TcpStream::connect_timeout(&address, Duration::from_millis(timeout_ms)).is_ok()
 }
 
+/// Toque rápido de alcançabilidade na porta WS da mesa (TCP em ip:8088).
+/// Usado pelo discovery do app pra marcar a mesa como Online (conectável) ou Offline,
+/// habilitando o botão Conectar só quando realmente dá pra conectar.
+#[tauri::command]
+async fn probe_mixer_reachable(ip: String) -> bool {
+    // is_ws_port_open é bloqueante (TcpStream::connect_timeout) — joga no pool de blocking
+    // (mesmo padrão de probe_mixer_ip) pra não prender uma worker thread do executor async.
+    tauri::async_runtime::spawn_blocking(move || is_ws_port_open(&ip, 1500))
+        .await
+        .unwrap_or(false)
+}
+
 fn duonn_crc16_modbus(data: &[u8]) -> u16 {
     let mut crc: u16 = 0xFFFF;
 
@@ -1472,6 +1484,7 @@ pub fn run() {
     .plugin(tauri_plugin_websocket::init())
         .invoke_handler(tauri::generate_handler![
             discover_mixers,
+            probe_mixer_reachable,
             validate_license,
             license_api_request,
             get_or_create_device_id,

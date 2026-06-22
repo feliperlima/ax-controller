@@ -1,7 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type MixerSource = "finder" | "manual";
-export type MixerStatus = "online" | "unknown";
+export type MixerStatus = "online" | "offline" | "checking" | "unknown";
+
+/** Toque rápido de alcançabilidade (TCP em ip:8088) via Rust. true = conectável. */
+export async function probeMixerReachable(ip: string): Promise<boolean> {
+  try {
+    return await invoke<boolean>("probe_mixer_reachable", { ip });
+  } catch {
+    return false;
+  }
+}
 
 export type DiscoveredMixer = {
   id: string;

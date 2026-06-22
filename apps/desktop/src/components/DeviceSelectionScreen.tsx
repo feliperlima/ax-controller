@@ -30,6 +30,15 @@ function DeviceCard({
   const modelLabel = resolveMixerModelLabel(mixer);
   const resolvedChannels = resolveMixerChannels(mixer);
   const previewImage = resolveMixerPreviewImage(mixer);
+  // Conectar só fica habilitado quando a mesa respondeu ao probe (Online).
+  // Offline e "última sessão" compartilham o cinza de "não disponível" — só muda o texto.
+  const connectable = mixer.status === "online";
+  const badge =
+    mixer.status === "online"
+      ? { cls: "", label: "Online" }
+      : mixer.status === "checking"
+        ? { cls: " device-card__badge--pending", label: "Verificando…" }
+        : { cls: " device-card__badge--cached", label: "Offline" };
 
   return (
     <article className="device-card">
@@ -42,11 +51,9 @@ function DeviceCard({
           <div className="device-card__identity-text">
             <div className="device-card__title-row">
               <div className="device-card__title">{mixer.name}</div>
-              <span
-                className={`device-card__badge${mixer.status !== "online" ? " device-card__badge--pending" : ""}`}
-              >
+              <span className={`device-card__badge${badge.cls}`}>
                 <span className="device-card__badge-dot" aria-hidden="true" />
-                <span>{mixer.status === "online" ? "Online" : "Verificando..."}</span>
+                <span>{badge.label}</span>
               </span>
             </div>
 
@@ -61,7 +68,8 @@ function DeviceCard({
         <button
           type="button"
           className="startup-button startup-button--secondary"
-          disabled={connectBusy}
+          disabled={connectBusy || !connectable}
+          title={connectable ? undefined : "Mesa não está respondendo agora. Verifique se ela está ligada e na mesma rede."}
           onClick={() => onConnect(mixer)}
         >
           Conectar

@@ -1,5 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { discoverMixers, readKnownMixers, type DiscoveredMixer, type KnownMixerEntry } from "../services/mixerDiscovery";
+import { discoverMixers, probeMixerReachable, readKnownMixers, type DiscoveredMixer, type KnownMixerEntry, type MixerStatus } from "../services/mixerDiscovery";
+
+function mergeMixers(current: DiscoveredMixer[], incoming: DiscoveredMixer[]): DiscoveredMixer[] {
+  const merged = new Map<string, DiscoveredMixer>();
+  current.forEach((m) => merged.set(m.ip, m));
+  incoming.forEach((m) => merged.set(m.ip, m));
+  const next = Array.from(merged.values());
+  if (next.length !== current.length) return next;
+  const same = next.every((m, i) => {
+    const prev = current[i];
+    return (
+      prev !== undefined && prev.ip === m.ip && prev.id === m.id && prev.name === m.name &&
+      prev.model === m.model && prev.channels === m.channels && prev.status === m.status && prev.macAddress === m.macAddress
+    );
+  });
+  return same ? current : next;
+}
 
 function knownEntryToDiscovered(entry: KnownMixerEntry): DiscoveredMixer {
   return {
@@ -46,32 +62,25 @@ export function useMixerDiscovery(enabled: boolean): UseMixerDiscoveryResult {
 
     try {
       const discovered = await discoverMixers(fullScan);
+      // 1) Mesa NOVA aparece como "checking" (Verificando…). Mesa já conhecida mantém o
+      //    status atual durante o re-probe — evita flicker do badge/botão a cada ciclo (3s).
       setMixers((current) => {
-        const merged = new Map<string, DiscoveredMixer>();
-        current.forEach((mixer) => merged.set(mixer.ip, mixer));
-        discovered.forEach((mixer) => merged.set(mixer.ip, mixer));
-        const next = Array.from(merged.values());
-
-        if (next.length !== current.length) {
-          return next;
-        }
-
-        const same = next.every((mixer, index) => {
-          const prev = current[index];
-          return (
-            prev !== undefined &&
-            prev.ip === mixer.ip &&
-            prev.id === mixer.id &&
-            prev.name === mixer.name &&
-            prev.model === mixer.model &&
-            prev.channels === mixer.channels &&
-            prev.status === mixer.status &&
-            prev.macAddress === mixer.macAddress
-          );
+        const byIp = new Map(current.map((m) => [m.ip, m]));
+        const pre = discovered.map((m) => {
+          const prev = byIp.get(m.ip);
+          return { ...m, status: (prev ? prev.status : "checking") as MixerStatus };
         });
-
-        return same ? current : next;
+        return mergeMixers(current, pre);
       });
+      // 2) Probe de alcançabilidade (TCP em ip:8088) → Online/Offline (verdade fresca).
+      //    Conectar fica habilitado só nas Online (mesas que de fato respondem).
+      const probed = await Promise.all(
+        discovered.map(async (m) => ({
+          ...m,
+          status: ((await probeMixerReachable(m.ip)) ? "online" : "offline") as MixerStatus,
+        }))
+      );
+      setMixers((current) => mergeMixers(current, probed));
     } catch {
       if (!silent) {
         setError("Nao foi possivel buscar mixers automaticamente.");
