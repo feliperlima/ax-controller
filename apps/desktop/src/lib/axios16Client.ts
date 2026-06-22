@@ -679,6 +679,24 @@ function decodeParamResponse(buffer: ArrayBuffer) {
   return results;
 }
 
+const SPECTRUM_BAND_COUNT = 31;
+
+// Frame do RTA (op 0x46, bloco no endereço 00 1f): 80 24 46 00 1f [31 bytes] crc (38 bytes).
+// Retorna os 31 bytes CRUS por banda (0..~0x5c); a normalização vira responsabilidade do
+// rtaAdapter (camada semântica). null = não é um frame de espectro válido.
+function decodeSpectrumFrame(buffer: ArrayBuffer): number[] | null {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length < 5 + SPECTRUM_BAND_COUNT + 2) return null;
+  if (bytes[0] !== 128) return null;
+  if (bytes[2] !== 0x46) return null;
+  if (bytes[3] !== 0x00 || bytes[4] !== 0x1f) return null;
+  const bands = new Array<number>(SPECTRUM_BAND_COUNT);
+  for (let i = 0; i < SPECTRUM_BAND_COUNT; i += 1) {
+    bands[i] = bytes[5 + i];
+  }
+  return bands;
+}
+
 function decodeOpcode03Response(buffer: ArrayBuffer) {
   const bytes = new Uint8Array(buffer);
   if (bytes.length < 9) return [];
@@ -1199,6 +1217,7 @@ export class Axios16Client {
   private onDisconnectCallback: (() => void) | null = null;
   private localParamWriteListeners = new Set<(write: LocalParamWrite) => void>();
   private remoteParamReadListeners = new Set<(read: RemoteParamRead) => void>();
+  private spectrumFrameListeners = new Set<(bands: number[]) => void>();
   private capabilities: ProfileCapabilities;
   private globalRxHandler: MixerSocketListener<"message"> | null = null;
 
@@ -1212,6 +1231,20 @@ export class Axios16Client {
     this.capabilities = resolveProfileCapabilities(this.profile, capabilitiesOverrides);
     ACTIVE_PROTOCOL_PROFILE = this.profile;
     ACTIVE_PROFILE_CAPABILITIES = this.capabilities;
+    // DEV: expõe o cliente no console — window.__ax.read(5109)
+    if (import.meta.env.DEV) {
+      (window as any).__ax = {
+        read: (p: number | number[]) =>
+          this.readParams(Array.isArray(p) ? p : [p], 1500).then(
+            (r: Array<{ param: number; value: number }>) => {
+              r.forEach(({ param, value }) =>
+                console.log(`param ${param} = ${value}  bin:${value.toString(2).padStart(16,'0')}  hex:0x${value.toString(16).padStart(4,'0')}`)
+              );
+              return r;
+            }
+          ),
+      };
+    }
   }
 
   setOnDisconnect(callback: () => void) {
@@ -1234,8 +1267,29 @@ export class Axios16Client {
     };
   }
 
+  onSpectrumFrame(listener: (bands: number[]) => void) {
+    this.spectrumFrameListeners.add(listener);
+
+    return () => {
+      this.spectrumFrameListeners.delete(listener);
+    };
+  }
+
+  /** Pede um frame de espectro do RTA (op 0x46, bloco 00 1f). Só faz sentido no AX32. */
+  pollSpectrum() {
+    this.sendRaw(buildRawDuonnPacket(0x46, [0x00, 0x1f]));
+  }
+
   private createGlobalRxHandler(): MixerSocketListener<"message"> {
     return (event: MixerMessageEvent) => {
+      // Frame do RTA (op 0x46) é bloco, não par param/valor — despacha à parte e sai.
+      if (this.spectrumFrameListeners.size > 0) {
+        const spectrum = decodeSpectrumFrame(event.data);
+        if (spectrum) {
+          this.spectrumFrameListeners.forEach((listener) => listener(spectrum));
+          return;
+        }
+      }
       const decoded = decodeOpcode03Response(event.data);
       if (decoded.length === 0) return;
       const at = Date.now();

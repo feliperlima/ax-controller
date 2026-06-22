@@ -110,6 +110,7 @@ import {
   cachePublicKey,
 } from "./services/certificateService";
 import { fetchBootstrap } from "./services/bootstrapService";
+import { flushTelemetryQueue } from "./services/telemetryService";
 import { FeatureFlagsContext } from "./services/featureFlags";
 import {
   decodeGroupMembers,
@@ -122,7 +123,9 @@ import {
   PROFILE_AX16,
   type MixerProfile,
   type MixerModel,
+  type RtaTarget,
 } from "./protocol/duonn/protocolAddressing";
+import { RtaController } from "./lib/rtaAdapter";
 import {
   buildClearDcaMembersMessages,
   buildClearMuteGroupMembersMessages,
@@ -786,6 +789,21 @@ type DetailView =
   | { type: "master"; side: "left" | "right" }
   | { type: "digi" }
   | null;
+
+/** Converte a tela de detalhe aberta no alvo de RTA (canal/aux/master). FX e digi não têm RTA. */
+function detailToRtaTarget(view: DetailView): RtaTarget | null {
+  if (!view) return null;
+  switch (view.type) {
+    case "channel":
+      return { kind: "channel", index: view.channel };
+    case "aux":
+      return { kind: "aux", index: view.aux };
+    case "master":
+      return { kind: "master", side: view.side };
+    default:
+      return null; // fx, digi
+  }
+}
 type AppStage = "splash" | "home" | "mixer" | "demo";
 type MainView = "mixer" | "auxSends" | "fxSends" | "dcaGroups" | "muteGroups" | "scenes" | "patching";
 type StripSection = "inputs" | "aux" | "fx";
@@ -2884,6 +2902,9 @@ function App() {
       return null;
     });
     if (!boot) return false;
+
+    // Flush de eventos offline (console_connected, iem_interest) — fire-and-forget
+    if (licenseKey) void flushTelemetryQueue(licenseKey);
 
     if (boot.user) {
       if (boot.user.name) {
@@ -8500,6 +8521,49 @@ function App() {
     }
   }, [activeProcessorModule, detailView, isConnected]);
 
+  // RTA — liga/desliga o analisador conforme a tela de EQ aberta. Todo o protocolo
+  // (foco/enable/poll/parse, profile-aware) fica no RtaController; aqui só o ciclo de vida.
+  // AX32: liga ao abrir o EQ de canal/aux/master e desliga ao sair/trocar de aba. AX16/24:
+  // o controller faz só read-probe + telemetria (nunca escreve). Não roda no demo.
+  useEffect(() => {
+    if (appStage === "demo" || !isConnected) return;
+    if (activeProcessorModule !== "eq") return;
+    const target = detailToRtaTarget(detailView);
+    if (!target) return;
+    const client = clientRef.current;
+    if (!client) return;
+
+    const controller = new RtaController({
+      client,
+      model: getActiveProfile().model,
+      target,
+      onProbe: (result) => {
+        const key = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+        void import("./services/telemetryService").then(({ trackEvent }) =>
+          trackEvent(key, "rta_probe", { model: result.model, responded: result.responded })
+        );
+      },
+    });
+    controller.start();
+    return () => controller.stop();
+  }, [activeProcessorModule, detailView, isConnected, appStage]);
+
+  // DEV helper: leitura direta de param(s) pelo console — window.__axRead(5109)
+  useEffect(() => {
+    if (!import.meta.env.DEV || !isConnected) return;
+    const client = clientRef.current;
+    if (!client) return;
+    (window as any).__axRead = (param: number | number[]) =>
+      client.readParams(Array.isArray(param) ? param : [param], 1500)
+        .then((r: Array<{ param: number; value: number }>) => {
+          r.forEach(({ param: p, value: v }) =>
+            console.log(`param ${p} = ${v}  (0b${v.toString(2).padStart(16, '0')}  0x${v.toString(16).padStart(4, '0')})`)
+          );
+          return r;
+        });
+    return () => { delete (window as any).__axRead; };
+  }, [isConnected]);
+
   useEffect(() => {
     if (appStage === "demo" || !isConnected || detailView) return;
     if (mainView === "auxSends") {
@@ -9461,6 +9525,17 @@ function App() {
         setLicenseModalMandatory(false);
       }
 
+      // Telemetria offline-first: registra conexão bem-sucedida com a mesa.
+      if (storedLicenseKey && appStage !== "demo") {
+        void import("./services/telemetryService").then(({ trackEvent }) =>
+          trackEvent(storedLicenseKey, "console_connected", {
+            profile: selectedProfile,
+            channel_count: targetChannelCount,
+            source,
+          })
+        );
+      }
+
       rememberConnectedMixerIp(normalizedIp);
 
       // Salvar entrada completa no cache de mesas conhecidas
@@ -9591,9 +9666,11 @@ function App() {
       setAppStage("home");
       setHomeSubView("connect");
       setActiveMixerCacheIdentity(null);
-      const detail = error instanceof Error ? error.message : "Erro ao conectar";
-      setStatus(detail);
-      setConnectionError(`Nao foi possivel conectar a mesa. ${detail}`);
+      // Erro técnico (ws://, plugin, OS error) NUNCA vai pra tela — só console em dev.
+      if (import.meta.env.DEV) console.debug("[AX] connect error:", error);
+      const friendly = "Não foi possível conectar à mesa. Verifique se ela está ligada e na mesma rede do seu dispositivo, e tente de novo.";
+      setStatus("Não foi possível conectar à mesa.");
+      setConnectionError(friendly);
       clientRef.current = null;
       setConnectingSource(null);
       return false;
@@ -9672,10 +9749,16 @@ function App() {
       nextRevalidationAt: resolvedNextRevalidationAt,
       cachedState: formalState,
       feedbackMessage: sourceMessage ?? snapshot.message,
-      isFounder: existingCache?.isFounder,
+      // Preserve isFounder from bootstrap — applyLicenseSnapshot gets called from license
+      // endpoints that don't carry founder status. Never clobber a known-good true with null.
+      isFounder: isFounder ?? existingCache?.isFounder ?? undefined,
       featureFlags: existingCache?.featureFlags,
     };
     writeRuntimeLicenseCache(cache);
+    // Sync React state so badge/price render correctly without needing a bootstrap round-trip.
+    if (cache.isFounder !== undefined && isFounder !== cache.isFounder) {
+      setIsFounder(cache.isFounder);
+    }
 
     if (resolvedNextRevalidationAt) {
       const pseudoCache: CachedLicenseStatus = {
@@ -9767,6 +9850,14 @@ function App() {
     const validCandidates = candidates.filter((item): item is LicenseSnapshot => item !== null && item !== undefined);
     if (validCandidates.length === 0) return null;
 
+    // Revoke/blocked from the server is always authoritative — never override it with a
+    // higher-scored cached snapshot that was valid at a different point in time.
+    const revokeSignal = validCandidates.find((s) => {
+      const c = s.code.toUpperCase();
+      return c === "LICENSE_REVOKED" || c === "LICENSE_BLOCKED" || c === "LICENSE_SUSPENDED";
+    });
+    if (revokeSignal) return revokeSignal;
+
     return validCandidates.reduce((best, current) => {
       if (!best) return current;
       return scoreRecoveredLicenseSnapshot(current) > scoreRecoveredLicenseSnapshot(best) ? current : best;
@@ -9809,7 +9900,7 @@ function App() {
       }
 
       if (!snapshot) {
-        setLicenseValidationMessage({ kind: "error", text: "Não foi possível consultar o status da licença." });
+        setLicenseValidationMessage({ kind: "error", text: "Não foi possível verificar sua licença agora. Tente novamente." });
         return;
       }
 
@@ -9817,7 +9908,7 @@ function App() {
       setLicenseValidationMessage({ kind: "success", text: snapshot.message || "Status atualizado." });
     } catch (err) {
       console.error("[AX] handleRefreshLicenseStatus failed:", err);
-      setLicenseValidationMessage({ kind: "error", text: "Falha ao consultar o status da licença." });
+      setLicenseValidationMessage({ kind: "error", text: "Não foi possível verificar sua licença. Tente novamente." });
     } finally {
       setLicenseDevicesLoading(false);
     }
@@ -9836,7 +9927,7 @@ function App() {
       const response = await apiDeviceAction(phpFile, licenseKeyInput.trim(), installationId, targetDeviceId);
 
       if (!response) {
-        setLicenseValidationMessage({ kind: "error", text: "Falha de conexão com a API. Tente novamente." });
+        setLicenseValidationMessage({ kind: "error", text: "Falha de conexão. Verifique sua internet e tente novamente." });
         return;
       }
 
@@ -9850,7 +9941,7 @@ function App() {
       if (code === "DEVICE_NOT_FOUND") {
         setLicenseValidationMessage({
           kind: "error",
-          text: "Dispositivo não localizado nesta licença. Verifique se o ID está correto.",
+          text: "Dispositivo não encontrado nesta licença.",
         });
         return;
       }
@@ -9874,12 +9965,12 @@ function App() {
       }
 
       if (response.statusCode >= 400 && !successCodes.includes(code)) {
-        setLicenseValidationMessage({ kind: "error", text: serverMsg || "Operação recusada pela API. Tente novamente." });
+        setLicenseValidationMessage({ kind: "error", text: serverMsg || "Operação recusada pelo servidor. Tente novamente." });
         return;
       }
 
       if (!successCodes.includes(code) && code !== "") {
-        setLicenseValidationMessage({ kind: "error", text: serverMsg || "Resposta inesperada da API. Tente novamente." });
+        setLicenseValidationMessage({ kind: "error", text: serverMsg || "Resposta inesperada do servidor. Tente novamente." });
         return;
       }
 
@@ -10147,7 +10238,7 @@ function App() {
     }
 
     if (!installationId) {
-      setLicenseValidationMessage({ kind: "error", text: "UUID da instalação indisponível." });
+      setLicenseValidationMessage({ kind: "error", text: "Não foi possível identificar este dispositivo. Feche e reabra o app." });
       return;
     }
 
@@ -10257,7 +10348,7 @@ function App() {
         text: snapshotToApply.message || "Não foi possível concluir o cadastro com os dados informados.",
       });
     } catch {
-      setLicenseValidationMessage({ kind: "error", text: "Falha ao cadastrar licença/teste grátis." });
+      setLicenseValidationMessage({ kind: "error", text: "Não foi possível iniciar seu teste grátis. Tente novamente." });
     } finally {
       setLicenseRegisterBusy(false);
     }
@@ -10283,7 +10374,9 @@ function App() {
       if (!loginResult) {
         setLicenseValidationMessage({
           kind: "error",
-          text: "Não foi possível conectar ao serviço de licença. Tente novamente.",
+          text: navigator.onLine
+            ? "Não conseguimos falar com o servidor agora. Tente de novo em instantes."
+            : "Sem conexão com a internet. Entrar na conta precisa de internet — o app em si funciona offline.",
         });
         return;
       }
@@ -10302,7 +10395,7 @@ function App() {
       if (!loginResult.success) {
         setLicenseValidationMessage({
           kind: "error",
-          text: loginResult.backendMessage || "Resposta de login fora do contrato esperado do backend.",
+          text: loginResult.backendMessage || "Não foi possível entrar agora. Tente novamente em instantes.",
         });
         return;
       }
@@ -10401,7 +10494,7 @@ function App() {
     if (reconnectAttemptsRef.current > MAX_AUTO_RECONNECT_ATTEMPTS) {
       reconnectParamsRef.current = null;
       reconnectAttemptsRef.current = 0;
-      setStatus("Nao foi possivel reconectar. Verifique a conexao de rede.");
+      setStatus("Não foi possível reconectar. Verifique sua conexão de rede.");
       setAppStage("home");
       setHomeSubView("connect");
       return;
@@ -12873,7 +12966,7 @@ function App() {
 
 
   function goToDetailChannel(channelNumber: number, options?: { preserveActiveModule?: boolean }) {
-    if (isFreeTier(licenseFormalState)) {
+    if (appStage !== "demo" && isFreeTier(licenseFormalState)) {
       setUpgradeModalFeature("details");
       setUpgradeModalOpen(true);
       return;
@@ -12910,7 +13003,7 @@ function App() {
 
 
   function goToDetailAux(auxNumber: number, options?: { preserveActiveModule?: boolean }) {
-    if (isFreeTier(licenseFormalState)) {
+    if (appStage !== "demo" && isFreeTier(licenseFormalState)) {
       setUpgradeModalFeature("auxSends");
       setUpgradeModalOpen(true);
       return;
@@ -12948,7 +13041,7 @@ function App() {
   }
 
   function goToDetailFx(fxNumber: number) {
-    if (isFreeTier(licenseFormalState)) {
+    if (appStage !== "demo" && isFreeTier(licenseFormalState)) {
       setUpgradeModalFeature("fxSends");
       setUpgradeModalOpen(true);
       return;
@@ -13056,7 +13149,7 @@ function App() {
   }
 
   function goToDetailMaster() {
-    if (isFreeTier(licenseFormalState)) {
+    if (appStage !== "demo" && isFreeTier(licenseFormalState)) {
       setUpgradeModalFeature("details");
       setUpgradeModalOpen(true);
       return;
@@ -16509,6 +16602,13 @@ function App() {
               showToast("Teste grátis ativado com sucesso.");
               setTrialActivatedModalOpen(true);
             });
+          }}
+          onIemInterest={() => {
+            const key = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+            void import("./services/telemetryService").then(({ trackEvent }) =>
+              trackEvent(key, "iem_interest")
+            );
+            showToast("Te avisaremos quando o Monitor Pessoal for liberado!");
           }}
           mainContent={(() => {
             if (homeSubView === "connect") {

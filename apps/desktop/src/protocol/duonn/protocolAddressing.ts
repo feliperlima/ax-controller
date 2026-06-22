@@ -404,6 +404,67 @@ export const FX_METER_BASE_AX16_24 = 41;
 export const AX32_AUX_METER_PARAMS = [2854, 2855, 2856, 2857, 2858, 2859, 2860] as const;
 export const AX32_FX_METER_PARAMS = [2864, 2865, 2866, 2867] as const;
 
+// ─── RTA / Analisador de Espectro ───────────────────────────────────────────────
+// Confirmado por engenharia reversa no AX32. NÃO suportado em AX16/24 (DSP diferente →
+// os mesmos params podem apontar pra OUTRA coisa e mexer no áudio ao vivo). Por isso os
+// resolvers retornam null fora do AX32 — o controller NUNCA escreve em AX16/24.
+//
+// Controle (WRITE op 0x03, só AX32):
+//   - source-select (foco): params 57 (0x39) + 2884 (0x0B44) = valor sourceId. É o MESMO
+//     "comando de foco" reaproveitável pelos meters reais de comp do AX32.
+//   - enable on/off do RTA: param 5196 (0x144C) = 1 liga / 0 desliga.
+// Espectro (op 0x46): bloco no endereço 00 1f → 31 bandas (1/3 oitava, 20Hz–20kHz),
+//   1 byte/banda, ~0x00..0x5c. Ver docs/rta-implementation-brief.md.
+export const AX32_RTA_SOURCE_SELECT_PARAMS = [57, 2884] as const;
+export const AX32_RTA_ENABLE_PARAM = 5196;
+export const RTA_SPECTRUM_BLOCK_ADDRESS = [0x00, 0x1f] as const;
+export const RTA_SPECTRUM_BAND_COUNT = 31;
+export const RTA_SPECTRUM_VALUE_MAX = 0x5c; // ~92, teto p/ normalizar 0..1
+
+export type RtaTarget =
+  | { readonly kind: "channel"; readonly index: number }
+  | { readonly kind: "aux"; readonly index: number }
+  | { readonly kind: "master"; readonly side: "left" | "right" };
+
+/**
+ * Source ID (valor de 57/2884) por fonte. SÓ AX32 — retorna null em AX16/24,
+ * o que garante que o controller nunca ligue/escreva nesses modelos.
+ */
+export function resolveRtaSourceId(model: MixerModel, target: RtaTarget): number | null {
+  if (model !== "AX32") return null;
+  switch (target.kind) {
+    case "channel":
+      return target.index; // CH-n = n (1..32)
+    case "aux":
+      return 34 + target.index; // AUX-n = 34+n (AUX1=35 … AUX16=50)
+    case "master":
+      return target.side === "left" ? 51 : 52;
+  }
+}
+
+/** RTA só tem fluxo nativo (ligar/poll) no AX32. */
+export function isRtaSupported(model: MixerModel): boolean {
+  return model === "AX32";
+}
+
+/**
+ * Bit a checar em `resolveOutputLinkParam(model)` para detectar par AUX linkado.
+ * Pares: (AUX1+2)→bit0=1, (AUX3+4)→bit1=2, (AUX5+6)→bit2=4, etc.
+ * auxNumber 1-based.
+ */
+export function getAuxLinkBit(auxNumber: number): number {
+  return 1 << Math.floor((auxNumber - 1) / 2);
+}
+
+/**
+ * Source IDs de um par AUX linkado: [sourceIdL, sourceIdR]. auxNumber 1-based.
+ * Ex.: AUX3 (ou AUX4) → par (3,4) → [37, 38].
+ */
+export function getAuxStereoSourceIds(auxNumber: number): [number, number] {
+  const pairIdx = Math.floor((auxNumber - 1) / 2);
+  return [34 + pairIdx * 2 + 1, 34 + pairIdx * 2 + 2];
+}
+
 // ─── Unified Mixer Profiles ───────────────────────────────────────────────────
 // Single source of truth for all model-specific constants.
 // All sync, polling, meters, names, and colors should derive from the active profile.

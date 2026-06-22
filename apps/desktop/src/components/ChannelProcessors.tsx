@@ -6,6 +6,14 @@ import { VerticalFader } from "./VerticalFader";
 import { stripColorForScope } from "./stripColor";
 import { useCompressorMeters } from "../hooks/useCompressorMeters";
 import { useGateMeters } from "../hooks/useGateMeters";
+import { useSpectrumBallistics } from "../hooks/useSpectrumBallistics";
+import {
+  THIRD_OCTAVE_CENTERS_HZ,
+  simulateSpectrumFrame,
+  spectrumAreaPath,
+  spectrumLinePath,
+} from "../lib/rtaSpectrum";
+import { rtaSpectrumStore } from "../lib/rtaSpectrumStore";
 
 export type GateState = {
   enabled: boolean;
@@ -2391,6 +2399,68 @@ export function eqMagnitudeDb(freq: number, eq: EqState) {
   return clamp(bandGain + hpfGain + lpfGain, -24, 18);
 }
 
+// RTA — camada de espectro (analisador) desenhada ATRÁS da curva do EQ (estilo FabFilter).
+// Fonte = rtaSpectrumStore: dados REAIS do AX32 já normalizados 0..1 (null = sem dado → some).
+// O frame cru (op 0x46/bytes/CRC) fica no client+adapter; a UI só vê nível limpo.
+// Flag de design: se true, usa o gerador SIMULADO no lugar do real (só pra calibrar o look).
+const RTA_SPECTRUM_PROTOTYPE = false;
+// Não deixa o pico encostar no teto do gráfico — respiro visual.
+const RTA_SPECTRUM_DISPLAY_SCALE = 0.92;
+
+function SpectrumLayer({
+  graphX,
+  graphY,
+  graphWidth,
+  graphHeight,
+}: {
+  graphX: number;
+  graphY: number;
+  graphWidth: number;
+  graphHeight: number;
+}) {
+  const { levels, peaks } = useSpectrumBallistics(
+    () =>
+      RTA_SPECTRUM_PROTOTYPE
+        ? simulateSpectrumFrame(performance.now())
+        : rtaSpectrumStore.getSnapshot(),
+    true
+  );
+
+  if (levels.length === 0) return null;
+
+  const baseY = graphY + graphHeight;
+  const toPoint = (v: number, i: number) => ({
+    x: graphX + freqToX(THIRD_OCTAVE_CENTERS_HZ[i], graphWidth),
+    y: baseY - clamp(v, 0, 1) * RTA_SPECTRUM_DISPLAY_SCALE * graphHeight,
+  });
+
+  // Os dados vão de 20 Hz a 20 kHz, mas o eixo mostra 10 Hz–24 kHz. Sem isto, a área
+  // cairia num paredão vertical em 20 Hz / 20 kHz. Ancorando as pontas no piso, nas
+  // BORDAS do gráfico, a curva desce suave até a base (fade nas extremidades).
+  const leftEdge = { x: graphX, y: baseY };
+  const rightEdge = { x: graphX + graphWidth, y: baseY };
+  const levelPts = [leftEdge, ...levels.map(toPoint), rightEdge];
+  const peakPts = [leftEdge, ...peaks.map(toPoint), rightEdge];
+
+  const areaD = spectrumAreaPath(levelPts, baseY);
+  const peakD = spectrumLinePath(peakPts);
+
+  return (
+    <g pointerEvents="none">
+      <path d={areaD} fill="url(#rta-spectrum-fill)" />
+      <path
+        d={peakD}
+        fill="none"
+        stroke="var(--primitive-cyan-300)"
+        strokeWidth="1"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        opacity="0.32"
+      />
+    </g>
+  );
+}
+
 function EqGraph({
   eq,
   disabled,
@@ -2594,6 +2664,11 @@ function EqGraph({
             <stop offset="0%" stopColor="var(--alpha-cyan-40)" />
             <stop offset="100%" stopColor="var(--alpha-cyan-12)" />
           </linearGradient>
+          <linearGradient id="rta-spectrum-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--primitive-cyan-400)" stopOpacity="0" />
+            <stop offset="55%" stopColor="var(--primitive-cyan-400)" stopOpacity="0.1" />
+            <stop offset="100%" stopColor="var(--primitive-cyan-400)" stopOpacity="0.22" />
+          </linearGradient>
           <filter id="eq-handle-glow" x="-120%" y="-120%" width="340%" height="340%">
             <feDropShadow dx="0" dy="0" stdDeviation="3" floodColor="rgba(241,245,249,0.42)" floodOpacity="0.8" />
           </filter>
@@ -2667,6 +2742,8 @@ function EqGraph({
           </text>
         </g>
       ))}
+      {/* RTA — camada de espectro atrás da curva do EQ (protótipo: dados simulados) */}
+      <SpectrumLayer graphX={graphX} graphY={graphY} graphWidth={graphWidth} graphHeight={graphHeight} />
       {bandOverlays.map((overlay) => (
         <g key={overlay.key}>
           <polyline
