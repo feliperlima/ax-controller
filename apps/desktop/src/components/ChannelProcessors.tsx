@@ -3454,12 +3454,12 @@ function GeqSlider({
   onChange: (db: number) => void;
 }) {
   const trackRef = useRef<HTMLDivElement | null>(null);
-  const accent = MODULE_ACCENTS.geq.color;
   const clamped = clamp(valueDb, GEQ_MIN_DB, GEQ_MAX_DB);
   // 0% = -12dB (fundo), 50% = 0dB (centro), 100% = +12dB (topo)
   const fillPct = ((clamped - GEQ_MIN_DB) / (GEQ_MAX_DB - GEQ_MIN_DB)) * 100;
-  const THUMB_H = 28;
+  const THUMB_H = 50;
   const THUMB_HALF = THUMB_H / 2;
+  const TRACK_PADDING_Y = 16;
 
   // Fill do centro até o valor (positivo sobe, negativo desce)
   const fillStyle: React.CSSProperties =
@@ -3532,10 +3532,6 @@ function GeqSlider({
           flex: "1 1 auto",
           minHeight: 120,
           width: "100%",
-          backgroundColor: "var(--fader-track)",
-          borderRadius: 4,
-          padding: `${THUMB_HALF}px 0`,
-          boxSizing: "border-box",
           cursor: disabled ? "not-allowed" : "ns-resize",
           opacity: disabled ? 0.5 : 1,
           touchAction: "none",
@@ -3544,76 +3540,95 @@ function GeqSlider({
           justifyContent: "center",
         }}
       >
-        {/* Rail: dois strips + fill central — mesmo visual do VerticalFader */}
+        {/* Track container — idêntico ao VerticalFader (width 21px como no strip) */}
         <div
           style={{
-            position: "relative",
-            width: 6,
-            height: "100%",
-            backgroundColor: "var(--meter-background)",
-            borderBottomLeftRadius: 4,
-            borderBottomRightRadius: 4,
+            position: "absolute",
+            top: 0,
+            bottom: 0,
+            left: "50%",
+            transform: "translateX(-50%)",
+            width: 21,
+            backgroundColor: "var(--fader-track)",
+            borderRadius: 4,
+            padding: `${TRACK_PADDING_Y}px 8px`,
+            boxSizing: "border-box",
             display: "flex",
-            justifyContent: "space-between",
-            overflow: "hidden",
+            alignItems: "center",
+            justifyContent: "center",
           }}
         >
-          <div style={{ width: 2.5, height: "100%", backgroundColor: "var(--fader-rail)" }} />
-          <div style={{ width: 2.5, height: "100%", backgroundColor: "var(--fader-rail)" }} />
+          {/* Rail: dois strips + fill central */}
           <div
             style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              ...fillStyle,
-              background: "var(--fader-rail-active)",
-              boxShadow: "0 0 12px rgba(56,189,248,0.45)",
+              position: "relative",
+              width: 6,
+              height: "100%",
+              backgroundColor: "var(--meter-background)",
+              borderBottomLeftRadius: 4,
+              borderBottomRightRadius: 4,
+              display: "flex",
+              justifyContent: "space-between",
+              overflow: "hidden",
             }}
-          />
+          >
+            <div style={{ width: 2.5, height: "100%", backgroundColor: "var(--fader-rail)" }} />
+            <div style={{ width: 2.5, height: "100%", backgroundColor: "var(--fader-rail)" }} />
+            <div
+              style={{
+                position: "absolute",
+                left: 0,
+                right: 0,
+                ...fillStyle,
+                background: "var(--fader-rail-active)",
+                boxShadow: "0 0 12px rgba(56,189,248,0.45)",
+              }}
+            />
+          </div>
         </div>
 
-        {/* Marcador 0 dB: tracinhos laterais — igual ao zero-marker do VerticalFader */}
+        {/* Marcador 0 dB: tracinhos laterais — igual ao VerticalFader */}
         <div
           style={{
             position: "absolute",
             left: "calc(50% - 12px)",
             top: "50%",
-            width: 5,
+            width: 8,
             height: 1,
             backgroundColor: "var(--fader-thumb-line)",
             boxShadow: "0 0 2px rgba(241,245,249,0.7)",
-            opacity: 0.6,
             pointerEvents: "none",
+            zIndex: 9,
           }}
         />
         <div
           style={{
             position: "absolute",
-            left: "calc(50% + 7px)",
+            left: "calc(50% + 4px)",
             top: "50%",
-            width: 5,
+            width: 8,
             height: 1,
             backgroundColor: "var(--fader-thumb-line)",
             boxShadow: "0 0 2px rgba(241,245,249,0.7)",
-            opacity: 0.6,
             pointerEvents: "none",
+            zIndex: 9,
           }}
         />
 
-        {/* Thumb — miniatura do VerticalFader */}
+        {/* Thumb — 32×50px, idêntico ao VerticalFader */}
         <div
           style={{
             position: "absolute",
             left: "50%",
             transform: "translate(-50%, -50%)",
             top: `calc(${THUMB_HALF}px + ${(100 - fillPct) / 100} * (100% - ${THUMB_H}px))`,
-            width: "calc(100% - 6px)",
+            width: 32,
             height: THUMB_H,
             borderRadius: 4,
             border: "1px solid var(--fader-thumb-border)",
             background:
               "linear-gradient(180deg, var(--fader-thumb-top) 0%, var(--fader-thumb-mid) 45%, #1b1f25 100%)",
-            boxShadow: "0px 4px 10px rgba(0,0,0,0.35)",
+            boxShadow: "0px 8px 12px rgba(0,0,0,0.28)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -3621,37 +3636,39 @@ function GeqSlider({
             zIndex: 10,
           }}
         >
-          {/* Linha indicadora central */}
           <div
             style={{
-              width: "55%",
+              width: 17,
               height: 2,
               borderRadius: 999,
-              backgroundColor: clamped === 0 ? "var(--fader-thumb-line)" : accent,
-              boxShadow:
-                clamped !== 0 ? `0 0 4px ${MODULE_ACCENTS.geq.glow}` : "0 0 2px rgba(255,255,255,0.3)",
+              backgroundColor: "var(--fader-thumb-line)",
+              boxShadow: "0 0 4px rgba(255,255,255,0.4)",
             }}
           />
         </div>
       </div>
 
-      {/* Display de valor — mesmo padrão do FaderDisplay dos strips */}
+      {/* Display de valor — idêntico ao FaderDisplay do strip */}
       <div
         style={{
           width: "100%",
-          height: 24,
+          height: 32,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
           backgroundColor: "var(--surface-overlay-strong)",
           borderRadius: 4,
-          fontSize: 11,
+          fontSize: 14,
           fontWeight: 400,
           color: "var(--text-primary)",
           whiteSpace: "nowrap",
           fontVariantNumeric: "tabular-nums",
-          boxSizing: "border-box",
+          fontFamily: "Inter, system-ui, sans-serif",
+          fontStyle: "normal",
           lineHeight: 1,
+          overflow: "hidden",
+          boxSizing: "border-box",
+          padding: "0 4px",
         }}
       >
         {clamped > 0 ? "+" : ""}{clamped.toFixed(1)} dB
