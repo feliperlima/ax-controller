@@ -15,7 +15,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "E00BC70545A075F4DB9E884E"
-               BuildableName = "desktop.app"
+               BuildableName = "AX Control.app"
                BlueprintName = "desktop_iOS"
                ReferencedContainer = "container:desktop.xcodeproj">
             </BuildableReference>
@@ -31,7 +31,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "E00BC70545A075F4DB9E884E"
-            BuildableName = "desktop.app"
+            BuildableName = "AX Control.app"
             BlueprintName = "desktop_iOS"
             ReferencedContainer = "container:desktop.xcodeproj">
          </BuildableReference>
@@ -66,7 +66,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "E00BC70545A075F4DB9E884E"
-            BuildableName = "desktop.app"
+            BuildableName = "AX Control.app"
             BlueprintName = "desktop_iOS"
             ReferencedContainer = "container:desktop.xcodeproj">
          </BuildableReference>
@@ -95,7 +95,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "E00BC70545A075F4DB9E884E"
-            BuildableName = "desktop.app"
+            BuildableName = "AX Control.app"
             BlueprintName = "desktop_iOS"
             ReferencedContainer = "container:desktop.xcodeproj">
          </BuildableReference>
