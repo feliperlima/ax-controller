@@ -189,6 +189,58 @@ export function resolveAuxSoloParams(model: MixerModel, auxNumber: number): { le
   return { left: base + AUX_OFFSETS.soloL, right: base + AUX_OFFSETS.soloR };
 }
 
+// ─── Graphic EQ (AUX & Master) ────────────────────────────────────────────────
+
+/**
+ * GEQ de 15 bandas nas saídas AUX e Master. Confirmado no AX32 (AUX 1–14, Master L/R).
+ * Regra unificada: relativo à base do fader do bloco de saída,
+ *   enable     = faderBase + 14
+ *   bandBase   = faderBase + 49  (param "type" da banda 1)
+ *   por banda  = type(+0), freq(+1), gain(+2), Q(+3)  → só o gain é editável.
+ * Ganho: value = 500 + dB*10 (faixa 380..620 = ±12 dB) — igual ao EQ paramétrico.
+ */
+export const GEQ_BAND_COUNT = 15;
+export const GEQ_ENABLE_OFFSET = 14;
+export const GEQ_BAND_BASE_OFFSET = 49;
+export const GEQ_FREQUENCIES: readonly number[] = [
+  25, 40, 63, 100, 163, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 12000,
+];
+
+export interface GeqParams {
+  /** Param do enable (ON/OFF) do GEQ. */
+  enable: number;
+  /** Params de ganho das 15 bandas, na ordem das frequências. */
+  gains: number[];
+}
+
+/** Monta os params do GEQ a partir da base do fader do bloco de saída. */
+function geqParamsFromFaderBase(faderBase: number): GeqParams {
+  const bandBase = faderBase + GEQ_BAND_BASE_OFFSET;
+  return {
+    enable: faderBase + GEQ_ENABLE_OFFSET,
+    gains: Array.from({ length: GEQ_BAND_COUNT }, (_, k) => bandBase + 2 + k * 4),
+  };
+}
+
+/**
+ * GEQ do AUX. O bloco AUX tem layout uniforme entre modelos (base+stride 109),
+ * então vale para AX16/24 e AX32. (AX16/24 inferido — confirmar na mesa.)
+ */
+export function resolveAuxGeqParams(model: MixerModel, auxNumber: number): GeqParams {
+  const faderBase = AUX1_BASE[model] + AUX_STRIDE * (auxNumber - 1);
+  return geqParamsFromFaderBase(faderBase);
+}
+
+/**
+ * GEQ do Master por lado. Regra faderBase+14/+49 confirmada em todos os modelos:
+ * AX32: L=4634, R=4743. AX16/24: L=2548 (enable 2562, band 2597), R=2657 (enable 2671, band 2706).
+ */
+export function resolveMasterGeqParams(
+  model: MixerModel, side: "left" | "right"
+): GeqParams {
+  return geqParamsFromFaderBase(MASTER_PARAMS[model][side].fader);
+}
+
 // ─── FX Buses ───────────────────────────────────────────────────────────────
 
 // AX16/24 FX: fixed params per slot (stride=45).

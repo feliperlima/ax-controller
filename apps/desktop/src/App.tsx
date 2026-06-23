@@ -126,6 +126,10 @@ import {
   type MixerProfile,
   type MixerModel,
   type RtaTarget,
+  resolveAuxGeqParams,
+  resolveMasterGeqParams,
+  GEQ_BAND_COUNT,
+  type GeqParams,
 } from "./protocol/duonn/protocolAddressing";
 import { RtaController } from "./lib/rtaAdapter";
 import {
@@ -164,12 +168,14 @@ import {
 } from "./lib/groupControls";
 import {
   ChannelProcessors,
+  GraphicEqEditor,
   type CompressorState,
   type EqBandState,
   type EqState,
   type FilterSlope,
   type FilterType,
   type GateState,
+  type GraphicEqState,
   type ProcessorModule,
   type ProcessorState,
   type SendStripId,
@@ -1894,6 +1900,7 @@ function createDefaultAuxProcessorState(): ProcessorState {
       ...DEFAULT_AUX_EQ,
       bands: DEFAULT_AUX_EQ.bands.map((band) => ({ ...band })),
     },
+    geq: createDefaultGeqState(),
   };
 }
 
@@ -2081,6 +2088,25 @@ function processorParams(channelNumber: number) {
   };
 }
 
+/** Chaves planas do GEQ (geqEnable, geqGain1..15) para entrar no Object.values do read. */
+type GeqFlatParams = { geqEnable: number } & Record<`geqGain${number}`, number>;
+function geqFlatKeys(geq: GeqParams): GeqFlatParams {
+  const out = { geqEnable: geq.enable } as GeqFlatParams;
+  geq.gains.forEach((param, index) => {
+    out[`geqGain${index + 1}`] = param;
+  });
+  return out;
+}
+
+function createDefaultGeqState(): GraphicEqState {
+  return { enabled: false, gains: Array.from({ length: GEQ_BAND_COUNT }, () => 0) };
+}
+
+/** Ganho do GEQ em dB → raw da mesa (500 = 0 dB, ±12 dB → 380..620). */
+function geqGainToRaw(db: number): number {
+  return Math.round(500 + Math.max(-12, Math.min(12, db)) * 10);
+}
+
 function auxProcessorParams(auxNumber: number) {
   const aux = Math.round(auxNumber);
   const p = getActiveProfile();
@@ -2111,6 +2137,7 @@ function auxProcessorParams(auxNumber: number) {
 
     return {
       ...params,
+      ...geqFlatKeys(resolveAuxGeqParams(p.model, aux)),
       eqBand1Freq: params.eqBandBase,
       eqBand1Gain: params.eqBandBase + 1,
       eqBand1Q: params.eqBandBase + 2,
@@ -2289,6 +2316,7 @@ function auxProcessorParams(auxNumber: number) {
 
   return {
     ...params,
+    ...geqFlatKeys(resolveAuxGeqParams(p.model, aux)),
     eqBand1Freq: params.eqBandBase,
     eqBand1Gain: params.eqBandBase + 1,
     eqBand1Q: params.eqBandBase + 2,
@@ -5656,6 +5684,10 @@ function App() {
                 },
           ],
         },
+        geq: ((geqP) => ({
+          enabled: valueToBoolean(getValue(geqP.enable, current.geq?.enabled ? 1 : 0)),
+          gains: geqP.gains.map((param) => valueToEqGain(getValue(param, 500))),
+        }))(resolveAuxGeqParams(getActiveProfile().model, auxNumber)),
       };
     });
   }
@@ -6728,6 +6760,7 @@ function App() {
     if (!client) return;
 
     const p = masterProcessorParams(side);
+    const geq = resolveMasterGeqParams(getActiveProfile().model, side);
     const eqBandParams = Array.from({ length: 7 }, (_, index) => p.eqBandBase + index * 4);
     const params = [
       p.compEnabled,
@@ -6742,6 +6775,7 @@ function App() {
       p.lpfTypeSlope,
       p.lpfFreq,
       ...eqBandParams.flatMap((bandBase) => [bandBase, bandBase + 1, bandBase + 2]),
+      ...(geq ? [geq.enable, ...geq.gains] : []),
     ];
 
     const response = await client.readParams(params, 1400);
@@ -6823,6 +6857,15 @@ function App() {
             };
           }),
         },
+        geq: geq
+          ? {
+              enabled: valueToBoolean(values.get(geq.enable) ?? (current.geq?.enabled ? 1 : 0)),
+              gains: geq.gains.map((param, index) => {
+                const raw = values.get(param);
+                return raw !== undefined ? valueToEqGain(raw) : (current.geq?.gains[index] ?? 0);
+              }),
+            }
+          : current.geq,
       };
     });
   }
@@ -14352,10 +14395,50 @@ function App() {
             hideGate={true}
             hideCompMeters={true}
             moduleItems={[
-              { id: "eq", label: "EQ" },
+              { id: "eq", label: "EQ PARAM" },
+              { id: "geq", label: "EQ GRAPH" },
               { id: "comp", label: "COMP" },
               { id: "sends", label: "AUX MIX" },
             ]}
+            customModuleContent={{
+              geq: (
+                <GraphicEqEditor
+                  state={processorState.geq ?? createDefaultGeqState()}
+                  disabled={!isConnected && appStage !== "demo"}
+                  onGainChange={(index, db) => {
+                    const model = getActiveProfile().model;
+                    getLinkedAuxTargets(auxNumber).forEach((target) => {
+                      updateAuxProcessorState(target, (current) => {
+                        const geq = current.geq ?? createDefaultGeqState();
+                        return { ...current, geq: { ...geq, gains: geq.gains.map((g, i) => (i === index ? db : g)) } };
+                      });
+                      clientRef.current?.sendParam(resolveAuxGeqParams(model, target).gains[index], geqGainToRaw(db));
+                    });
+                  }}
+                  onEnabledChange={(enabled) => {
+                    const model = getActiveProfile().model;
+                    getLinkedAuxTargets(auxNumber).forEach((target) => {
+                      updateAuxProcessorState(target, (current) => ({
+                        ...current,
+                        geq: { ...(current.geq ?? createDefaultGeqState()), enabled },
+                      }));
+                      clientRef.current?.sendParam(resolveAuxGeqParams(model, target).enable, enabled ? 1 : 0);
+                    });
+                  }}
+                  onReset={() => {
+                    const model = getActiveProfile().model;
+                    getLinkedAuxTargets(auxNumber).forEach((target) => {
+                      updateAuxProcessorState(target, (current) => ({
+                        ...current,
+                        geq: { ...(current.geq ?? createDefaultGeqState()), gains: Array.from({ length: GEQ_BAND_COUNT }, () => 0) },
+                      }));
+                      const params = resolveAuxGeqParams(model, target);
+                      clientRef.current?.sendParamBatch(params.gains.map((param) => ({ param, value: 500 })));
+                    });
+                  }}
+                />
+              ),
+            }}
             sends={sendsView}
             onOpenSendDetail={(send) => {
               if (send.id === "digi") { setDetailView({ type: "digi" }); return; }
@@ -14915,6 +14998,7 @@ function App() {
     const masterDetailTargets: ("left" | "right")[] = masterLinked
       ? ["left", "right"]
       : [masterDetailSide];
+    const masterGeqModel = getActiveProfile().model;
     const masterDetailTitle = masterLinked
       ? "Master Bus"
       : masterDetailSide === "left"
@@ -15071,10 +15155,49 @@ function App() {
               hideGate={true}
               hideCompMeters={true}
               moduleItems={[
-                { id: "eq", label: "EQ" },
+                { id: "eq", label: "EQ PARAM" },
+                { id: "geq", label: "EQ GRAPH" },
                 { id: "comp", label: "COMP" },
                 { id: "sends", label: "SENDS" },
               ]}
+              customModuleContent={{
+                geq: (
+                  <GraphicEqEditor
+                    state={masterProcessorState.geq ?? createDefaultGeqState()}
+                    disabled={!isConnected && appStage !== "demo"}
+                    onGainChange={(index, db) => {
+                      setMasterProcessorState((current) => {
+                        const geq = current.geq ?? createDefaultGeqState();
+                        return { ...current, geq: { ...geq, gains: geq.gains.map((g, i) => (i === index ? db : g)) } };
+                      });
+                      masterDetailTargets.forEach((side) => {
+                        const params = resolveMasterGeqParams(masterGeqModel, side);
+                        clientRef.current?.sendParam(params.gains[index], geqGainToRaw(db));
+                      });
+                    }}
+                    onEnabledChange={(enabled) => {
+                      setMasterProcessorState((current) => ({
+                        ...current,
+                        geq: { ...(current.geq ?? createDefaultGeqState()), enabled },
+                      }));
+                      masterDetailTargets.forEach((side) => {
+                        const params = resolveMasterGeqParams(masterGeqModel, side);
+                        clientRef.current?.sendParam(params.enable, enabled ? 1 : 0);
+                      });
+                    }}
+                    onReset={() => {
+                      setMasterProcessorState((current) => ({
+                        ...current,
+                        geq: { ...(current.geq ?? createDefaultGeqState()), gains: Array.from({ length: GEQ_BAND_COUNT }, () => 0) },
+                      }));
+                      masterDetailTargets.forEach((side) => {
+                        const params = resolveMasterGeqParams(masterGeqModel, side);
+                        clientRef.current?.sendParamBatch(params.gains.map((param) => ({ param, value: 500 })));
+                      });
+                    }}
+                  />
+                ),
+              }}
               sends={sendsView}
               onModuleChange={setActiveProcessorModule}
               onGateChange={() => {}}
