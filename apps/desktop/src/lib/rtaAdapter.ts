@@ -1,16 +1,13 @@
 // RTA — controller profile-aware do analisador de espectro.
 //
-// AX32:  liga (source-select 57/2884 + enable 5196=1), polla o bloco 0x46 ~30 Hz, normaliza
-//        cada frame (0..1) e empurra pro rtaSpectrumStore.
-//        Suporte a par estéreo: lê outputLink (5109) antes de iniciar; se linkado,
-//        alterna L↔R a cada frame recebido (~15 fps/lado) e empurra max(L,R) no store.
-//        Master: checa masterLinkBit (256). AUX: checa bit do par (pair0=1, pair1=2...).
-// AX16/24: NUNCA escreve (DSP diferente → 57/2884/5196 podem mexer no áudio ao vivo). Faz só
-//        um read-probe (op 0x06, leitura segura) + dispara telemetria `rta_probe`. RTA fica
-//        escondido (store nulo).
+// AX32:  Lê o estado atual de 5196 antes de agir. Se RTA já estava ligado na mesa,
+//        apenas troca a fonte (57/2884) sem re-enviar enable — evita flashes e escritas
+//        desnecessárias ao navegar entre canais. Ao sair (stop), SEMPRE desliga (5196=0).
+//        Polla o bloco 0x46 ~30 Hz, normaliza (0..1) e empurra pro rtaSpectrumStore.
+//        Estéreo: lê outputLink antes; se linkado, alterna L↔R por frame (~15 fps/lado).
+// AX16/24: NUNCA escreve. Read-probe + telemetria rta_probe. RTA escondido.
 //
 // Tudo best-effort e não-bloqueante: falha nunca derruba a sessão ao vivo.
-// Ver docs/rta-implementation-brief.md.
 
 import type { Axios16Client } from "./axios16Client";
 import {
@@ -32,6 +29,7 @@ const POLL_INTERVAL_MS = 33; // ~30 Hz
 const STALE_TIMEOUT_MS = 600; // sem frame → some (não congela)
 const PROBE_WINDOW_MS = 1200; // AX16/24: janela do read-probe
 const LINK_READ_TIMEOUT_MS = 400; // leitura do link antes de iniciar; timeout → mono
+const ENABLE_READ_TIMEOUT_MS = 300; // leitura do estado 5196 antes de iniciar; timeout → assume off
 
 export type RtaProbeResult = {
   model: MixerModel;
@@ -93,17 +91,24 @@ export class RtaController {
     rtaSpectrumStore.clear();
   }
 
-  // ── AX32: lê link, decide mono/stereo, inicia stream ────────────────────────
+  // ── AX32: lê estado atual + link, decide mono/stereo, inicia stream ─────────
   private async startAx32() {
-    const stereoIds = await this.resolveStereoIds();
+    // Lê enable e link em paralelo — falha em qualquer um = safe fallback.
+    const [rtaEnabled, stereoIds] = await Promise.all([
+      this.client
+        .readParams([AX32_RTA_ENABLE_PARAM], ENABLE_READ_TIMEOUT_MS)
+        .then((r) => (r.find((x) => x.param === AX32_RTA_ENABLE_PARAM)?.value ?? 0) === 1)
+        .catch(() => false),
+      this.resolveStereoIds(),
+    ]);
     if (this.stopped) return;
 
     if (stereoIds) {
-      this.startAx32StereoStream(stereoIds[0], stereoIds[1]);
+      this.startAx32StereoStream(stereoIds[0], stereoIds[1], rtaEnabled);
     } else {
       const sourceId = resolveRtaSourceId(this.model, this.target);
       if (sourceId === null || this.stopped) return;
-      this.startAx32MonoStream(sourceId);
+      this.startAx32MonoStream(sourceId, rtaEnabled);
     }
   }
 
@@ -136,9 +141,9 @@ export class RtaController {
   }
 
   // ── Mono: stream de uma fonte só ─────────────────────────────────────────────
-  private startAx32MonoStream(sourceId: number) {
+  private startAx32MonoStream(sourceId: number, rtaAlreadyEnabled: boolean) {
     AX32_RTA_SOURCE_SELECT_PARAMS.forEach((p) => this.safeSend(p, sourceId));
-    this.safeSend(AX32_RTA_ENABLE_PARAM, 1);
+    if (!rtaAlreadyEnabled) this.safeSend(AX32_RTA_ENABLE_PARAM, 1);
 
     this.unsubscribeFrame = this.client.onSpectrumFrame((bands) => {
       if (this.stopped) return;
@@ -158,14 +163,14 @@ export class RtaController {
   // e quando AMBOS estão disponíveis empurra max(L[i], R[i]) no store.
   // Assim o store é atualizado a ~15 fps (cada par de frames = 1 update), enquanto
   // os ballistics no SpectrumLayer mantêm a animação fluida.
-  private startAx32StereoStream(sourceIdL: number, sourceIdR: number) {
+  private startAx32StereoStream(sourceIdL: number, sourceIdR: number, rtaAlreadyEnabled: boolean) {
     let side: "L" | "R" = "L";
     let lastL: number[] | null = null;
     let lastR: number[] | null = null;
 
     // Começa no lado L
     AX32_RTA_SOURCE_SELECT_PARAMS.forEach((p) => this.safeSend(p, sourceIdL));
-    this.safeSend(AX32_RTA_ENABLE_PARAM, 1);
+    if (!rtaAlreadyEnabled) this.safeSend(AX32_RTA_ENABLE_PARAM, 1);
 
     this.unsubscribeFrame = this.client.onSpectrumFrame((bands) => {
       if (this.stopped) return;
