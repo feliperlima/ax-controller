@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Knob } from "./Knob";
 import type {
   FxPresetId,
   FxPresetConfig,
 } from "../protocol/duonn/fxPresets";
 import {
-  getFxPresetConfig,
-  getAllFxPresets,
   formatFxPresetControlValue,
 } from "../protocol/duonn/fxPresets";
 
@@ -68,23 +66,23 @@ export function FxPresetCard({ preset, isActive, disabled = false, onClick }: Fx
 }
 
 interface FxPresetGridProps {
+  presets: FxPresetConfig[];
   activePresetId: FxPresetId | null;
   disabled?: boolean;
   onPresetSelect: (presetId: FxPresetId) => void;
 }
 
 export function FxPresetGrid({
+  presets,
   activePresetId,
   disabled = false,
   onPresetSelect,
 }: FxPresetGridProps) {
-  const presets = useMemo(() => getAllFxPresets(), []);
-
   return (
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+        gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
         gridAutoRows: "minmax(88px, 1fr)",
         gap: 8,
         alignContent: "start",
@@ -106,6 +104,7 @@ export function FxPresetGrid({
 }
 
 interface FxPresetControlPanelProps {
+  presets: FxPresetConfig[];
   presetId: FxPresetId | null;
   controlAValue: number;
   controlBValue: number;
@@ -115,6 +114,7 @@ interface FxPresetControlPanelProps {
 }
 
 export function FxPresetControlPanel({
+  presets,
   presetId,
   controlAValue,
   controlBValue,
@@ -155,9 +155,10 @@ export function FxPresetControlPanel({
     );
   }
 
-  const preset = getFxPresetConfig(presetId);
+  const preset = presets.find((p) => p.id === presetId);
+  if (!preset) return null;
   const [controlAConfig, controlBConfig] = preset.controls;
-  const isDelay = preset.category === "echo_delay";
+  const hasTap = preset.hasTap === true;
 
   function commitA(draft: string) {
     const parsed = Number(draft);
@@ -434,8 +435,8 @@ export function FxPresetControlPanel({
         )}
       </div>
 
-      {/* TAP TEMPO para presets de delay */}
-      {isDelay && (
+      {/* TAP TEMPO para presets de delay/echo */}
+      {hasTap && (
         <div
           onClick={(e) => e.stopPropagation()}
           onPointerDown={(e) => e.stopPropagation()}

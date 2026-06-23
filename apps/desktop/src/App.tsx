@@ -40,6 +40,7 @@ import {
   type FxPresetId,
   validateFxPresetId,
   getFxPresetConfig,
+  getFxBankPresets,
 } from "./protocol/duonn/fxPresets";
 import { ChannelStrip } from "./components/ChannelStrip";
 import { DigiStrip } from "./components/DigiStrip";
@@ -6880,11 +6881,12 @@ function App() {
       const controlARaw = values.get(presetParams.controlA) ?? 0;
       const controlBRaw = values.get(presetParams.controlB) ?? 0;
 
-      const presetId = validateFxPresetId(presetRaw);
+      const presetId = validateFxPresetId(presetRaw) ?? 1;
+      const [ctrlA, ctrlB] = getFxPresetConfig(presetId, fxNumber).controls;
       updateFxPresetState(fxNumber, () => ({
-        presetId: presetId ?? 1,
-        controlAValue: Math.max(0, Math.min(127, controlARaw)),
-        controlBValue: Math.max(0, Math.min(127, controlBRaw)),
+        presetId,
+        controlAValue: Math.max(ctrlA.rawMin, Math.min(ctrlA.rawMax, controlARaw)),
+        controlBValue: Math.max(ctrlB.rawMin, Math.min(ctrlB.rawMax, controlBRaw)),
       }));
     } catch {
       updateFxPresetState(fxNumber, () => createDefaultFxPresetState());
@@ -13380,7 +13382,7 @@ function App() {
     const client = clientRef.current;
     if (!client) return;
     const presetParams = getFxPresetParams(activeFxNumber);
-    const controlConfig = getFxPresetConfig(fxPresetState.presetId).controls[0];
+    const controlConfig = getFxPresetConfig(fxPresetState.presetId, activeFxNumber).controls[0];
     const clamped = Math.max(controlConfig.rawMin, rawValue);
     const isSeconds = controlConfig.unit === "s";
     const nextValue = isSeconds ? clamped : Math.round(clamped);
@@ -13398,7 +13400,7 @@ function App() {
     const client = clientRef.current;
     if (!client) return;
     const presetParams = getFxPresetParams(activeFxNumber);
-    const controlConfig = getFxPresetConfig(fxPresetState.presetId).controls[1];
+    const controlConfig = getFxPresetConfig(fxPresetState.presetId, activeFxNumber).controls[1];
     const clamped = Math.max(controlConfig.rawMin, Math.min(controlConfig.rawMax, rawValue));
     const isSeconds = controlConfig.unit === "s";
     const nextValue = isSeconds ? clamped : Math.round(clamped);
@@ -13487,6 +13489,7 @@ function App() {
   function renderFxPresetsContent() {
     const activeFxNumber = detailView?.type === "fx" ? detailView.fx : 1;
     const fxPresetState = fxPresetStates[activeFxNumber - 1] ?? createDefaultFxPresetState();
+    const fxPresets = getFxBankPresets(activeFxNumber);
 
     return (
       <div
@@ -13533,6 +13536,7 @@ function App() {
             }}
           >
             <FxPresetGrid
+              presets={fxPresets}
               activePresetId={fxPresetState.presetId}
               disabled={!isConnected && appStage !== "demo"}
               onPresetSelect={handleFxPresetChange}
@@ -13547,6 +13551,7 @@ function App() {
             }}
           >
             <FxPresetControlPanel
+              presets={fxPresets}
               presetId={fxPresetState.presetId}
               controlAValue={fxPresetState.controlAValue}
               controlBValue={fxPresetState.controlBValue}
