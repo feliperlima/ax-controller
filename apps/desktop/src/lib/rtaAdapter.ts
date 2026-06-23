@@ -63,14 +63,19 @@ export class RtaController {
     }
   }
 
-  /** Troca a fonte (57/2884) sem ciclar o enable. Usar ao trocar de canal enquanto já rodando. */
+  /**
+   * Troca a fonte (57/2884) ao mudar de canal com o RTA já rodando.
+   * Reafirma o enable (5196=1) uma única vez — sem ciclar 0→1 — porque o AX32
+   * só "re-tapa" o RTA na nova fonte quando o enable é reafirmado. É 1 write por
+   * troca (não flood); o flood antigo vinha da alternância L/R ~60×/s, já removida.
+   */
   updateTarget(target: RtaTarget) {
     if (!isRtaSupported(this.model) || this.stopped) return;
     this.target = target;
     const sourceId = resolveRtaSourceId(this.model, target);
-    if (sourceId !== null) {
-      AX32_RTA_SOURCE_SELECT_PARAMS.forEach((p) => this.safeSend(p, sourceId));
-    }
+    if (sourceId === null) return;
+    AX32_RTA_SOURCE_SELECT_PARAMS.forEach((p) => this.safeSend(p, sourceId));
+    this.safeSend(AX32_RTA_ENABLE_PARAM, 1);
   }
 
   stop() {
