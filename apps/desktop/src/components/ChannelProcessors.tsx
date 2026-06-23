@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, PointerEvent as ReactPointerEvent } from "react";
 import { Knob } from "./Knob";
 import { MeterBar, MeterScale } from "./Meter";
 import { VerticalFader } from "./VerticalFader";
@@ -55,13 +55,20 @@ export type EqState = {
   bands: EqBandState[];
 };
 
+/** Graphic EQ (15 bandas fixas). Apenas o ganho por banda é editável (-12..12 dB). */
+export type GraphicEqState = {
+  enabled: boolean;
+  gains: number[];
+};
+
 export type ProcessorState = {
   gate: GateState;
   comp: CompressorState;
   eq: EqState;
+  geq?: GraphicEqState;
 };
 
-export type ProcessorModule = "gate" | "comp" | "eq" | "sends" | "delay" | "presets";
+export type ProcessorModule = "gate" | "comp" | "eq" | "sends" | "delay" | "presets" | "geq";
 
 export type SendStripId = string;
 
@@ -916,7 +923,30 @@ const MODULE_ACCENTS: Record<ProcessorModule, { color: string; glow: string }> =
   sends: { color: "#22d3ee", glow: "rgba(34,211,238,0.35)" },
   delay: { color: "#f59e0b", glow: "rgba(245,158,11,0.35)" },
   presets: { color: "#a78bfa", glow: "rgba(167,139,250,0.35)" },
+  geq: { color: "#22c55e", glow: "rgba(34,197,94,0.35)" },
 };
+/** Graphic EQ: 15 bandas fixas (igual hardware DUONN Axios). */
+export const GEQ_BANDS: ReadonlyArray<{ freq: number; label: string }> = [
+  { freq: 25, label: "25" },
+  { freq: 40, label: "40" },
+  { freq: 63, label: "63" },
+  { freq: 100, label: "100" },
+  { freq: 163, label: "163" },
+  { freq: 250, label: "250" },
+  { freq: 400, label: "400" },
+  { freq: 630, label: "630" },
+  { freq: 1000, label: "1k" },
+  { freq: 1600, label: "1.6k" },
+  { freq: 2500, label: "2.5k" },
+  { freq: 4000, label: "4k" },
+  { freq: 6300, label: "6.3k" },
+  { freq: 10000, label: "10k" },
+  { freq: 12000, label: "12k" },
+];
+export const GEQ_BAND_COUNT = GEQ_BANDS.length;
+const GEQ_MIN_DB = -12;
+const GEQ_MAX_DB = 12;
+
 const EQ_ACTIVE_MIN_FREQ = 20;
 const EQ_ACTIVE_MAX_FREQ = 20000;
 const EQ_DISPLAY_MIN_FREQ = 10;
@@ -3404,6 +3434,320 @@ function CompressorEditor({
               onChange={(gain) => onChange({ gain })}
             />
           </div>
+        </div>
+      </div>
+    </ProcessorShell>
+  );
+}
+
+// ─── Graphic EQ ───────────────────────────────────────────────────────────────
+
+function GeqSlider({
+  label,
+  valueDb,
+  disabled = false,
+  onChange,
+}: {
+  label: string;
+  valueDb: number;
+  disabled?: boolean;
+  onChange: (db: number) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const accent = MODULE_ACCENTS.geq.color;
+  const clamped = clamp(valueDb, GEQ_MIN_DB, GEQ_MAX_DB);
+  // 0% = -12dB (fundo), 50% = 0dB (centro), 100% = +12dB (topo)
+  const fillPct = ((clamped - GEQ_MIN_DB) / (GEQ_MAX_DB - GEQ_MIN_DB)) * 100;
+  const THUMB_H = 28;
+  const THUMB_HALF = THUMB_H / 2;
+
+  // Fill do centro até o valor (positivo sobe, negativo desce)
+  const fillStyle: React.CSSProperties =
+    clamped >= 0
+      ? { top: `${100 - fillPct}%`, bottom: "50%" }
+      : { top: "50%", bottom: `${fillPct}%` };
+
+  function dbFromClientY(clientY: number): number {
+    const el = trackRef.current;
+    if (!el) return clamped;
+    const rect = el.getBoundingClientRect();
+    const travel = rect.height - THUMB_H;
+    const fromBottom = rect.bottom - THUMB_HALF - clientY;
+    const ratio = Math.max(0, Math.min(1, fromBottom / travel));
+    const db = GEQ_MIN_DB + ratio * (GEQ_MAX_DB - GEQ_MIN_DB);
+    return Math.round(db * 10) / 10;
+  }
+
+  function handlePointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    if (disabled) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    onChange(dbFromClientY(e.clientY));
+  }
+
+  function handlePointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+    if (disabled || !e.currentTarget.hasPointerCapture(e.pointerId)) return;
+    e.preventDefault();
+    onChange(dbFromClientY(e.clientY));
+  }
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 5,
+        minWidth: 0,
+      }}
+    >
+      {/* Label de frequência */}
+      <div
+        style={{
+          fontSize: 9,
+          fontWeight: 700,
+          letterSpacing: "0.3px",
+          color: "var(--text-secondary)",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {label}
+      </div>
+
+      {/* Track + thumb */}
+      <div
+        ref={trackRef}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
+        onPointerCancel={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
+        onDoubleClick={(e) => {
+          if (disabled) return;
+          e.stopPropagation();
+          onChange(0);
+        }}
+        style={{
+          position: "relative",
+          flex: "1 1 auto",
+          minHeight: 120,
+          width: "100%",
+          backgroundColor: "var(--fader-track)",
+          borderRadius: 4,
+          padding: `${THUMB_HALF}px 0`,
+          boxSizing: "border-box",
+          cursor: disabled ? "not-allowed" : "ns-resize",
+          opacity: disabled ? 0.5 : 1,
+          touchAction: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        {/* Rail: dois strips + fill central — mesmo visual do VerticalFader */}
+        <div
+          style={{
+            position: "relative",
+            width: 6,
+            height: "100%",
+            backgroundColor: "var(--meter-background)",
+            borderBottomLeftRadius: 4,
+            borderBottomRightRadius: 4,
+            display: "flex",
+            justifyContent: "space-between",
+            overflow: "hidden",
+          }}
+        >
+          <div style={{ width: 2.5, height: "100%", backgroundColor: "var(--fader-rail)" }} />
+          <div style={{ width: 2.5, height: "100%", backgroundColor: "var(--fader-rail)" }} />
+          <div
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              ...fillStyle,
+              background: "var(--fader-rail-active)",
+              boxShadow: "0 0 12px rgba(56,189,248,0.45)",
+            }}
+          />
+        </div>
+
+        {/* Marcador 0 dB: tracinhos laterais — igual ao zero-marker do VerticalFader */}
+        <div
+          style={{
+            position: "absolute",
+            left: "calc(50% - 12px)",
+            top: "50%",
+            width: 5,
+            height: 1,
+            backgroundColor: "var(--fader-thumb-line)",
+            boxShadow: "0 0 2px rgba(241,245,249,0.7)",
+            opacity: 0.6,
+            pointerEvents: "none",
+          }}
+        />
+        <div
+          style={{
+            position: "absolute",
+            left: "calc(50% + 7px)",
+            top: "50%",
+            width: 5,
+            height: 1,
+            backgroundColor: "var(--fader-thumb-line)",
+            boxShadow: "0 0 2px rgba(241,245,249,0.7)",
+            opacity: 0.6,
+            pointerEvents: "none",
+          }}
+        />
+
+        {/* Thumb — miniatura do VerticalFader */}
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            top: `calc(${THUMB_HALF}px + ${(100 - fillPct) / 100} * (100% - ${THUMB_H}px))`,
+            width: "calc(100% - 6px)",
+            height: THUMB_H,
+            borderRadius: 4,
+            border: "1px solid var(--fader-thumb-border)",
+            background:
+              "linear-gradient(180deg, var(--fader-thumb-top) 0%, var(--fader-thumb-mid) 45%, #1b1f25 100%)",
+            boxShadow: "0px 4px 10px rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "none",
+            zIndex: 10,
+          }}
+        >
+          {/* Linha indicadora central */}
+          <div
+            style={{
+              width: "55%",
+              height: 2,
+              borderRadius: 999,
+              backgroundColor: clamped === 0 ? "var(--fader-thumb-line)" : accent,
+              boxShadow:
+                clamped !== 0 ? `0 0 4px ${MODULE_ACCENTS.geq.glow}` : "0 0 2px rgba(255,255,255,0.3)",
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Display de valor — mesmo padrão do FaderDisplay dos strips */}
+      <div
+        style={{
+          width: "100%",
+          height: 24,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: "var(--surface-overlay-strong)",
+          borderRadius: 4,
+          fontSize: 11,
+          fontWeight: 400,
+          color: "var(--text-primary)",
+          whiteSpace: "nowrap",
+          fontVariantNumeric: "tabular-nums",
+          boxSizing: "border-box",
+          lineHeight: 1,
+        }}
+      >
+        {clamped > 0 ? "+" : ""}{clamped.toFixed(1)} dB
+      </div>
+    </div>
+  );
+}
+
+export function GraphicEqEditor({
+  state,
+  disabled = false,
+  onGainChange,
+  onEnabledChange,
+  onReset,
+}: {
+  state: GraphicEqState;
+  disabled?: boolean;
+  onGainChange: (index: number, db: number) => void;
+  onEnabledChange: (enabled: boolean) => void;
+  onReset: () => void;
+}) {
+  return (
+    <ProcessorShell title="">
+      <div
+        style={{
+          minHeight: 0,
+          height: "100%",
+          display: "grid",
+          gridTemplateRows: "44px minmax(0, 1fr)",
+          gap: 4,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "0 12px",
+            borderRadius: 4,
+            border: "none",
+            background: "var(--surface-panel-raised)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ color: "var(--text-primary)", fontWeight: 700, letterSpacing: "1.2px", fontSize: 10 }}>
+              GRAPHIC EQ
+            </div>
+            <ToggleSwitch
+              enabled={state.enabled}
+              disabled={disabled}
+              onChange={onEnabledChange}
+            />
+          </div>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={onReset}
+            style={{
+              height: 32,
+              padding: "0 12px",
+              borderRadius: 8,
+              border: "1px solid var(--button-default-border)",
+              background: "transparent",
+              color: "var(--button-default-text)",
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: "1.2px",
+              cursor: disabled ? "not-allowed" : "pointer",
+            }}
+          >
+            RESET
+          </button>
+        </div>
+
+        <div
+          style={{
+            minHeight: 0,
+            height: "100%",
+            padding: "20px 16px",
+            borderRadius: 4,
+            background: "var(--surface-panel-raised)",
+            display: "grid",
+            gridTemplateColumns: `repeat(${GEQ_BAND_COUNT}, minmax(0, 1fr))`,
+            gap: 6,
+            alignItems: "stretch",
+          }}
+        >
+          {GEQ_BANDS.map((band, index) => (
+            <GeqSlider
+              key={band.freq}
+              label={band.label}
+              valueDb={state.gains[index] ?? 0}
+              disabled={disabled || !state.enabled}
+              onChange={(db) => onGainChange(index, db)}
+            />
+          ))}
         </div>
       </div>
     </ProcessorShell>
