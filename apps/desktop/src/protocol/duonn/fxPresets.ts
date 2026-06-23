@@ -1,20 +1,26 @@
 /**
  * FX Presets Configuration
  *
- * Centralized configuration for all 16 FX presets with their control schemas.
+ * Dois bancos de presets distintos (16 cada), confirmados nos screenshots
+ * da UI oficial + teste de ranges na mesa física:
+ *   - Bank A → FX1 e FX3 (FX ímpar)
+ *   - Bank B → FX2 e FX4 (FX par)
  *
- * AX16/AX24 parameter mappings:
- * - 3097: Active preset selector (1-16), single selector shared
- * - 2940: Control A (contextual, depends on active preset)
- * - 2941: Control B (contextual, depends on active preset)
+ * AX16/AX24 têm FX1 (Bank A) e FX2 (Bank B). AX32 tem FX1–FX4 (1/3=A, 2/4=B).
  *
- * AX32 parameter mappings (confirmed runtime + EXE analysis):
- * - Selectors: FX1=5116, FX2=5117, FX3=5118, FX4=5119
- * - Controls: FX1={A:2754,B:2755}, FX2={A:2785,B:2786}, FX3={A:2816,B:2817}, FX4={A:2847,B:2848}
+ * Os parâmetros reais (selector + controlA/controlB) NÃO ficam aqui — vêm de
+ * resolveFxControlParams(model, fxNumber) / resolveFxPresetSelectorParam em
+ * protocolAddressing.ts (acessados via getFxPresetParams no App.tsx).
+ * Este módulo define apenas o schema visual (nome, label, range, unidade).
  *
- * Model-aware resolvers are in protocolAddressing.ts:
- *   resolveFxPresetSelectorParam(model, fxNumber)
- *   resolveFxControlParams(model, fxNumber)
+ * Notas de label (firmware da mesa é inconsistente em alguns presets — quando
+ * o comportamento real é incerto, espelhamos o hardware para não criar
+ * expectativa errada):
+ *   - Pitch Change / Vocal Doubler: hardware mostra "SLOPE" → usamos "Slope".
+ *   - Distortion: hardware mostra "FREQUENCY Hz" → mantemos "Frequency (Hz)".
+ *   - Symphonic: hardware mostra "FREQUENCY ms" → mantemos "Frequency (ms)".
+ *   - Reverb Gate / Gate Reverb / Early Ref.: hardware mostra "ECHO DELAY" nos
+ *     dois controles (firmware errado) → renomeamos para "Duration (s)" / "Level (%)".
  */
 
 export {
@@ -29,13 +35,18 @@ export {
 
 export type FxPresetId = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
 
-export type FxPresetCategory = "reverb" | "echo_delay" | "gate" | "pitch" | "modulation";
+export type FxPresetCategory =
+  | "reverb"
+  | "echo_delay"
+  | "gate"
+  | "pitch"
+  | "modulation"
+  | "distortion";
 
 export type FxPresetControlKey = "controlA" | "controlB";
 
 export interface FxPresetControlConfig {
   key: FxPresetControlKey;
-  param: 2940 | 2941;
   label: string;
   min: number;
   max: number;
@@ -52,511 +63,321 @@ export interface FxPresetConfig {
   name: string;
   category: FxPresetCategory;
   description: string;
+  /** Mostra o botão TAP TEMPO no painel de controle (presets de echo/delay). */
+  hasTap?: boolean;
   controls: [FxPresetControlConfig, FxPresetControlConfig];
 }
 
-export const FX_PRESET_CONFIG: Record<FxPresetId, FxPresetConfig> = {
-  1: {
-    id: 1,
-    name: "Reverb Hall",
+// ─── Builders de controle reutilizáveis ──────────────────────────────────────
+
+function preDelayControl(): FxPresetControlConfig {
+  return {
+    key: "controlA",
+    label: "Pre-Delay",
+    min: 0,
+    max: 30,
+    step: 1,
+    unit: "ms",
+    rawMin: 0,
+    rawMax: 30,
+  };
+}
+
+function durationSecondsControl(label: string): FxPresetControlConfig {
+  return {
+    key: "controlB",
+    label,
+    min: 0.0,
+    max: 10.0,
+    step: 0.1,
+    unit: "s",
+    rawMin: 0,
+    rawMax: 100,
+    displayFromRaw: (raw: number) => raw / 10,
+    rawFromDisplay: (display: number) => Math.round(display * 10),
+  };
+}
+
+function durationSecondsControlA(label: string): FxPresetControlConfig {
+  return { ...durationSecondsControl(label), key: "controlA" };
+}
+
+function percentControl(key: FxPresetControlKey, label: string): FxPresetControlConfig {
+  return {
+    key,
+    label,
+    min: 0,
+    max: 100,
+    step: 1,
+    unit: "%",
+    rawMin: 0,
+    rawMax: 100,
+  };
+}
+
+function msControl(label: string, rawMax: number): FxPresetControlConfig {
+  return {
+    key: "controlA",
+    label,
+    min: 0,
+    max: rawMax,
+    step: 1,
+    unit: "ms",
+    rawMin: 0,
+    rawMax,
+  };
+}
+
+function rateHzControl(rawMax: number): FxPresetControlConfig {
+  return {
+    key: "controlA",
+    label: "Rate",
+    min: 0,
+    max: rawMax,
+    step: 1,
+    unit: "Hz",
+    rawMin: 0,
+    rawMax,
+  };
+}
+
+function frequencyHzControl(rawMax: number): FxPresetControlConfig {
+  return { ...rateHzControl(rawMax), label: "Frequency" };
+}
+
+function unitlessControlA(label: string, rawMax: number): FxPresetControlConfig {
+  return {
+    key: "controlA",
+    label,
+    min: 0,
+    max: rawMax,
+    step: 1,
+    unit: "",
+    rawMin: 0,
+    rawMax,
+  };
+}
+
+function reverbPreset(id: FxPresetId, name: string, description: string): FxPresetConfig {
+  return {
+    id,
+    name,
     category: "reverb",
-    description: "Ambiência ampla e natural para vozes e instrumentos.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Reverb PreDelay",
-        min: 0,
-        max: 30,
-        step: 1,
-        unit: "ms",
-        rawMin: 0,
-        rawMax: 30,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Reverb Duration",
-        min: 0.0,
-        max: 10.0,
-        step: 0.1,
-        unit: "s",
-        rawMin: 0,
-        rawMax: 100,
-        displayFromRaw: (raw: number) => raw / 10,
-        rawFromDisplay: (display: number) => Math.round(display * 10),
-      },
-    ],
-  },
-  2: {
-    id: 2,
-    name: "Reverb Room",
-    category: "reverb",
-    description: "Sala curta e mais íntima para presença natural.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Reverb PreDelay",
-        min: 0,
-        max: 30,
-        step: 1,
-        unit: "ms",
-        rawMin: 0,
-        rawMax: 30,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Reverb Duration",
-        min: 0.0,
-        max: 10.0,
-        step: 0.1,
-        unit: "s",
-        rawMin: 0,
-        rawMax: 100,
-        displayFromRaw: (raw: number) => raw / 10,
-        rawFromDisplay: (display: number) => Math.round(display * 10),
-      },
-    ],
-  },
-  3: {
-    id: 3,
-    name: "Reverb Plate",
-    category: "reverb",
-    description: "Reverb brilhante e denso com cauda musical.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Reverb PreDelay",
-        min: 0,
-        max: 30,
-        step: 1,
-        unit: "ms",
-        rawMin: 0,
-        rawMax: 30,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Reverb Duration",
-        min: 0.0,
-        max: 10.0,
-        step: 0.1,
-        unit: "s",
-        rawMin: 0,
-        rawMax: 100,
-        displayFromRaw: (raw: number) => raw / 10,
-        rawFromDisplay: (display: number) => Math.round(display * 10),
-      },
-    ],
-  },
-  4: {
-    id: 4,
-    name: "Reverb Vocal 1",
-    category: "reverb",
-    description: "Reverb vocal balanceado para presença e profundidade.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Reverb PreDelay",
-        min: 0,
-        max: 30,
-        step: 1,
-        unit: "ms",
-        rawMin: 0,
-        rawMax: 30,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Reverb Duration",
-        min: 0.0,
-        max: 10.0,
-        step: 0.1,
-        unit: "s",
-        rawMin: 0,
-        rawMax: 100,
-        displayFromRaw: (raw: number) => raw / 10,
-        rawFromDisplay: (display: number) => Math.round(display * 10),
-      },
-    ],
-  },
-  5: {
-    id: 5,
-    name: "Reverb Vocal 2",
-    category: "reverb",
-    description: "Reverb curto e claro para vocais, com leve ambiência.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Reverb PreDelay",
-        min: 0,
-        max: 30,
-        step: 1,
-        unit: "ms",
-        rawMin: 0,
-        rawMax: 30,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Reverb Duration",
-        min: 0.0,
-        max: 10.0,
-        step: 0.1,
-        unit: "s",
-        rawMin: 0,
-        rawMax: 100,
-        displayFromRaw: (raw: number) => raw / 10,
-        rawFromDisplay: (display: number) => Math.round(display * 10),
-      },
-    ],
-  },
+    description,
+    controls: [preDelayControl(), durationSecondsControl("Duration")],
+  };
+}
+
+// ─── Bank A — FX1 & FX3 ───────────────────────────────────────────────────────
+
+export const FX_BANK_A_CONFIG: Record<FxPresetId, FxPresetConfig> = {
+  1: reverbPreset(1, "Reverb Hall", "Ambiência ampla e natural para vozes e instrumentos."),
+  2: reverbPreset(2, "Reverb Room", "Sala curta e mais íntima para presença natural."),
+  3: reverbPreset(3, "Reverb Plate", "Reverb brilhante e denso com cauda musical."),
+  4: reverbPreset(4, "Reverb Vocal 1", "Reverb vocal balanceado para presença e profundidade."),
+  5: reverbPreset(5, "Reverb Vocal 2", "Reverb curto e claro para vocais, com leve ambiência."),
   6: {
     id: 6,
     name: "Vocal Echo 1",
     category: "echo_delay",
     description: "Eco vocal simples para repetições sutis.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Echo Delay",
-        min: 0,
-        max: 340,
-        step: 1,
-        unit: "ms",
-        rawMin: 0,
-        rawMax: 340,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Echo Repeat",
-        min: 0,
-        max: 100,
-        step: 1,
-        unit: "%",
-        rawMin: 0,
-        rawMax: 100,
-      },
-    ],
+    hasTap: true,
+    controls: [msControl("Echo Delay", 340), percentControl("controlB", "Echo Repeat")],
   },
   7: {
     id: 7,
     name: "Vocal Echo 2",
     category: "echo_delay",
     description: "Eco vocal mais presente para destaque.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Echo Delay",
-        min: 0,
-        max: 340,
-        step: 1,
-        unit: "ms",
-        rawMin: 0,
-        rawMax: 340,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Echo Repeat",
-        min: 0,
-        max: 100,
-        step: 1,
-        unit: "%",
-        rawMin: 0,
-        rawMax: 100,
-      },
-    ],
+    hasTap: true,
+    controls: [msControl("Echo Delay", 340), percentControl("controlB", "Echo Repeat")],
   },
   8: {
     id: 8,
     name: "Delay 1",
     category: "echo_delay",
     description: "Delay direto para profundidade e repetição.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Delay Time",
-        min: 0,
-        max: 340,
-        step: 1,
-        unit: "ms",
-        rawMin: 0,
-        rawMax: 340,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Feedback",
-        min: 0,
-        max: 100,
-        step: 1,
-        unit: "%",
-        rawMin: 0,
-        rawMax: 100,
-      },
-    ],
+    hasTap: true,
+    controls: [msControl("Delay", 675), percentControl("controlB", "Repeat")],
   },
   9: {
     id: 9,
     name: "Delay 2",
     category: "echo_delay",
     description: "Delay alternativo para efeitos rítmicos.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Delay Time",
-        min: 0,
-        max: 340,
-        step: 1,
-        unit: "ms",
-        rawMin: 0,
-        rawMax: 340,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Feedback",
-        min: 0,
-        max: 100,
-        step: 1,
-        unit: "%",
-        rawMin: 0,
-        rawMax: 100,
-      },
-    ],
+    hasTap: true,
+    controls: [msControl("Delay", 675), percentControl("controlB", "Repeat")],
   },
   10: {
     id: 10,
     name: "Mod. Delay",
     category: "echo_delay",
     description: "Delay com modulação para movimento.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Delay Time",
-        min: 0,
-        max: 340,
-        step: 1,
-        unit: "ms",
-        rawMin: 0,
-        rawMax: 340,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Modulation",
-        min: 0,
-        max: 100,
-        step: 1,
-        unit: "%",
-        rawMin: 0,
-        rawMax: 100,
-      },
-    ],
+    hasTap: true,
+    controls: [msControl("Delay", 675), percentControl("controlB", "Depth")],
   },
   11: {
     id: 11,
     name: "Reverb Gate",
     category: "gate",
     description: "Ambiência com gate para efeito controlado.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Gate Threshold",
-        min: 0,
-        max: 10,
-        step: 0.1,
-        unit: "s",
-        rawMin: 0,
-        rawMax: 100,
-        displayFromRaw: (raw: number) => raw / 10,
-        rawFromDisplay: (display: number) => Math.round(display * 10),
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Gate Release",
-        min: 0,
-        max: 100,
-        step: 1,
-        unit: "%",
-        rawMin: 0,
-        rawMax: 100,
-      },
-    ],
+    controls: [durationSecondsControlA("Duration"), percentControl("controlB", "Level")],
   },
   12: {
     id: 12,
     name: "Pitch Change",
     category: "pitch",
     description: "Alteração de pitch com controle de inclinação e profundidade.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Slope",
-        min: 0,
-        max: 63,
-        step: 1,
-        unit: "",
-        rawMin: 0,
-        rawMax: 63,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Depth",
-        min: 0,
-        max: 100,
-        step: 1,
-        unit: "%",
-        rawMin: 0,
-        rawMax: 100,
-      },
-    ],
+    controls: [unitlessControlA("Slope", 63), percentControl("controlB", "Depth")],
   },
   13: {
     id: 13,
     name: "Chorus",
     category: "modulation",
     description: "Modulação suave para largura e movimento.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Frequency",
-        min: 0,
-        max: 127,
-        step: 1,
-        unit: "Hz",
-        rawMin: 0,
-        rawMax: 127,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Depth",
-        min: 0,
-        max: 100,
-        step: 1,
-        unit: "%",
-        rawMin: 0,
-        rawMax: 100,
-      },
-    ],
+    controls: [rateHzControl(42), percentControl("controlB", "Depth")],
   },
   14: {
     id: 14,
     name: "Phaser",
     category: "modulation",
     description: "Modulação de fase com variação cíclica.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Frequency",
-        min: 0,
-        max: 127,
-        step: 1,
-        unit: "Hz",
-        rawMin: 0,
-        rawMax: 127,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Depth",
-        min: 0,
-        max: 100,
-        step: 1,
-        unit: "%",
-        rawMin: 0,
-        rawMax: 100,
-      },
-    ],
+    controls: [rateHzControl(63), percentControl("controlB", "Depth")],
   },
   15: {
     id: 15,
     name: "Flange",
     category: "modulation",
     description: "Modulação metálica e profunda.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Frequency",
-        min: 0,
-        max: 127,
-        step: 1,
-        unit: "Hz",
-        rawMin: 0,
-        rawMax: 127,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Depth",
-        min: 0,
-        max: 100,
-        step: 1,
-        unit: "%",
-        rawMin: 0,
-        rawMax: 100,
-      },
-    ],
+    controls: [rateHzControl(63), percentControl("controlB", "Depth")],
   },
   16: {
     id: 16,
     name: "Tremolo",
     category: "modulation",
     description: "Variação de volume rítmica.",
-    controls: [
-      {
-        key: "controlA",
-        param: 2940,
-        label: "Frequency",
-        min: 0,
-        max: 127,
-        step: 1,
-        unit: "Hz",
-        rawMin: 0,
-        rawMax: 127,
-      },
-      {
-        key: "controlB",
-        param: 2941,
-        label: "Depth",
-        min: 0,
-        max: 100,
-        step: 1,
-        unit: "%",
-        rawMin: 0,
-        rawMax: 100,
-      },
-    ],
+    controls: [rateHzControl(127), percentControl("controlB", "Depth")],
   },
 };
 
-const FX_AVAILABLE_PRESET_IDS: FxPresetId[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+// ─── Bank B — FX2 & FX4 ───────────────────────────────────────────────────────
+
+export const FX_BANK_B_CONFIG: Record<FxPresetId, FxPresetConfig> = {
+  1: reverbPreset(1, "Reverb Hall", "Ambiência ampla e natural para vozes e instrumentos."),
+  2: reverbPreset(2, "Reverb Room", "Sala curta e mais íntima para presença natural."),
+  3: reverbPreset(3, "Reverb Plate", "Reverb brilhante e denso com cauda musical."),
+  4: reverbPreset(4, "Reverb Vocal 1", "Reverb vocal balanceado para presença e profundidade."),
+  5: reverbPreset(5, "Reverb Vocal 2", "Reverb curto e claro para vocais, com leve ambiência."),
+  6: {
+    id: 6,
+    name: "Vocal Echo 1",
+    category: "echo_delay",
+    description: "Eco vocal simples para repetições sutis.",
+    hasTap: true,
+    controls: [msControl("Echo Delay", 340), percentControl("controlB", "Echo Repeat")],
+  },
+  7: {
+    id: 7,
+    name: "Vocal Echo 2",
+    category: "echo_delay",
+    description: "Eco vocal mais presente para destaque.",
+    hasTap: true,
+    controls: [msControl("Echo Delay", 340), percentControl("controlB", "Echo Repeat")],
+  },
+  8: {
+    id: 8,
+    name: "Delay 1",
+    category: "echo_delay",
+    description: "Delay direto para profundidade e repetição.",
+    hasTap: true,
+    controls: [msControl("Delay", 675), percentControl("controlB", "Repeat")],
+  },
+  9: {
+    id: 9,
+    name: "Delay 2",
+    category: "echo_delay",
+    description: "Delay alternativo para efeitos rítmicos.",
+    hasTap: true,
+    controls: [msControl("Delay", 675), percentControl("controlB", "Repeat")],
+  },
+  10: {
+    id: 10,
+    name: "Early Ref.",
+    category: "reverb",
+    description: "Reflexões iniciais curtas para sensação de espaço.",
+    controls: [durationSecondsControlA("Duration"), percentControl("controlB", "Level")],
+  },
+  11: {
+    id: 11,
+    name: "Gate Reverb",
+    category: "gate",
+    description: "Reverb com gate para cauda cortada e controlada.",
+    controls: [durationSecondsControlA("Duration"), percentControl("controlB", "Level")],
+  },
+  12: {
+    id: 12,
+    name: "Vocal Doubler",
+    category: "pitch",
+    description: "Duplicação vocal para encorpar a voz.",
+    controls: [unitlessControlA("Slope", 42), percentControl("controlB", "Depth")],
+  },
+  13: {
+    id: 13,
+    name: "Flange",
+    category: "modulation",
+    description: "Modulação metálica e profunda.",
+    controls: [rateHzControl(63), percentControl("controlB", "Depth")],
+  },
+  14: {
+    id: 14,
+    name: "Symphonic",
+    category: "modulation",
+    description: "Modulação rica e encorpada para vozes e teclados.",
+    controls: [msControl("Frequency", 210), percentControl("controlB", "Depth")],
+  },
+  15: {
+    id: 15,
+    name: "Distortion",
+    category: "distortion",
+    description: "Saturação para guitarras e efeitos agressivos.",
+    controls: [frequencyHzControl(63), percentControl("controlB", "Depth")],
+  },
+  16: {
+    id: 16,
+    name: "Tap Delay",
+    category: "echo_delay",
+    description: "Delay com tap tempo para repetições no ritmo.",
+    hasTap: true,
+    controls: [msControl("Delay", 675), percentControl("controlB", "Repeat")],
+  },
+};
+
+const FX_AVAILABLE_PRESET_IDS: FxPresetId[] = [
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+];
+
+/** Bank A para FX ímpar (1, 3), Bank B para FX par (2, 4). */
+function getBankConfig(fxNumber?: number): Record<FxPresetId, FxPresetConfig> {
+  if (fxNumber !== undefined && fxNumber % 2 === 0) {
+    return FX_BANK_B_CONFIG;
+  }
+  return FX_BANK_A_CONFIG;
+}
 
 /**
- * Get preset configuration by ID
+ * Get preset configuration by ID. Quando `fxNumber` é informado, resolve do
+ * banco correto (par → Bank B, ímpar → Bank A); senão usa Bank A.
  */
-export function getFxPresetConfig(presetId: FxPresetId): FxPresetConfig {
-  return FX_PRESET_CONFIG[presetId];
+export function getFxPresetConfig(presetId: FxPresetId, fxNumber?: number): FxPresetConfig {
+  return getBankConfig(fxNumber)[presetId];
+}
+
+/**
+ * Retorna os 16 presets do banco correspondente ao FX (1/3 → Bank A, 2/4 → Bank B).
+ */
+export function getFxBankPresets(fxNumber: number): FxPresetConfig[] {
+  const bank = getBankConfig(fxNumber);
+  return FX_AVAILABLE_PRESET_IDS.map((presetId) => bank[presetId]);
 }
 
 /**
@@ -576,9 +397,10 @@ export function validateFxPresetId(value: number): FxPresetId | null {
  */
 export function getFxPresetControlConfig(
   presetId: FxPresetId,
-  controlKey: FxPresetControlKey
+  controlKey: FxPresetControlKey,
+  fxNumber?: number
 ): FxPresetControlConfig | null {
-  const preset = getFxPresetConfig(presetId);
+  const preset = getFxPresetConfig(presetId, fxNumber);
   const controlConfig = preset.controls.find((c) => c.key === controlKey);
   return controlConfig ?? null;
 }
@@ -631,14 +453,14 @@ export function toRawFxPresetControlValue(
 }
 
 /**
- * Get all presets as array
+ * Get all presets as array (Bank A — usado no modo demo/default)
  */
 export function getAllFxPresets(): FxPresetConfig[] {
-  return FX_AVAILABLE_PRESET_IDS.map((presetId) => FX_PRESET_CONFIG[presetId]);
+  return FX_AVAILABLE_PRESET_IDS.map((presetId) => FX_BANK_A_CONFIG[presetId]);
 }
 
 /**
- * Get presets by category
+ * Get presets by category (Bank A)
  */
 export function getFxPresetsByCategory(
   category: FxPresetCategory

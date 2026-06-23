@@ -40,6 +40,7 @@ import {
   type FxPresetId,
   validateFxPresetId,
   getFxPresetConfig,
+  getFxBankPresets,
 } from "./protocol/duonn/fxPresets";
 import { ChannelStrip } from "./components/ChannelStrip";
 import { DigiStrip } from "./components/DigiStrip";
@@ -653,7 +654,7 @@ function channelParam(channel: number, base: number) {
   return base + (channel - 1) * getActiveProfile().channels.stride;
 }
 
-// AX16/AX24: param = 2848 + channel (1-based). CH1 → 2849, ..., CH24 → 2872.
+// AX16/AX24: param = 2846 + channel (1-based). CH1 → 2847, ..., CH24 → 2870.
 //   Indexed directly by channel — no patch map indirection.
 // AX32: param = 2660 + usbReturnSlot (1-based slot from Record Out To Channel map).
 //   slotOrChannel must come from resolveInputSourceControlChannel(), NOT from channelNumber directly.
@@ -6880,11 +6881,12 @@ function App() {
       const controlARaw = values.get(presetParams.controlA) ?? 0;
       const controlBRaw = values.get(presetParams.controlB) ?? 0;
 
-      const presetId = validateFxPresetId(presetRaw);
+      const presetId = validateFxPresetId(presetRaw) ?? 1;
+      const [ctrlA, ctrlB] = getFxPresetConfig(presetId, fxNumber).controls;
       updateFxPresetState(fxNumber, () => ({
-        presetId: presetId ?? 1,
-        controlAValue: Math.max(0, Math.min(127, controlARaw)),
-        controlBValue: Math.max(0, Math.min(127, controlBRaw)),
+        presetId,
+        controlAValue: Math.max(ctrlA.rawMin, Math.min(ctrlA.rawMax, controlARaw)),
+        controlBValue: Math.max(ctrlB.rawMin, Math.min(ctrlB.rawMax, controlBRaw)),
       }));
     } catch {
       updateFxPresetState(fxNumber, () => createDefaultFxPresetState());
@@ -7078,7 +7080,7 @@ function App() {
       for (let ch = 1; ch <= channelCount; ch += 1) {
         addDescriptor(2815 + (ch - 1), `channel:${ch}`, "inputLevel");
         addDescriptor(2833 + (ch - 1), `channel:${ch}`, "recPlayVolume");
-        addDescriptor(2849 + (ch - 1), `channel:${ch}`, "inputSourceMode");
+        addDescriptor(inputSourceParam(ch), `channel:${ch}`, "inputSourceMode");
       }
     }
 
@@ -7220,11 +7222,11 @@ function App() {
     routeRxParamToDetailView(read.param);
 
     // Semantic apply — Input Source Mode received from mixer (opcode 0x03 or polling).
-    // AX16/AX24: params 2849..(2849 + channelCount - 1), indexed by channel (0-based).
+    // AX16/AX24: param = inputSource.base + channel (1-based). CH1 → base+1.
     if (getActiveProfile().model !== "AX32") {
-      const ax1624InputSourceBase = 2849;
-      if (read.param >= ax1624InputSourceBase && read.param < ax1624InputSourceBase + channelCount) {
-        const channelNumber = read.param - ax1624InputSourceBase + 1;
+      const base = getActiveProfile().inputSource.base;
+      if (read.param > base && read.param <= base + channelCount) {
+        const channelNumber = read.param - base;
         updateChannelState(channelNumber, { usbInputOn: read.value === 0 });
       }
     }
@@ -11340,22 +11342,28 @@ function App() {
     updateChannelState(channelNumber, { usbInputOn: nextValue });
 
     try {
+      let lastRawValue: number | undefined;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const verify = await client.readParams([sourceParam], 900);
         const rawValue = verify[0]?.value;
 
         if (rawValue === undefined) continue;
 
-        updateChannelState(channelNumber, {
-          usbInputOn: resolveUsbInputOnFromRaw(rawValue),
-        });
+        lastRawValue = rawValue;
         if (rawValue === expectedRawValue) {
           return;
         }
       }
 
+      // All attempts done — revert to actual mesa state to avoid stuck optimistic UI.
+      updateChannelState(channelNumber, {
+        usbInputOn: lastRawValue !== undefined
+          ? resolveUsbInputOnFromRaw(lastRawValue)
+          : !nextValue,
+      });
       setStatus("Mesa nao confirmou a troca de INPUT/USB deste canal.");
     } catch {
+      updateChannelState(channelNumber, { usbInputOn: !nextValue });
       setStatus("Falha ao confirmar INPUT/USB na mesa.");
     }
   }
@@ -13374,7 +13382,7 @@ function App() {
     const client = clientRef.current;
     if (!client) return;
     const presetParams = getFxPresetParams(activeFxNumber);
-    const controlConfig = getFxPresetConfig(fxPresetState.presetId).controls[0];
+    const controlConfig = getFxPresetConfig(fxPresetState.presetId, activeFxNumber).controls[0];
     const clamped = Math.max(controlConfig.rawMin, rawValue);
     const isSeconds = controlConfig.unit === "s";
     const nextValue = isSeconds ? clamped : Math.round(clamped);
@@ -13392,7 +13400,7 @@ function App() {
     const client = clientRef.current;
     if (!client) return;
     const presetParams = getFxPresetParams(activeFxNumber);
-    const controlConfig = getFxPresetConfig(fxPresetState.presetId).controls[1];
+    const controlConfig = getFxPresetConfig(fxPresetState.presetId, activeFxNumber).controls[1];
     const clamped = Math.max(controlConfig.rawMin, Math.min(controlConfig.rawMax, rawValue));
     const isSeconds = controlConfig.unit === "s";
     const nextValue = isSeconds ? clamped : Math.round(clamped);
@@ -13481,6 +13489,7 @@ function App() {
   function renderFxPresetsContent() {
     const activeFxNumber = detailView?.type === "fx" ? detailView.fx : 1;
     const fxPresetState = fxPresetStates[activeFxNumber - 1] ?? createDefaultFxPresetState();
+    const fxPresets = getFxBankPresets(activeFxNumber);
 
     return (
       <div
@@ -13527,6 +13536,7 @@ function App() {
             }}
           >
             <FxPresetGrid
+              presets={fxPresets}
               activePresetId={fxPresetState.presetId}
               disabled={!isConnected && appStage !== "demo"}
               onPresetSelect={handleFxPresetChange}
@@ -13541,6 +13551,7 @@ function App() {
             }}
           >
             <FxPresetControlPanel
+              presets={fxPresets}
               presetId={fxPresetState.presetId}
               controlAValue={fxPresetState.controlAValue}
               controlBValue={fxPresetState.controlBValue}
