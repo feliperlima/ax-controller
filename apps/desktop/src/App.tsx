@@ -2706,6 +2706,7 @@ function App() {
     initialDcaIds.map((id) => DCA_DEFAULT_COLOR_IDS[id])
   );
   const [activeMixerCacheIdentity, setActiveMixerCacheIdentity] = useState<string | null>(null);
+  const rtaControllerRef = useRef<RtaController | null>(null);
   const meterBusyRef = useRef(false);
   const missingChannelMeterFramesRef = useRef(0);
   const channelMeterLastUpdateAtRef = useRef<number[]>([]);
@@ -8608,32 +8609,46 @@ function App() {
     }
   }, [activeProcessorModule, detailView, isConnected]);
 
-  // RTA — liga/desliga o analisador conforme a tela de EQ aberta. Todo o protocolo
-  // (foco/enable/poll/parse, profile-aware) fica no RtaController; aqui só o ciclo de vida.
-  // AX32: liga ao abrir o EQ de canal/aux/master e desliga ao sair/trocar de aba. AX16/24:
-  // o controller faz só read-probe + telemetria (nunca escreve). Não roda no demo.
+  // RTA — mantém um único controller vivo enquanto o EQ estiver aberto.
+  // Ao trocar de canal/aux/master: chama updateTarget (só troca 57/2884, sem ciclar 5196).
+  // Ao sair do EQ ou desconectar: para e envia 5196=0. Não roda no demo.
   useEffect(() => {
-    if (appStage === "demo" || !isConnected) return;
-    if (activeProcessorModule !== "eq") return;
-    const target = detailToRtaTarget(detailView);
-    if (!target) return;
+    const inEq = !!(appStage !== "demo" && isConnected && activeProcessorModule === "eq");
+    const target = inEq ? detailToRtaTarget(detailView) : null;
     const client = clientRef.current;
-    if (!client) return;
 
-    const controller = new RtaController({
-      client,
-      model: getActiveProfile().model,
-      target,
-      onProbe: (result) => {
-        const key = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
-        void import("./services/telemetryService").then(({ trackEvent }) =>
-          trackEvent(key, "rta_probe", { model: result.model, responded: result.responded })
-        );
-      },
-    });
-    controller.start();
-    return () => controller.stop();
+    if (!target || !client) {
+      // Saiu do EQ ou desconectou — para o controller se estiver rodando.
+      if (rtaControllerRef.current) {
+        rtaControllerRef.current.stop();
+        rtaControllerRef.current = null;
+      }
+      return;
+    }
+
+    if (rtaControllerRef.current) {
+      // Trocou de canal enquanto EQ já aberto — só atualiza a fonte.
+      rtaControllerRef.current.updateTarget(target);
+    } else {
+      // Primeira abertura do EQ — inicia o controller.
+      const controller = new RtaController({
+        client,
+        model: getActiveProfile().model,
+        target,
+        onProbe: (result) => {
+          const key = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+          void import("./services/telemetryService").then(({ trackEvent }) =>
+            trackEvent(key, "rta_probe", { model: result.model, responded: result.responded })
+          );
+        },
+      });
+      controller.start();
+      rtaControllerRef.current = controller;
+    }
   }, [activeProcessorModule, detailView, isConnected, appStage]);
+
+  // Para o RTA ao desmontar o componente.
+  useEffect(() => () => { rtaControllerRef.current?.stop(); rtaControllerRef.current = null; }, []);
 
   // DEV helper: leitura direta de param(s) pelo console — window.__axRead(5109)
   useEffect(() => {

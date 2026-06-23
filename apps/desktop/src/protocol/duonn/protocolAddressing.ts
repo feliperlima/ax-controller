@@ -320,9 +320,10 @@ export function resolveMasterColorParam(model: MixerModel, side: "left" | "right
 // ─── Input Source ────────────────────────────────────────────────────────────
 
 // Physical input source routing param. channel 1-based.
-// AX16/24: param = 2848 + channel  (CH1 → 2849). AX32: param = 2660 + slot  (slot 1 → 2661).
+// AX16/24: param = 2846 + channel  (CH1 → 2847). AX32: param = 2660 + slot  (slot 1 → 2661).
+// Validated on AX16 hardware: CH1=0x0B1F(2847), CH2=0x0B20(2848) — base 2846, not 2848.
 export function resolveInputSourceParam(model: MixerModel, channel: number): number {
-  return model === "AX32" ? 2660 + channel : 2848 + channel;
+  return model === "AX32" ? 2660 + channel : 2846 + channel;
 }
 
 // ─── Links ───────────────────────────────────────────────────────────────────
@@ -607,7 +608,7 @@ export const PROFILE_AX16: MixerProfile = {
   },
   links: { channelLink: 3055, outputLink: 3056, masterLinkBit: 16 },
   colors: { channelBase: 3110, fxBase: 3128, auxBase: 3130 },
-  inputSource: { base: 2848 },
+  inputSource: { base: 2846 },
 };
 
 export const PROFILE_AX24: MixerProfile = {
@@ -651,7 +652,7 @@ export const PROFILE_AX24: MixerProfile = {
   },
   links: { channelLink: 3055, outputLink: 3056, masterLinkBit: 16 },
   colors: { channelBase: 3110, fxBase: 3136, auxBase: 3138 },
-  inputSource: { base: 2848 },
+  inputSource: { base: 2846 },
 };
 
 export const PROFILE_AX32: MixerProfile = {
