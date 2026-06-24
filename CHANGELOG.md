@@ -19,6 +19,9 @@ versionamento [SemVer](https://semver.org/lang/pt-BR/).
 ### Corrigido
 - Crosstalk entre **mute groups**: o override manual de mute deixou de ser sobrescrito ao alternar
   outro grupo não relacionado.
+- **Cadastro de conta nova (plano grátis)** era tratado como licença bloqueada: a mensagem "Conta
+  criada com sucesso" aparecia em vermelho e vazava para a tela de conexão. Agora a conta grátis
+  loga direto, sem erro.
 
 ## [1.1.4] - 2026-06
 
