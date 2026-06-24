@@ -189,6 +189,58 @@ export function resolveAuxSoloParams(model: MixerModel, auxNumber: number): { le
   return { left: base + AUX_OFFSETS.soloL, right: base + AUX_OFFSETS.soloR };
 }
 
+// ─── Graphic EQ (AUX & Master) ────────────────────────────────────────────────
+
+/**
+ * GEQ de 15 bandas nas saídas AUX e Master. Confirmado no AX32 (AUX 1–14, Master L/R).
+ * Regra unificada: relativo à base do fader do bloco de saída,
+ *   enable     = faderBase + 14
+ *   bandBase   = faderBase + 49  (param "type" da banda 1)
+ *   por banda  = type(+0), freq(+1), gain(+2), Q(+3)  → só o gain é editável.
+ * Ganho: value = 500 + dB*10 (faixa 380..620 = ±12 dB) — igual ao EQ paramétrico.
+ */
+export const GEQ_BAND_COUNT = 15;
+export const GEQ_ENABLE_OFFSET = 14;
+export const GEQ_BAND_BASE_OFFSET = 49;
+export const GEQ_FREQUENCIES: readonly number[] = [
+  25, 40, 63, 100, 163, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 12000,
+];
+
+export interface GeqParams {
+  /** Param do enable (ON/OFF) do GEQ. */
+  enable: number;
+  /** Params de ganho das 15 bandas, na ordem das frequências. */
+  gains: number[];
+}
+
+/** Monta os params do GEQ a partir da base do fader do bloco de saída. */
+function geqParamsFromFaderBase(faderBase: number): GeqParams {
+  const bandBase = faderBase + GEQ_BAND_BASE_OFFSET;
+  return {
+    enable: faderBase + GEQ_ENABLE_OFFSET,
+    gains: Array.from({ length: GEQ_BAND_COUNT }, (_, k) => bandBase + 2 + k * 4),
+  };
+}
+
+/**
+ * GEQ do AUX. O bloco AUX tem layout uniforme entre modelos (base+stride 109),
+ * então vale para AX16/24 e AX32. (AX16/24 inferido — confirmar na mesa.)
+ */
+export function resolveAuxGeqParams(model: MixerModel, auxNumber: number): GeqParams {
+  const faderBase = AUX1_BASE[model] + AUX_STRIDE * (auxNumber - 1);
+  return geqParamsFromFaderBase(faderBase);
+}
+
+/**
+ * GEQ do Master por lado. Regra faderBase+14/+49 confirmada em todos os modelos:
+ * AX32: L=4634, R=4743. AX16/24: L=2548 (enable 2562, band 2597), R=2657 (enable 2671, band 2706).
+ */
+export function resolveMasterGeqParams(
+  model: MixerModel, side: "left" | "right"
+): GeqParams {
+  return geqParamsFromFaderBase(MASTER_PARAMS[model][side].fader);
+}
+
 // ─── FX Buses ───────────────────────────────────────────────────────────────
 
 // AX16/24 FX: fixed params per slot (stride=45).
@@ -465,6 +517,43 @@ export function getAuxStereoSourceIds(auxNumber: number): [number, number] {
   const pairIdx = Math.floor((auxNumber - 1) / 2);
   return [34 + pairIdx * 2 + 1, 34 + pairIdx * 2 + 2];
 }
+
+// ─── MEDIA player (canal DIGI) ──────────────────────────────────────────────────
+// Mapeado por engenharia reversa (AX16/24) — ver apps/desktop/tools/media-capture-roteiro.md.
+// O media player toca pelo canal DIGI. Subscribe envia param 75=917 + keepalive 5212=1 (~1s)
+// enquanto a aba MEDIA está aberta. Comandos de transporte/fonte vão por op0x72 (frame raw),
+// e o status chega por op0x71 (RX raw, lido via Axios16Client.onRawMessage).
+
+/** Subscribe da página MEDIA: [param, value] enviado ao abrir a aba. */
+export const MEDIA_SUBSCRIBE_PARAMS = [75, 917] as const;
+/** Keepalive/heartbeat de "página MEDIA ativa" — enviar 1 a cada ~1s enquanto aberta. */
+export const MEDIA_KEEPALIVE_PARAM = 5212;
+
+/** Comandos op0x72 (byte CMD). Frame: 80 06 72 00 00 [CMD] crc crc. */
+export const MEDIA_CMD = {
+  SELECT_USB: 0xa8,       // seleciona USB Player
+  SELECT_SPDIF: 0xc3,     // seleciona SPDIF/Coax
+  SELECT_BT: 0xc7,        // seleciona Bluetooth (confirmado: USB→none→bluetooth na mesa)
+  RELEASE_SOURCE: 0xc8,   // libera fonte → Recorder (se pendrive) ou none; também STOP
+  // ATENÇÃO (AX32): tocar=0xa0, pausar=0xa1 — confirmado pelo tick (só corre tocando) e
+  // pelo ouvido na mesa. O roteiro AX16/24 trazia o inverso; pode variar por modelo (a confirmar).
+  PLAY: 0xa0,             // tocar/resume (tick volta a correr)
+  PAUSE: 0xa1,            // pausar (também usado no auto-play intercept)
+  NEXT: 0xa6,             // USB/BT próxima
+  PREV: 0xa4,             // USB/BT anterior
+  BT_TOGGLE: 0xa2,        // BT play/pause (botão único)
+  REPEAT: 0xaa,           // USB repeat toggle
+  RECORD_TOGGLE: 0xe0,    // Recorder start/stop
+} as const;
+
+/** device byte (op0x71 b[4]) → fonte ativa. */
+export const MEDIA_DEVICE = {
+  NONE: 0x00,
+  USB: 0x02,
+  RECORDER: 0x05,
+  BLUETOOTH: 0x06,
+  COAX: 0x0a,
+} as const;
 
 // ─── Unified Mixer Profiles ───────────────────────────────────────────────────
 // Single source of truth for all model-specific constants.
