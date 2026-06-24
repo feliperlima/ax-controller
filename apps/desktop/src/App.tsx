@@ -2889,7 +2889,7 @@ function App() {
   const backgroundLicenseRevalidationBusyRef = useRef(false);
   const lastBackgroundRevalidationAtRef = useRef(0);
   const strictStartupValidationDoneRef = useRef(false);
-  const lastAppliedMuteGroupsSignatureRef = useRef("");
+  const lastAppliedMuteTargetsRef = useRef<Map<AssignableMemberId, boolean>>(new Map());
   const channelLinkTransitionUntilRef = useRef<Map<string, number>>(new Map());
   const auxLinkTransitionUntilRef = useRef<Map<string, number>>(new Map());
   const masterLinkTransitionUntilRef = useRef(0);
@@ -4013,7 +4013,7 @@ function App() {
   async function syncAllGroupStates(options?: { ignoreConnectionState?: boolean; suppressManagedMuteWrites?: boolean }) {
     const client = clientRef.current;
     if (!client || (!isConnected && !options?.ignoreConnectionState)) {
-      lastAppliedMuteGroupsSignatureRef.current = "";
+      lastAppliedMuteTargetsRef.current = new Map();
       return;
     }
 
@@ -4112,45 +4112,46 @@ function App() {
   function applyManagedMutes(nextGroups: MuteGroupState[], options?: { ignoreConnectionState?: boolean }) {
     const client = clientRef.current;
     if (!client || (!isConnected && !options?.ignoreConnectionState)) {
-      lastAppliedMuteGroupsSignatureRef.current = "";
+      lastAppliedMuteTargetsRef.current = new Map();
       return;
     }
 
-    const managedMembersSet = new Set<AssignableMemberId>();
-    const activeMembersSet = new Set<AssignableMemberId>();
-
+    // Alvo derivado por membro: mutado sse pertence a algum grupo ativo.
+    const nextTargets = new Map<AssignableMemberId, boolean>();
     for (const group of nextGroups) {
-      const expandedMembers = expandMuteGroupManagedMembers(group.members);
-
-      for (const member of expandedMembers) {
-        managedMembersSet.add(member);
-        if (group.active) {
-          activeMembersSet.add(member);
-        }
+      for (const member of expandMuteGroupManagedMembers(group.members)) {
+        nextTargets.set(member, (nextTargets.get(member) ?? false) || group.active);
       }
     }
 
-    const managedOrdered = assignableMemberIds.filter((member) => managedMembersSet.has(member));
-    const activeOrdered = assignableMemberIds.filter((member) => activeMembersSet.has(member));
-    const signature = `${managedOrdered.join(",")}|${activeOrdered.join(",")}`;
+    const last = lastAppliedMuteTargetsRef.current;
+    const writes: Array<{ member: AssignableMemberId; mute: boolean }> = [];
 
-    if (signature === lastAppliedMuteGroupsSignatureRef.current) {
-      return;
+    // (a) membros gerenciados cujo alvo mudou desde a última aplicação.
+    // Diff por membro (não assinatura global) preserva mutes manuais em canais cujo
+    // alvo de grupo não mudou — ex.: mexer no MG2 não toca num canal só do MG1.
+    for (const member of assignableMemberIds) {
+      if (!nextTargets.has(member)) continue;
+      const target = nextTargets.get(member)!;
+      if (last.get(member) !== target) writes.push({ member, mute: target });
+    }
+    // (b) membros que saíram de gerência e estavam mutados → desmutar uma vez.
+    for (const [member, prev] of last) {
+      if (!nextTargets.has(member) && prev) writes.push({ member, mute: false });
     }
 
-    for (const member of managedOrdered) {
-      const shouldMute = activeMembersSet.has(member);
+    for (const { member, mute } of writes) {
       if (member === "DIGI") {
         const [digiChL, digiChR] = getDigiChannelNumbers();
-        client.setMute(digiChL, shouldMute);
-        client.setMute(digiChR, shouldMute);
+        client.setMute(digiChL, mute);
+        client.setMute(digiChR, mute);
       } else {
-        applyMuteToMember(client, member, shouldMute);
+        applyMuteToMember(client, member, mute);
       }
-      handleMuteGroupsMemberMuteApplied(member, shouldMute);
+      handleMuteGroupsMemberMuteApplied(member, mute);
     }
 
-    lastAppliedMuteGroupsSignatureRef.current = signature;
+    lastAppliedMuteTargetsRef.current = nextTargets;
   }
 
   useEffect(() => {
@@ -4158,7 +4159,7 @@ function App() {
     const groupsViewActive = mainView === "dcaGroups" || mainView === "muteGroups";
 
     if (appStage === "demo" || !client || !isConnected || isSyncing || !groupsViewActive) {
-      lastAppliedMuteGroupsSignatureRef.current = "";
+      lastAppliedMuteTargetsRef.current = new Map();
       return;
     }
 
