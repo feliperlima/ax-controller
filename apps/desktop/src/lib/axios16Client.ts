@@ -996,8 +996,10 @@ export function valueToFrequency(value: number) {
   return Math.round(value);
 }
 
+// EQ (paramétrico e GEQ) com passo de 0.5 dB. raw = 500 + db*10, então cada 5 unidades de raw
+// = 0.5 dB; arredonda para o múltiplo de 0.5 mais próximo. (Antes quantizava em 1 dB.)
 export function valueToEqGain(value: number) {
-  return Math.max(-12, Math.min(12, Math.round((value - 500) / 10)));
+  return Math.max(-12, Math.min(12, Math.round((value - 500) / 5) / 2));
 }
 
 export function valueToEqQ(value: number) {

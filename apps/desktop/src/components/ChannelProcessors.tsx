@@ -2659,7 +2659,7 @@ function EqGraph({
     const y = clamp((clientY - rect.top) * scaleY - graphY, 0, graphHeight);
     onBandChange(bandIndex + 1, {
       freq: xToActiveFreq(x, graphWidth),
-      gain: Math.round(gainForY(y) * 10) / 10,
+      gain: Math.round(gainForY(y) * 2) / 2, // passo de 0.5 dB
     });
   }
 
@@ -3500,7 +3500,7 @@ function GeqSlider({
     const fromBottom = rect.bottom - THUMB_HALF - clientY;
     const ratio = Math.max(0, Math.min(1, fromBottom / travel));
     const db = GEQ_MIN_DB + ratio * (GEQ_MAX_DB - GEQ_MIN_DB);
-    return Math.round(db * 10) / 10;
+    return Math.round(db * 2) / 2; // passo de 0.5 dB
   }
 
   function handlePointerDown(e: ReactPointerEvent<HTMLDivElement>) {
@@ -4968,9 +4968,10 @@ function EqEditor({
                 <div style={{ display: "grid", justifyItems: "center", alignContent: "center", padding: "10px 10px 8px" }}>
                 <EditableKnob
                   label="GAIN"
-                  value={selectedNode === null ? -12 : Math.round(band.gain)}
+                  value={selectedNode === null ? -12 : band.gain}
                   min={-12}
                   max={12}
+                  step={0.5}
                   knobSize={68}
                   compact
                   displayValue={selectedNode === null ? "—" : formatDb(band.gain)}
