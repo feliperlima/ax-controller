@@ -1218,6 +1218,7 @@ export class Axios16Client {
   private localParamWriteListeners = new Set<(write: LocalParamWrite) => void>();
   private remoteParamReadListeners = new Set<(read: RemoteParamRead) => void>();
   private spectrumFrameListeners = new Set<(bands: number[]) => void>();
+  private rawMessageListeners = new Set<(buffer: ArrayBuffer) => void>();
   private capabilities: ProfileCapabilities;
   private globalRxHandler: MixerSocketListener<"message"> | null = null;
 
@@ -1275,6 +1276,19 @@ export class Axios16Client {
     };
   }
 
+  /**
+   * Escuta TODO frame bruto recebido (ArrayBuffer), antes do decode op0x03.
+   * Usado pelo MediaController para frames op0x71 (status/scan do media player),
+   * que não são pares param/valor. Retorna unsubscribe.
+   */
+  onRawMessage(listener: (buffer: ArrayBuffer) => void) {
+    this.rawMessageListeners.add(listener);
+
+    return () => {
+      this.rawMessageListeners.delete(listener);
+    };
+  }
+
   /** Pede um frame de espectro do RTA (op 0x46, bloco 00 1f). Só faz sentido no AX32. */
   pollSpectrum() {
     this.sendRaw(buildRawDuonnPacket(0x46, [0x00, 0x1f]));
@@ -1282,6 +1296,11 @@ export class Axios16Client {
 
   private createGlobalRxHandler(): MixerSocketListener<"message"> {
     return (event: MixerMessageEvent) => {
+      // Frames brutos (ex.: op0x71 do media player) — entregue a quem quiser inspecionar
+      // o pacote inteiro, antes de qualquer decode de pares param/valor.
+      if (this.rawMessageListeners.size > 0) {
+        this.rawMessageListeners.forEach((listener) => listener(event.data));
+      }
       // Frame do RTA (op 0x46) é bloco, não par param/valor — despacha à parte e sai.
       if (this.spectrumFrameListeners.size > 0) {
         const spectrum = decodeSpectrumFrame(event.data);

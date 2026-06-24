@@ -518,6 +518,43 @@ export function getAuxStereoSourceIds(auxNumber: number): [number, number] {
   return [34 + pairIdx * 2 + 1, 34 + pairIdx * 2 + 2];
 }
 
+// ─── MEDIA player (canal DIGI) ──────────────────────────────────────────────────
+// Mapeado por engenharia reversa (AX16/24) — ver apps/desktop/tools/media-capture-roteiro.md.
+// O media player toca pelo canal DIGI. Subscribe envia param 75=917 + keepalive 5212=1 (~1s)
+// enquanto a aba MEDIA está aberta. Comandos de transporte/fonte vão por op0x72 (frame raw),
+// e o status chega por op0x71 (RX raw, lido via Axios16Client.onRawMessage).
+
+/** Subscribe da página MEDIA: [param, value] enviado ao abrir a aba. */
+export const MEDIA_SUBSCRIBE_PARAMS = [75, 917] as const;
+/** Keepalive/heartbeat de "página MEDIA ativa" — enviar 1 a cada ~1s enquanto aberta. */
+export const MEDIA_KEEPALIVE_PARAM = 5212;
+
+/** Comandos op0x72 (byte CMD). Frame: 80 06 72 00 00 [CMD] crc crc. */
+export const MEDIA_CMD = {
+  SELECT_USB: 0xa8,       // seleciona USB Player
+  SELECT_SPDIF: 0xc3,     // seleciona SPDIF/Coax
+  SELECT_BT: 0xc7,        // seleciona Bluetooth (confirmado: USB→none→bluetooth na mesa)
+  RELEASE_SOURCE: 0xc8,   // libera fonte → Recorder (se pendrive) ou none; também STOP
+  // ATENÇÃO (AX32): tocar=0xa0, pausar=0xa1 — confirmado pelo tick (só corre tocando) e
+  // pelo ouvido na mesa. O roteiro AX16/24 trazia o inverso; pode variar por modelo (a confirmar).
+  PLAY: 0xa0,             // tocar/resume (tick volta a correr)
+  PAUSE: 0xa1,            // pausar (também usado no auto-play intercept)
+  NEXT: 0xa6,             // USB/BT próxima
+  PREV: 0xa4,             // USB/BT anterior
+  BT_TOGGLE: 0xa2,        // BT play/pause (botão único)
+  REPEAT: 0xaa,           // USB repeat toggle
+  RECORD_TOGGLE: 0xe0,    // Recorder start/stop
+} as const;
+
+/** device byte (op0x71 b[4]) → fonte ativa. */
+export const MEDIA_DEVICE = {
+  NONE: 0x00,
+  USB: 0x02,
+  RECORDER: 0x05,
+  BLUETOOTH: 0x06,
+  COAX: 0x0a,
+} as const;
+
 // ─── Unified Mixer Profiles ───────────────────────────────────────────────────
 // Single source of truth for all model-specific constants.
 // All sync, polling, meters, names, and colors should derive from the active profile.

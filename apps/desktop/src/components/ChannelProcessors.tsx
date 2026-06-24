@@ -14,6 +14,26 @@ import {
   spectrumLinePath,
 } from "../lib/rtaSpectrum";
 import { rtaSpectrumStore } from "../lib/rtaSpectrumStore";
+import type { MediaState, MediaEntry, MediaSource } from "../lib/mediaController";
+import {
+  Play,
+  Pause,
+  SkipBack,
+  SkipForward,
+  Repeat,
+  Circle,
+  Square,
+  Bluetooth,
+  Cable,
+  Usb,
+  Mic,
+  Folder,
+  Music,
+  ChevronLeft,
+  ChevronRight,
+  ListMusic,
+  AudioLines,
+} from "lucide-react";
 
 export type GateState = {
   enabled: boolean;
@@ -68,7 +88,11 @@ export type ProcessorState = {
   geq?: GraphicEqState;
 };
 
-export type ProcessorModule = "gate" | "comp" | "eq" | "sends" | "delay" | "presets" | "geq";
+export type ProcessorModule = "gate" | "comp" | "eq" | "sends" | "delay" | "presets" | "geq" | "media";
+
+// Estado do media player (canal DIGI). Tipos moram em lib/mediaController (a lib é quem
+// os produz); o componente apenas consome. Re-exportados aqui por conveniência de import.
+export type { MediaSource, MediaMode, MediaEntry, MediaState } from "../lib/mediaController";
 
 export type SendStripId = string;
 
@@ -96,7 +120,7 @@ type ChannelProcessorsProps = {
   hideGate?: boolean;
   hideSends?: boolean;
   hideModuleTabs?: boolean;
-  moduleItems?: Array<{ id: ProcessorModule; label: string }>;
+  moduleItems?: Array<{ id: ProcessorModule; label: string; beta?: boolean }>;
   customModuleContent?: Partial<Record<ProcessorModule, ReactNode>>;
   channelInputDb?: number;
   sends?: SendStripView[];
@@ -924,6 +948,7 @@ const MODULE_ACCENTS: Record<ProcessorModule, { color: string; glow: string }> =
   delay: { color: "#f59e0b", glow: "rgba(245,158,11,0.35)" },
   presets: { color: "#a78bfa", glow: "rgba(167,139,250,0.35)" },
   geq: { color: "#22c55e", glow: "rgba(34,197,94,0.35)" },
+  media: { color: "#35c3df", glow: "rgba(56,189,248,0.35)" },
 };
 /** Graphic EQ: 15 bandas fixas (igual hardware DUONN Axios). */
 export const GEQ_BANDS: ReadonlyArray<{ freq: number; label: string }> = [
@@ -3771,6 +3796,812 @@ export function GraphicEqEditor({
   );
 }
 
+// ─── MEDIA player (canal DIGI) ──────────────────────────────────────────────────
+// Visual derivado do mockup aprovado (media_player_ui_v3_premium): header de módulo +
+// seletor de fonte, navegação drill-down (breadcrumb + voltar), now-playing em destaque
+// com progresso de thumb circular e glow accent. Nunca dispara play automático.
+
+// Cada unidade de "tick" (op0x71) ≈ 1 segundo (medido: 10 ticks ≈ 9.9s). Usado p/ tempo decorrido.
+const MEDIA_TICK_SECONDS = 1.0;
+const MEDIA_ACCENT = "var(--semantic-accent-base)";
+const MEDIA_ACCENT_SURFACE = "var(--semantic-accent-surface)";
+const MEDIA_ACCENT_BORDER = "var(--semantic-accent-border)";
+
+function fmtClock(totalSec: number): string {
+  const safe = Math.max(0, Math.floor(totalSec));
+  const m = Math.floor(safe / 60);
+  const s = safe % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function fmtTimer(totalSec: number): string {
+  const safe = Math.max(0, Math.floor(totalSec));
+  const h = Math.floor(safe / 3600);
+  const m = Math.floor((safe % 3600) / 60);
+  const s = safe % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+const MEDIA_SOURCE_TABS: { id: MediaSource; label: string; icon: typeof Usb }[] = [
+  { id: "usb", label: "USB", icon: Usb },
+  { id: "recorder", label: "REC", icon: Mic },
+  { id: "bluetooth", label: "BT", icon: Bluetooth },
+  { id: "coax", label: "COAX", icon: Cable },
+];
+
+function MediaSourceTabs({
+  active,
+  disabled,
+  onSelect,
+}: {
+  active: MediaSource;
+  disabled: boolean;
+  onSelect: (src: MediaSource) => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 3,
+        background: "var(--surface-app)",
+        padding: 3,
+        borderRadius: 9,
+        border: "1px solid var(--border-subtle)",
+      }}
+    >
+      {MEDIA_SOURCE_TABS.map(({ id, label, icon: Icon }) => {
+        const on = active === id;
+        return (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onSelect(id)}
+            style={{
+              height: 28,
+              padding: "0 12px",
+              borderRadius: 7,
+              border: "none",
+              background: on ? "var(--surface-panel-raised)" : "transparent",
+              color: on ? MEDIA_ACCENT : "var(--text-muted)",
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: "1px",
+              cursor: disabled ? "default" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <Icon size={14} aria-hidden />
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MediaTransportButton({
+  icon: Icon,
+  label,
+  variant = "ghost",
+  active = false,
+  disabled = false,
+  onClick,
+}: {
+  icon: typeof Play;
+  label: string;
+  variant?: "ghost" | "main";
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  const main = variant === "main";
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      style={{
+        width: main ? 52 : 40,
+        height: main ? 52 : 40,
+        borderRadius: main ? "50%" : 9,
+        border: main ? "none" : "1px solid transparent",
+        background: main ? MEDIA_ACCENT : active ? MEDIA_ACCENT_SURFACE : "transparent",
+        color: main ? "var(--text-inverse)" : active ? MEDIA_ACCENT : "var(--text-secondary)",
+        boxShadow: main ? "0 0 22px rgba(56,189,248,0.45)" : "none",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.4 : 1,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        transition: "background 120ms ease, color 120ms ease",
+      }}
+    >
+      <Icon size={main ? 22 : 19} aria-hidden />
+    </button>
+  );
+}
+
+function MediaProgressBar({ elapsedSec, durSec }: { elapsedSec: number; durSec: number }) {
+  const pct = durSec > 0 ? Math.min(100, Math.max(0, (elapsedSec / durSec) * 100)) : 0;
+  return (
+    <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 7 }}>
+      <div
+        style={{
+          position: "relative",
+          height: 4,
+          borderRadius: 3,
+          background: "var(--fader-track)",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: `${pct}%`,
+            borderRadius: 3,
+            background: MEDIA_ACCENT,
+            boxShadow: "0 0 10px rgba(56,189,248,0.5)",
+          }}
+        />
+        <div
+          style={{
+            position: "absolute",
+            left: `${pct}%`,
+            top: "50%",
+            width: 11,
+            height: 11,
+            borderRadius: "50%",
+            background: "var(--primitive-neutral-0)",
+            transform: "translate(-50%, -50%)",
+            boxShadow: "0 0 8px rgba(56,189,248,0.7)",
+          }}
+        />
+      </div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          fontSize: 11,
+          color: "var(--text-tertiary)",
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        <span>{fmtClock(elapsedSec)}</span>
+        <span>{durSec > 0 ? fmtClock(durSec) : "--:--"}</span>
+      </div>
+    </div>
+  );
+}
+
+function MediaEmptyState({ icon: Icon, title, subtitle }: { icon: typeof Music; title: string; subtitle?: string }) {
+  return (
+    <div
+      style={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 12,
+        padding: 24,
+        textAlign: "center",
+      }}
+    >
+      <div
+        style={{
+          width: 64,
+          height: 64,
+          borderRadius: 14,
+          background: "var(--surface-app)",
+          border: "1px solid var(--border-subtle)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "var(--text-muted)",
+        }}
+      >
+        <Icon size={28} aria-hidden />
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>{title}</div>
+      {subtitle && <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{subtitle}</div>}
+    </div>
+  );
+}
+
+function MediaLibrary({
+  state,
+  disabled,
+  onEnterFolder,
+  onSelectTrack,
+  onNavigateTo,
+}: {
+  state: MediaState;
+  disabled: boolean;
+  onEnterFolder: (entry: Extract<MediaEntry, { kind: "folder" }>) => void;
+  onSelectTrack: (entry: Extract<MediaEntry, { kind: "file" }>) => void;
+  onNavigateTo: (index: number) => void;
+}) {
+  const atRoot = state.path.length === 0;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+      <div
+        style={{
+          height: 38,
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "0 10px",
+          borderBottom: "1px solid var(--border-subtle)",
+        }}
+      >
+        <button
+          type="button"
+          aria-label="Voltar"
+          disabled={disabled || atRoot}
+          onClick={() => onNavigateTo(state.path.length - 2)}
+          style={{
+            width: 26,
+            height: 26,
+            borderRadius: 7,
+            border: "1px solid var(--border-default)",
+            background: "transparent",
+            color: "var(--text-tertiary)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: disabled || atRoot ? "default" : "pointer",
+            opacity: atRoot ? 0.35 : 1,
+            flexShrink: 0,
+          }}
+        >
+          <ChevronLeft size={16} aria-hidden />
+        </button>
+        <span
+          style={{
+            fontSize: 11,
+            color: "var(--text-muted)",
+            fontWeight: 500,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          USB
+          {state.path.map((seg, i) => (
+            <span key={`${seg.handle}-${i}`}>
+              {" / "}
+              <span style={{ color: i === state.path.length - 1 ? "var(--text-secondary)" : "var(--text-muted)" }}>
+                {seg.name}
+              </span>
+            </span>
+          ))}
+        </span>
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto", padding: 5, minHeight: 0 }}>
+        {state.entries.length === 0 ? (
+          <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>
+            Pasta vazia
+          </div>
+        ) : (
+          state.entries.map((entry, i) => {
+            const isCurrent = entry.kind === "file" && entry.handle === state.trackHandle;
+            return (
+              <button
+                key={`${entry.handle}-${i}`}
+                type="button"
+                disabled={disabled}
+                onClick={() => (entry.kind === "folder" ? onEnterFolder(entry) : onSelectTrack(entry))}
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 9,
+                  padding: "7px 9px",
+                  borderRadius: 7,
+                  border: "none",
+                  background: isCurrent ? MEDIA_ACCENT_SURFACE : "transparent",
+                  cursor: disabled ? "default" : "pointer",
+                  textAlign: "left",
+                }}
+              >
+                <span
+                  style={{
+                    width: 30,
+                    height: 30,
+                    borderRadius: 7,
+                    background: isCurrent ? MEDIA_ACCENT_SURFACE : "var(--surface-app)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: isCurrent ? MEDIA_ACCENT : "var(--text-muted)",
+                    flexShrink: 0,
+                  }}
+                >
+                  {entry.kind === "folder" ? <Folder size={15} aria-hidden /> : <Music size={15} aria-hidden />}
+                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span
+                    style={{
+                      display: "block",
+                      fontSize: 12,
+                      fontWeight: 500,
+                      color: isCurrent ? MEDIA_ACCENT : "var(--text-secondary)",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {entry.name}
+                  </span>
+                  <span style={{ display: "block", fontSize: 10, color: "var(--text-muted)", marginTop: 1, fontVariantNumeric: "tabular-nums" }}>
+                    {entry.kind === "folder" ? "Pasta" : fmtClock(entry.durSec)}
+                  </span>
+                </span>
+                {entry.kind === "folder" && <ChevronRight size={14} aria-hidden style={{ color: "var(--text-muted)", flexShrink: 0 }} />}
+              </button>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MediaNowPlaying({
+  state,
+  disabled,
+  onPlay,
+  onPause,
+  onNext,
+  onPrev,
+  onRepeatToggle,
+}: {
+  state: MediaState;
+  disabled: boolean;
+  onPlay: () => void;
+  onPause: () => void;
+  onNext: () => void;
+  onPrev: () => void;
+  onRepeatToggle: () => void;
+}) {
+  // A faixa atual é casada pelo índice (track 1-based) entre os arquivos da lista — o handle
+  // do Type A não corresponde aos offsets do scan. Fallback por handle, depois por nome genérico.
+  const files = state.entries.filter(
+    (e): e is Extract<MediaEntry, { kind: "file" }> => e.kind === "file"
+  );
+  const currentFile =
+    (state.trackIndex > 0 ? files[state.trackIndex - 1] : undefined) ??
+    files.find((e) => e.handle === state.trackHandle);
+  const trackName = currentFile
+    ? currentFile.name.replace(/\.wav$/i, "")
+    : state.trackIndex > 0
+      ? `Faixa ${state.trackIndex}`
+      : null;
+  const durSec = currentFile?.durSec ?? 0;
+  const elapsedSec = state.tickElapsed * MEDIA_TICK_SECONDS;
+  const playing = state.mode === "playing";
+  const hasTrack = trackName !== null;
+
+  return (
+    <div
+      style={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 14,
+        padding: "18px 22px",
+      }}
+    >
+      <div
+        style={{
+          width: 92,
+          height: 92,
+          borderRadius: 12,
+          background: "radial-gradient(circle at 50% 35%, rgba(56,189,248,0.18), var(--surface-app) 72%)",
+          border: `1px solid ${hasTrack ? MEDIA_ACCENT_BORDER : "var(--border-subtle)"}`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: hasTrack ? MEDIA_ACCENT : "var(--text-muted)",
+          opacity: hasTrack ? 1 : 0.6,
+          flexShrink: 0,
+        }}
+      >
+        <AudioLines size={36} aria-hidden />
+      </div>
+
+      <div style={{ textAlign: "center", minWidth: 0, width: "100%" }}>
+        <div
+          style={{
+            fontSize: 16,
+            fontWeight: 600,
+            color: hasTrack ? "var(--text-primary)" : "var(--text-muted)",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {trackName ?? "Nenhuma faixa selecionada"}
+        </div>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "1.4px", color: "var(--text-muted)", marginTop: 4 }}>
+          {hasTrack
+            ? `FAIXA ${state.trackIndex || "—"}${state.trackCount ? ` / ${state.trackCount}` : ""}`
+            : "USE ⏮ ⏭ PARA NAVEGAR"}
+        </div>
+      </div>
+
+      {hasTrack &&
+        (durSec > 0 ? (
+          <MediaProgressBar elapsedSec={elapsedSec} durSec={durSec} />
+        ) : (
+          // Sem scan não temos a duração total — mostra só o tempo decorrido.
+          <div style={{ fontSize: 20, fontWeight: 400, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}>
+            {fmtClock(elapsedSec)}
+          </div>
+        ))}
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
+        <MediaTransportButton icon={SkipBack} label="Anterior" disabled={disabled || !hasTrack} onClick={onPrev} />
+        <MediaTransportButton
+          icon={playing ? Pause : Play}
+          label={playing ? "Pausar" : "Tocar"}
+          variant="main"
+          disabled={disabled || !hasTrack}
+          onClick={playing ? onPause : onPlay}
+        />
+        <MediaTransportButton icon={SkipForward} label="Próxima" disabled={disabled || !hasTrack} onClick={onNext} />
+        <MediaTransportButton
+          icon={Repeat}
+          label="Repetir"
+          active={state.repeatOn}
+          disabled={disabled || !hasTrack}
+          onClick={onRepeatToggle}
+        />
+      </div>
+    </div>
+  );
+}
+
+function MediaRecorderPanel({
+  state,
+  disabled,
+  onRecordToggle,
+}: {
+  state: MediaState;
+  disabled: boolean;
+  onRecordToggle: () => void;
+}) {
+  const recording = state.mode === "recording";
+  // Só conta enquanto grava. Fora disso o tick reflete o heartbeat global da mesa (lixo),
+  // então mostramos 00:00:00 no estado "pronto".
+  const elapsedSec = recording ? state.tickElapsed * MEDIA_TICK_SECONDS : 0;
+  return (
+    <div
+      style={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 18,
+        padding: 20,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10, fontWeight: 700, letterSpacing: "1.4px" }}>
+        <span
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            background: recording ? "var(--semantic-danger-base)" : "var(--text-muted)",
+            boxShadow: recording ? "0 0 8px rgba(239,68,68,0.7)" : "none",
+          }}
+        />
+        <span style={{ color: recording ? "var(--semantic-danger-base)" : "var(--text-muted)" }}>
+          {recording ? "GRAVANDO" : "PRONTO PARA GRAVAR"}
+        </span>
+      </div>
+
+      <div style={{ fontSize: 42, fontWeight: 300, color: "var(--text-primary)", fontVariantNumeric: "tabular-nums" }}>
+        {fmtTimer(elapsedSec)}
+      </div>
+
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onRecordToggle}
+        style={{
+          height: 46,
+          padding: "0 30px",
+          borderRadius: 10,
+          border: recording ? "1px solid var(--border-default)" : "1px solid var(--button-mute-border)",
+          background: recording ? "var(--surface-panel-raised)" : "var(--button-mute-bg)",
+          color: recording ? "var(--text-secondary)" : "var(--button-mute-text)",
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: "1.4px",
+          boxShadow: recording ? "none" : "var(--button-mute-glow)",
+          cursor: disabled ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.5 : 1,
+          display: "flex",
+          alignItems: "center",
+          gap: 9,
+        }}
+      >
+        {recording ? <Square size={15} aria-hidden /> : <Circle size={15} aria-hidden />}
+        {recording ? "PARAR" : "GRAVAR"}
+      </button>
+
+      <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "1px", color: "var(--text-muted)" }}>
+        {recording ? "GRAVANDO NO PENDRIVE DA MESA" : "GRAVA UM .WAV NO PENDRIVE DA MESA"}
+      </div>
+    </div>
+  );
+}
+
+function MediaBluetoothPanel({
+  state,
+  disabled,
+  onBtToggle,
+  onNext,
+  onPrev,
+}: {
+  state: MediaState;
+  disabled: boolean;
+  onBtToggle: () => void;
+  onNext: () => void;
+  onPrev: () => void;
+}) {
+  const connected = state.mode !== "idle";
+  const playing = state.mode === "playing";
+  return (
+    <div
+      style={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 16,
+        padding: 20,
+      }}
+    >
+      <div
+        style={{
+          width: 64,
+          height: 64,
+          borderRadius: 14,
+          background: "radial-gradient(circle at 50% 40%, rgba(56,189,248,0.12), var(--surface-app) 70%)",
+          border: `1px solid ${connected ? MEDIA_ACCENT_BORDER : "var(--border-subtle)"}`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: connected ? MEDIA_ACCENT : "var(--text-muted)",
+        }}
+      >
+        <Bluetooth size={28} aria-hidden />
+      </div>
+      {state.btDeviceName && (
+        <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>{state.btDeviceName}</div>
+      )}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10, fontWeight: 700, letterSpacing: "1.4px" }}>
+        <span
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            background: connected ? "var(--semantic-success-base)" : "var(--text-muted)",
+            boxShadow: connected ? "0 0 8px rgba(34,197,94,0.6)" : "none",
+          }}
+        />
+        <span style={{ color: connected ? "var(--semantic-success-base)" : "var(--text-muted)" }}>
+          {connected ? "CONECTADO" : "DESCONECTADO"}
+        </span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <MediaTransportButton icon={SkipBack} label="Anterior" disabled={disabled || !connected} onClick={onPrev} />
+        <MediaTransportButton
+          icon={playing ? Pause : Play}
+          label={playing ? "Pausar" : "Tocar"}
+          variant="main"
+          disabled={disabled || !connected}
+          onClick={onBtToggle}
+        />
+        <MediaTransportButton icon={SkipForward} label="Próxima" disabled={disabled || !connected} onClick={onNext} />
+      </div>
+    </div>
+  );
+}
+
+export function MediaPlayer({
+  state,
+  disabled = false,
+  onSourceChange,
+  onPlay,
+  onPause,
+  onNext,
+  onPrev,
+  onSelectTrack,
+  onEnterFolder,
+  onNavigateTo,
+  onRepeatToggle,
+  onRecordToggle,
+  onBtToggle,
+}: {
+  state: MediaState;
+  disabled?: boolean;
+  onSourceChange: (src: MediaSource) => void;
+  onPlay: () => void;
+  onPause: () => void;
+  onNext: () => void;
+  onPrev: () => void;
+  onSelectTrack: (entry: Extract<MediaEntry, { kind: "file" }>) => void;
+  onEnterFolder: (entry: Extract<MediaEntry, { kind: "folder" }>) => void;
+  onNavigateTo: (index: number) => void;
+  onRepeatToggle: () => void;
+  onRecordToggle: () => void;
+  onBtToggle: () => void;
+}) {
+  // Fonte visualmente selecionada — segue state.source da mesa, mas permite navegar os
+  // painéis em demo/desconectado. O clique também envia o comando de troca de fonte.
+  const [selectedSource, setSelectedSource] = useState<MediaSource>(
+    state.source !== "none" ? state.source : "usb"
+  );
+  const [libraryOpen, setLibraryOpen] = useState(false);
+
+  useEffect(() => {
+    if (state.source !== "none") setSelectedSource(state.source);
+  }, [state.source]);
+
+  function handleSelectSource(src: MediaSource) {
+    setSelectedSource(src);
+    if (!disabled) onSourceChange(src);
+  }
+
+  // A biblioteca (scan da lista) só aparece quando houver entradas — protocolo de navegação
+  // da árvore ainda não decifrado. Até lá, o USB mostra só o now-playing (Faixa N de M).
+  const hasLibrary = state.entries.length > 0;
+  const showLibraryToggle = selectedSource === "usb" && state.diskPresent && !state.scanning && hasLibrary;
+
+  function renderBody() {
+    switch (selectedSource) {
+      case "usb":
+        if (!state.diskPresent) {
+          return <MediaEmptyState icon={Usb} title="Sem pendrive" subtitle="Conecte um pendrive USB na mesa" />;
+        }
+        // Só mostra "Lendo pendrive…" quando não há NADA pra exibir (1ª carga, sem faixa).
+        // Se já há uma faixa tocando, mantém o player visível e a lista/duração entram quando
+        // o scan termina — sem trocar a tela toda.
+        if (state.scanning && state.trackIndex === 0) {
+          return <MediaEmptyState icon={ListMusic} title="Lendo pendrive…" subtitle="Montando a lista de faixas" />;
+        }
+        return libraryOpen && hasLibrary ? (
+          <MediaLibrary
+            state={state}
+            disabled={disabled}
+            onEnterFolder={onEnterFolder}
+            onSelectTrack={(entry) => {
+              onSelectTrack(entry);
+              setLibraryOpen(false);
+            }}
+            onNavigateTo={onNavigateTo}
+          />
+        ) : (
+          <MediaNowPlaying
+            state={state}
+            disabled={disabled}
+            onPlay={onPlay}
+            onPause={onPause}
+            onNext={onNext}
+            onPrev={onPrev}
+            onRepeatToggle={onRepeatToggle}
+          />
+        );
+      case "recorder":
+        return <MediaRecorderPanel state={state} disabled={disabled} onRecordToggle={onRecordToggle} />;
+      case "bluetooth":
+        return (
+          <MediaBluetoothPanel
+            state={state}
+            disabled={disabled}
+            onBtToggle={onBtToggle}
+            onNext={onNext}
+            onPrev={onPrev}
+          />
+        );
+      case "coax":
+        return (
+          <MediaEmptyState
+            icon={Cable}
+            title="Recebendo sinal"
+            subtitle="Entrada coaxial / SPDIF — sem controles"
+          />
+        );
+      default:
+        return <MediaEmptyState icon={Music} title="Nenhuma fonte ativa" />;
+    }
+  }
+
+  return (
+    <ProcessorShell title="">
+      <div style={{ minHeight: 0, height: "100%", display: "grid", gridTemplateRows: "44px minmax(0, 1fr)", gap: 4 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            padding: "0 12px",
+            borderRadius: 4,
+            background: "var(--surface-panel-raised)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <span style={{ color: "var(--text-primary)", fontWeight: 700, letterSpacing: "1.6px", fontSize: 10 }}>
+                MEDIA
+              </span>
+              <span
+                style={{
+                  fontSize: 9,
+                  fontWeight: 700,
+                  letterSpacing: "1px",
+                  color: "var(--semantic-warning-base)",
+                  background: "var(--semantic-warning-surface)",
+                  border: "1px solid var(--semantic-warning-border)",
+                  borderRadius: 4,
+                  padding: "1px 6px",
+                }}
+              >
+                BETA
+              </span>
+            </span>
+            {showLibraryToggle && (
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => setLibraryOpen((v) => !v)}
+                style={{
+                  height: 28,
+                  padding: "0 12px",
+                  borderRadius: 8,
+                  border: `1px solid ${libraryOpen ? MEDIA_ACCENT_BORDER : "var(--button-default-border)"}`,
+                  background: libraryOpen ? MEDIA_ACCENT_SURFACE : "transparent",
+                  color: libraryOpen ? MEDIA_ACCENT : "var(--button-default-text)",
+                  fontSize: 10,
+                  fontWeight: 700,
+                  letterSpacing: "1px",
+                  cursor: disabled ? "default" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <ListMusic size={14} aria-hidden />
+                {libraryOpen ? "TOCANDO" : "BIBLIOTECA"}
+              </button>
+            )}
+          </div>
+          <MediaSourceTabs active={selectedSource} disabled={disabled} onSelect={handleSelectSource} />
+        </div>
+
+        <div style={{ minHeight: 0, height: "100%", borderRadius: 4, background: "var(--surface-panel-raised)", overflow: "hidden" }}>
+          {renderBody()}
+        </div>
+      </div>
+    </ProcessorShell>
+  );
+}
+
 function EqEditor({
   eq,
   disabled,
@@ -4209,7 +5040,7 @@ export function ChannelProcessors({
   onResetComp,
   onResetEq,
 }: ChannelProcessorsProps) {
-  const defaultNavItems: Array<{ id: ProcessorModule; label: string }> = [
+  const defaultNavItems: Array<{ id: ProcessorModule; label: string; beta?: boolean }> = [
     { id: "eq", label: "EQ" },
     ...(!hideComp ? [{ id: "comp", label: "COMP" } as const] : []),
     ...(!hideGate ? [{ id: "gate", label: "GATE" } as const] : []),
@@ -4271,9 +5102,30 @@ export function ChannelProcessors({
                 whiteSpace: "nowrap",
                 width: "100%",
                 justifySelf: "stretch",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
               }}
             >
               {item.label}
+              {item.beta && (
+                <span
+                  style={{
+                    fontSize: 8,
+                    fontWeight: 700,
+                    letterSpacing: "0.5px",
+                    color: "var(--semantic-warning-base)",
+                    background: "var(--semantic-warning-surface)",
+                    border: "1px solid var(--semantic-warning-border)",
+                    borderRadius: 4,
+                    padding: "1px 4px",
+                    lineHeight: 1,
+                  }}
+                >
+                  BETA
+                </span>
+              )}
             </button>
           ))}
         </div>
