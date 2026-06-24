@@ -10387,6 +10387,8 @@ function App() {
     setLicenseModalMandatory(false);
     setLicenseModalMode("onboarding");
     setLicenseModalOpen(false);
+    // Mensagem de auth não pode vazar para a tela de conexão (connectionError é renderizado lá).
+    setConnectionError(null);
     setLicenseValidationMessage({
       kind: "success",
       text: successMessage,

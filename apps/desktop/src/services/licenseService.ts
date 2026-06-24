@@ -119,7 +119,11 @@ export function buildRegisterSnapshotPayload(
 
   let codeValue = typeof normalized.code === "string" ? normalized.code : "LICENSE_VALID";
   if (typeof normalized.code !== "string") {
-    if (statusLower === "revoked") codeValue = "LICENSE_REVOKED";
+    // Conta sem licença ativa = plano grátis. O servidor manda status="free" (valid/active
+    // ausentes → false); sem este mapa o snapshot caía em LICENSE_BLOCKED (bug do cadastro,
+    // que tratava conta nova como bloqueada).
+    if (statusLower === "free") codeValue = "LICENSE_FREE";
+    else if (statusLower === "revoked") codeValue = "LICENSE_REVOKED";
     else if (statusLower === "suspended") codeValue = "LICENSE_SUSPENDED";
     else if (statusLower === "blocked" || statusLower === "inactive" || statusLower === "pending") codeValue = "LICENSE_BLOCKED";
   }
@@ -190,7 +194,11 @@ export function buildAuthSnapshotPayload(
 
   let codeValue = typeof normalized.code === "string" ? normalized.code : "LICENSE_VALID";
   if (typeof normalized.code !== "string") {
-    if (statusLower === "revoked") codeValue = "LICENSE_REVOKED";
+    // Conta sem licença ativa = plano grátis. O servidor manda status="free" (valid/active
+    // ausentes → false); sem este mapa o snapshot caía em LICENSE_BLOCKED (bug do cadastro,
+    // que tratava conta nova como bloqueada).
+    if (statusLower === "free") codeValue = "LICENSE_FREE";
+    else if (statusLower === "revoked") codeValue = "LICENSE_REVOKED";
     else if (statusLower === "suspended") codeValue = "LICENSE_SUSPENDED";
     else if (statusLower === "blocked" || statusLower === "inactive" || statusLower === "pending") codeValue = "LICENSE_BLOCKED";
   }
