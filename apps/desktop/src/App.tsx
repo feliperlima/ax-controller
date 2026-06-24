@@ -169,6 +169,7 @@ import {
 import {
   ChannelProcessors,
   GraphicEqEditor,
+  MediaPlayer,
   type CompressorState,
   type EqBandState,
   type EqState,
@@ -176,12 +177,15 @@ import {
   type FilterType,
   type GateState,
   type GraphicEqState,
+  type MediaEntry,
+  type MediaSource,
   type ProcessorModule,
   type ProcessorState,
   type SendStripId,
   type SendStripView,
   type SendTapPoint,
 } from "./components/ChannelProcessors";
+import { MediaController, createDefaultMediaState, type MediaState } from "./lib/mediaController";
 import {
   type LicenseDevice,
   type LicenseFormalState,
@@ -2736,6 +2740,8 @@ function App() {
   );
   const [activeMixerCacheIdentity, setActiveMixerCacheIdentity] = useState<string | null>(null);
   const rtaControllerRef = useRef<RtaController | null>(null);
+  const [mediaState, setMediaState] = useState<MediaState>(() => createDefaultMediaState());
+  const mediaControllerRef = useRef<MediaController | null>(null);
   const meterBusyRef = useRef(false);
   const missingChannelMeterFramesRef = useRef(0);
   const channelMeterLastUpdateAtRef = useRef<number[]>([]);
@@ -2889,7 +2895,7 @@ function App() {
   const backgroundLicenseRevalidationBusyRef = useRef(false);
   const lastBackgroundRevalidationAtRef = useRef(0);
   const strictStartupValidationDoneRef = useRef(false);
-  const lastAppliedMuteGroupsSignatureRef = useRef("");
+  const lastAppliedMuteTargetsRef = useRef<Map<AssignableMemberId, boolean>>(new Map());
   const channelLinkTransitionUntilRef = useRef<Map<string, number>>(new Map());
   const auxLinkTransitionUntilRef = useRef<Map<string, number>>(new Map());
   const masterLinkTransitionUntilRef = useRef(0);
@@ -4013,7 +4019,7 @@ function App() {
   async function syncAllGroupStates(options?: { ignoreConnectionState?: boolean; suppressManagedMuteWrites?: boolean }) {
     const client = clientRef.current;
     if (!client || (!isConnected && !options?.ignoreConnectionState)) {
-      lastAppliedMuteGroupsSignatureRef.current = "";
+      lastAppliedMuteTargetsRef.current = new Map();
       return;
     }
 
@@ -4112,45 +4118,46 @@ function App() {
   function applyManagedMutes(nextGroups: MuteGroupState[], options?: { ignoreConnectionState?: boolean }) {
     const client = clientRef.current;
     if (!client || (!isConnected && !options?.ignoreConnectionState)) {
-      lastAppliedMuteGroupsSignatureRef.current = "";
+      lastAppliedMuteTargetsRef.current = new Map();
       return;
     }
 
-    const managedMembersSet = new Set<AssignableMemberId>();
-    const activeMembersSet = new Set<AssignableMemberId>();
-
+    // Alvo derivado por membro: mutado sse pertence a algum grupo ativo.
+    const nextTargets = new Map<AssignableMemberId, boolean>();
     for (const group of nextGroups) {
-      const expandedMembers = expandMuteGroupManagedMembers(group.members);
-
-      for (const member of expandedMembers) {
-        managedMembersSet.add(member);
-        if (group.active) {
-          activeMembersSet.add(member);
-        }
+      for (const member of expandMuteGroupManagedMembers(group.members)) {
+        nextTargets.set(member, (nextTargets.get(member) ?? false) || group.active);
       }
     }
 
-    const managedOrdered = assignableMemberIds.filter((member) => managedMembersSet.has(member));
-    const activeOrdered = assignableMemberIds.filter((member) => activeMembersSet.has(member));
-    const signature = `${managedOrdered.join(",")}|${activeOrdered.join(",")}`;
+    const last = lastAppliedMuteTargetsRef.current;
+    const writes: Array<{ member: AssignableMemberId; mute: boolean }> = [];
 
-    if (signature === lastAppliedMuteGroupsSignatureRef.current) {
-      return;
+    // (a) membros gerenciados cujo alvo mudou desde a última aplicação.
+    // Diff por membro (não assinatura global) preserva mutes manuais em canais cujo
+    // alvo de grupo não mudou — ex.: mexer no MG2 não toca num canal só do MG1.
+    for (const member of assignableMemberIds) {
+      if (!nextTargets.has(member)) continue;
+      const target = nextTargets.get(member)!;
+      if (last.get(member) !== target) writes.push({ member, mute: target });
+    }
+    // (b) membros que saíram de gerência e estavam mutados → desmutar uma vez.
+    for (const [member, prev] of last) {
+      if (!nextTargets.has(member) && prev) writes.push({ member, mute: false });
     }
 
-    for (const member of managedOrdered) {
-      const shouldMute = activeMembersSet.has(member);
+    for (const { member, mute } of writes) {
       if (member === "DIGI") {
         const [digiChL, digiChR] = getDigiChannelNumbers();
-        client.setMute(digiChL, shouldMute);
-        client.setMute(digiChR, shouldMute);
+        client.setMute(digiChL, mute);
+        client.setMute(digiChR, mute);
       } else {
-        applyMuteToMember(client, member, shouldMute);
+        applyMuteToMember(client, member, mute);
       }
-      handleMuteGroupsMemberMuteApplied(member, shouldMute);
+      handleMuteGroupsMemberMuteApplied(member, mute);
     }
 
-    lastAppliedMuteGroupsSignatureRef.current = signature;
+    lastAppliedMuteTargetsRef.current = nextTargets;
   }
 
   useEffect(() => {
@@ -4158,7 +4165,7 @@ function App() {
     const groupsViewActive = mainView === "dcaGroups" || mainView === "muteGroups";
 
     if (appStage === "demo" || !client || !isConnected || isSyncing || !groupsViewActive) {
-      lastAppliedMuteGroupsSignatureRef.current = "";
+      lastAppliedMuteTargetsRef.current = new Map();
       return;
     }
 
@@ -8695,6 +8702,49 @@ function App() {
   // Para o RTA ao desmontar o componente.
   useEffect(() => () => { rtaControllerRef.current?.stop(); rtaControllerRef.current = null; }, []);
 
+  // MEDIA — controller vivo só enquanto a aba MEDIA do DIGI estiver aberta (não roda no demo).
+  // Ao sair/desconectar: para keepalive e listeners (não mexe no áudio que estiver tocando).
+  useEffect(() => {
+    const inMedia = !!(
+      appStage !== "demo" &&
+      isConnected &&
+      detailView?.type === "digi" &&
+      activeProcessorModule === "media" &&
+      // MEDIA validado só no AX32 — não liga o controller em AX16/24 (gate por modelo).
+      getActiveProfile().model === "AX32"
+    );
+    const client = clientRef.current;
+
+    if (!inMedia || !client) {
+      if (mediaControllerRef.current) {
+        mediaControllerRef.current.stop();
+        mediaControllerRef.current = null;
+      }
+      return;
+    }
+
+    if (!mediaControllerRef.current) {
+      const controller = new MediaController({
+        client,
+        initialState: mediaState, // preserva a lista/estado ao reabrir a aba (não re-escaneia)
+        onStateChange: (next) => setMediaState(next),
+      });
+      controller.start();
+      mediaControllerRef.current = controller;
+    }
+  }, [activeProcessorModule, detailView, isConnected, appStage]);
+
+  // MEDIA só existe no AX32 (gate por modelo). Se a aba ficou ativa e o perfil não é AX32
+  // (ex.: troca de mesa na mesma sessão), volta pra EQ — evita painel preso sem aba.
+  useEffect(() => {
+    if (activeProcessorModule === "media" && getActiveProfile().model !== "AX32") {
+      setActiveProcessorModule("eq");
+    }
+  }, [activeProcessorModule, isConnected]);
+
+  // Para o MediaController ao desmontar o componente.
+  useEffect(() => () => { mediaControllerRef.current?.stop(); mediaControllerRef.current = null; }, []);
+
   // DEV helper: leitura direta de param(s) pelo console — window.__axRead(5109)
   useEffect(() => {
     if (!import.meta.env.DEV || !isConnected) return;
@@ -12842,6 +12892,41 @@ function App() {
     });
   }
 
+  // ─── MEDIA player (canal DIGI) — delegam ao MediaController ──────────────────────
+  function handleMediaSourceChange(src: MediaSource) {
+    mediaControllerRef.current?.selectSource(src);
+  }
+  function handleMediaPlay() {
+    mediaControllerRef.current?.play();
+  }
+  function handleMediaPause() {
+    mediaControllerRef.current?.pause();
+  }
+  function handleMediaNext() {
+    mediaControllerRef.current?.next();
+  }
+  function handleMediaPrev() {
+    mediaControllerRef.current?.prev();
+  }
+  function handleMediaRepeatToggle() {
+    mediaControllerRef.current?.toggleRepeat();
+  }
+  function handleMediaRecordToggle() {
+    mediaControllerRef.current?.toggleRecord();
+  }
+  function handleMediaBtToggle() {
+    mediaControllerRef.current?.btToggle();
+  }
+  function handleMediaSelectTrack(entry: Extract<MediaEntry, { kind: "file" }>) {
+    mediaControllerRef.current?.selectTrack(entry.handle);
+  }
+  function handleMediaEnterFolder(entry: Extract<MediaEntry, { kind: "folder" }>) {
+    mediaControllerRef.current?.enterFolder(entry);
+  }
+  function handleMediaNavigateTo(index: number) {
+    mediaControllerRef.current?.navigateTo(index);
+  }
+
   function handleDigiGateChange(patch: Partial<GateState>) {
     const [chL, chR] = getDigiChannelNumbers();
     updateDigiProcessorState((current) => ({ ...current, gate: { ...current.gate, ...patch } }));
@@ -15615,6 +15700,36 @@ function App() {
               disabled={!isConnected && appStage !== "demo"}
               channelInputDb={digiL.meterDb}
               sends={sendsView}
+              moduleItems={[
+                { id: "eq" as const, label: "EQ" },
+                { id: "comp" as const, label: "COMP" },
+                { id: "gate" as const, label: "GATE" },
+                { id: "sends" as const, label: "SENDS" },
+                // MEDIA validado só no AX32. Em AX16/24 o protocolo pode diferir (play/pause
+                // invertido etc.) — gate por modelo até validar nesse perfil (fase 2).
+                ...(getActiveProfile().model === "AX32"
+                  ? [{ id: "media" as const, label: "MEDIA", beta: true }]
+                  : []),
+              ]}
+              customModuleContent={{
+                media: (
+                  <MediaPlayer
+                    state={mediaState}
+                    disabled={!isConnected && appStage !== "demo"}
+                    onSourceChange={handleMediaSourceChange}
+                    onPlay={handleMediaPlay}
+                    onPause={handleMediaPause}
+                    onNext={handleMediaNext}
+                    onPrev={handleMediaPrev}
+                    onSelectTrack={handleMediaSelectTrack}
+                    onEnterFolder={handleMediaEnterFolder}
+                    onNavigateTo={handleMediaNavigateTo}
+                    onRepeatToggle={handleMediaRepeatToggle}
+                    onRecordToggle={handleMediaRecordToggle}
+                    onBtToggle={handleMediaBtToggle}
+                  />
+                ),
+              }}
               onModuleChange={setActiveProcessorModule}
               onGateChange={(patch) => handleDigiGateChange(patch)}
               onCompChange={(patch) => handleDigiCompChange(patch)}
