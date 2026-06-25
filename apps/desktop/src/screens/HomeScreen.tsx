@@ -4,6 +4,7 @@ import axControlBrand from "../assets/AX-control-Brand-vert.svg";
 import type { LicenseFormalState } from "../lib/licenseState";
 import type { BootstrapMessage, BootstrapVersionInfo } from "../services/bootstrapService";
 import { useFeatureFlag } from "../services/featureFlags";
+import { useUpdateState, dismissUpdateBanner } from "../services/updateService";
 
 // ── Inline SVG icons ──────────────────────────────────────────────────────────
 
@@ -232,35 +233,29 @@ function RemoteBanners({
   messages,
   versionInfo,
   onDismiss,
+  onRequestInstallUpdate,
 }: {
   messages: BootstrapMessage[];
   versionInfo: BootstrapVersionInfo | null;
   onDismiss: (key: string) => void;
+  /** Instala a atualização baixada (App confirma se houver mesa conectada → reinicia). */
+  onRequestInstallUpdate?: () => void;
 }) {
   const banners = messages.filter((m) => m.channel === "banner");
-  const hasUpdate = versionInfo && versionInfo.update_type !== "none";
+  const update = useUpdateState();
 
-  if (!hasUpdate && banners.length === 0) return null;
+  // Auto-update tem prioridade visual. Banner manual (link) é o fallback quando o
+  // auto-update está inativo (flag off / offline / erro) mas o servidor sinaliza versão nova.
+  const autoActive =
+    !update.dismissed &&
+    (update.phase === "downloading" || update.phase === "ready" || update.phase === "installing");
+  const hasManualUpdate = !autoActive && versionInfo && versionInfo.update_type !== "none";
+
+  if (!autoActive && !hasManualUpdate && banners.length === 0) return null;
 
   return (
     <div className="hs-banners">
-      {hasUpdate && versionInfo && (
-        <div className="hs-banner hs-banner--info">
-          <span className="hs-banner__text">
-            {versionInfo.message ?? `Nova versão disponível: ${versionInfo.latest_version}`}
-          </span>
-          {versionInfo.download_url && (
-            <a
-              className="hs-banner__cta"
-              href={versionInfo.download_url}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Baixar
-            </a>
-          )}
-        </div>
-      )}
+      {/* Banners de módulo (manutenção, avisos) — topo, full-width */}
       {banners.map((msg) => (
         <div
           key={msg.key}
@@ -282,6 +277,48 @@ function RemoteBanners({
           <button className="hs-banner__dismiss" onClick={() => onDismiss(msg.key)} aria-label="Fechar">✕</button>
         </div>
       ))}
+
+      {/* Atualização — sempre por ÚLTIMO (rodapé), discreto, nunca bloqueia */}
+      {autoActive && (
+        <div className="hs-banner hs-banner--info">
+          {update.phase === "downloading" && (
+            <span className="hs-banner__text">
+              Baixando atualização {update.version}… {update.percent}%
+            </span>
+          )}
+          {update.phase === "ready" && (
+            <>
+              <span className="hs-banner__text">Atualização {update.version} pronta</span>
+              <button className="hs-banner__cta" onClick={onRequestInstallUpdate}>
+                Instalar agora
+              </button>
+            </>
+          )}
+          {update.phase === "installing" && (
+            <span className="hs-banner__text">Instalando atualização {update.version}…</span>
+          )}
+          {update.phase !== "installing" && (
+            <button className="hs-banner__dismiss" onClick={dismissUpdateBanner} aria-label="Fechar">✕</button>
+          )}
+        </div>
+      )}
+      {hasManualUpdate && versionInfo && (
+        <div className="hs-banner hs-banner--info">
+          <span className="hs-banner__text">
+            {versionInfo.message ?? `Nova versão disponível: ${versionInfo.latest_version}`}
+          </span>
+          {versionInfo.download_url && (
+            <a
+              className="hs-banner__cta"
+              href={versionInfo.download_url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Baixar
+            </a>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -314,6 +351,8 @@ type HomeScreenProps = {
   onIemInterest?: () => void;
   /** When true, this device already used a trial — show "buy/keep free" instead of the trial offer. */
   deviceTrialUsed?: boolean;
+  /** Instala a atualização baixada (App confirma se houver mesa conectada → reinicia). */
+  onRequestInstallUpdate?: () => void;
 };
 
 export function HomeScreen({
@@ -337,6 +376,7 @@ export function HomeScreen({
   onStartTrial,
   onIemInterest,
   deviceTrialUsed = false,
+  onRequestInstallUpdate,
 }: HomeScreenProps) {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [iemSubscribed, setIemSubscribed] = useState(() => iemInterestAlreadyRegistered());
@@ -483,6 +523,7 @@ export function HomeScreen({
         messages={visibleMessages}
         versionInfo={versionInfo}
         onDismiss={(key) => setDismissedBanners((prev) => new Set([...prev, key]))}
+        onRequestInstallUpdate={onRequestInstallUpdate}
       />
 
       {/* ── Content ── */}

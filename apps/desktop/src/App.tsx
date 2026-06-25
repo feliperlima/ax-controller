@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { DemoMixerAdapter } from "./adapters/DemoMixerAdapter";
@@ -115,6 +115,7 @@ import {
 import { fetchBootstrap } from "./services/bootstrapService";
 import { flushTelemetryQueue } from "./services/telemetryService";
 import { FeatureFlagsContext } from "./services/featureFlags";
+import { maybeCheckForUpdate, installUpdateNow } from "./services/updateService";
 import {
   decodeGroupMembers,
   getBitmaskProtocolProfile,
@@ -2602,6 +2603,18 @@ function App() {
   const [bootstrapFeatureFlags, setBootstrapFeatureFlags] = useState<Record<string, boolean>>(() => readRuntimeLicenseCache()?.featureFlags ?? {});
   const [bootstrapMessages, setBootstrapMessages] = useState<import("./services/bootstrapService").BootstrapMessage[]>([]);
   const [bootstrapVersionInfo, setBootstrapVersionInfo] = useState<import("./services/bootstrapService").BootstrapVersionInfo | null>(null);
+
+  // Instala a atualização baixada (reinicia o app). Guarda ao vivo: se conectado a uma
+  // mesa, confirma antes (a instalação reinicia o app — regra "operação ao vivo nunca trava").
+  const handleInstallUpdate = useCallback(() => {
+    if (isConnectedRef.current) {
+      const ok = window.confirm(
+        "Você está conectado a uma mesa. Instalar a atualização vai reiniciar o app e encerrar a conexão. Continuar?",
+      );
+      if (!ok) return;
+    }
+    void installUpdateNow();
+  }, []);
   // Elegibilidade de trial por dispositivo (vem do bootstrap): um device só pode iniciar
   // trial uma vez. Quando true, escondemos a oferta de trial — resta Comprar / Continuar grátis.
   const [deviceTrialUsed, setDeviceTrialUsed] = useState(false);
@@ -3034,6 +3047,12 @@ function App() {
     }
     setBootstrapMessages(messages);
     if (boot.version) setBootstrapVersionInfo(boot.version);
+
+    // Auto-update desktop (v1.3.0): dispara o check em background ~3s depois (não-bloqueante).
+    // Atrás da flag remota desktop_auto_update; offline/erro são silenciosos (banner manual = fallback).
+    if (boot.feature_flags?.desktop_auto_update) {
+      setTimeout(() => { void maybeCheckForUpdate(true, true); }, 3000);
+    }
 
     if (showToasts) {
       boot.messages
@@ -17113,6 +17132,7 @@ function App() {
           userEmail={licenseUserEmail || (secureStore.get(USER_EMAIL_STORAGE_KEY) ?? "")}
           messages={bootstrapMessages}
           versionInfo={bootstrapVersionInfo}
+          onRequestInstallUpdate={handleInstallUpdate}
           activeNav={homeSubView}
           onNavHome={() => setHomeSubView("home")}
           onConnectMixer={() => {

@@ -27,9 +27,21 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://axcontrol.com.br/api/app/updater.php?target={{target}}&arch={{arch}}&current_version={{current_version}}"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUxQzQ4MUE2QkFFMDlCQjEKUldTeG0rQzZwb0hFVVNqank4UG5UZFNjd29vc2Q5aXVrWEZ4eFc3bnZHUDhGMHpmU0JOMTI3OFkK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "macOS": {
       "infoPlist": "Info.plist",
       "signingIdentity": "Developer ID Application: Felipe Rocha Lima (UQ34KWR782)"

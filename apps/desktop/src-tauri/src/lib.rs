@@ -1615,9 +1615,18 @@ async fn secure_store_clear(app_handle: tauri::AppHandle) -> Result<(), String> 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-    .plugin(tauri_plugin_websocket::init())
+        .plugin(tauri_plugin_websocket::init());
+
+    // Auto-update (v1.3.0): só desktop (macOS/Windows). Em mobile estes plugins
+    // não existem — o #[cfg(desktop)] mantém o build iOS/Android intacto.
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+
+    builder
         .invoke_handler(tauri::generate_handler![
             discover_mixers,
             probe_mixer_reachable,
