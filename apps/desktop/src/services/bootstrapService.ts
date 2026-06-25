@@ -78,20 +78,20 @@ export async function fetchBootstrap(params: {
   const { installationId, appVersion, buildNumber = "", licenseKey = "" } = params;
 
   const platform = getPlatformLabel();
-  const base = buildLicenseApiUrl(BOOTSTRAP_PATH);
+  const url = buildLicenseApiUrl(BOOTSTRAP_PATH);
 
-  const qs = new URLSearchParams({
+  // POST (corpo JSON) — device_id/license_key fora da query string (logs/proxies).
+  // bootstrap.php lê php://input (JSON) com fallback p/ $_GET (compat versões antigas).
+  const payload: Record<string, unknown> = {
     device_id: installationId,
     platform,
     version: appVersion,
     ...(buildNumber ? { build_number: buildNumber } : {}),
     ...(licenseKey ? { license_key: licenseKey } : {}),
-  });
-
-  const url = `${base}?${qs.toString()}`;
+  };
 
   try {
-    const res = await requestLicenseApiViaNative("GET", url, undefined, { skipSessionExpiredThrow: true });
+    const res = await requestLicenseApiViaNative("POST", url, payload, { skipSessionExpiredThrow: true });
     if (res?.statusCode === 401 && res.body["code"] === "UNAUTHENTICATED") {
       throw Object.assign(new Error("UNAUTHENTICATED"), { isUnauthenticated: true });
     }

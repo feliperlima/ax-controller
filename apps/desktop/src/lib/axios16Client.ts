@@ -2163,13 +2163,9 @@ export class Axios16Client {
       return;
     }
 
-    if (options?.linkedStereo) {
-      const oddChannel = Math.round(channel) % 2 === 1;
-      this.sendParam(params.left, oddChannel ? onValue : offValue);
-      this.sendParam(params.right, oddChannel ? offValue : onValue);
-      return;
-    }
-
+    // Solo de canal (mono ou um lado de par) = ambos os lados (L+R) ligados.
+    // linkedStereo é mantido na assinatura por compat, mas não muda o padrão:
+    // canal em solo é sempre both-on na AX32 (ver setChannelSoloPair).
     this.sendParam(params.left, onValue);
     this.sendParam(params.right, onValue);
   }
@@ -2200,9 +2196,13 @@ export class Axios16Client {
       return;
     }
 
+    // Par estéreo em solo = cada canal com AMBOS os lados (L+R) ligados, igual a
+    // dois solos mono. Confirmado por sniff da UI oficial AX32 (canal 3/4 linkado:
+    // params 238/239/310/311 todos = 1200). O padrão cruzado (1 lado por canal) NÃO
+    // acende o solo na mesa.
     this.sendParam(oddParams.left, onValue);
-    this.sendParam(oddParams.right, offValue);
-    this.sendParam(evenParams.left, offValue);
+    this.sendParam(oddParams.right, onValue);
+    this.sendParam(evenParams.left, onValue);
     this.sendParam(evenParams.right, onValue);
   }
 
@@ -2264,13 +2264,9 @@ export class Axios16Client {
       return;
     }
 
-    if (options?.linkedStereo) {
-      const oddAux = Math.round(auxNumber) % 2 === 1;
-      this.sendParam(params.left, oddAux ? onValue : offValue);
-      this.sendParam(params.right, oddAux ? offValue : onValue);
-      return;
-    }
-
+    // Solo de aux (mono ou um lado de par) = ambos os lados (L+R) ligados.
+    // linkedStereo é mantido na assinatura por compat, mas não muda o padrão:
+    // aux em solo é sempre both-on na AX32 (ver setAuxSoloPair).
     this.sendParam(params.left, onValue);
     this.sendParam(params.right, onValue);
   }
@@ -2302,9 +2298,12 @@ export class Axios16Client {
       return;
     }
 
+    // Par de aux estéreo em solo = cada aux com AMBOS os lados (L+R) ligados, igual a
+    // dois solos mono. Confirmado por sniff da UI oficial AX32 (aux 1/2 linkado:
+    // params 2902/2903/3011/3012 todos = 1200). Mesmo comportamento dos canais.
     this.sendParam(oddParams.left, onValue);
-    this.sendParam(oddParams.right, offValue);
-    this.sendParam(evenParams.left, offValue);
+    this.sendParam(oddParams.right, onValue);
+    this.sendParam(evenParams.left, onValue);
     this.sendParam(evenParams.right, onValue);
   }
 

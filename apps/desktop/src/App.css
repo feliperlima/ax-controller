@@ -1,3 +1,13 @@
+:root {
+  /* Safe-area insets unificados. No iOS o env() funciona; no Android o WebView
+     não expõe env() (retorna 0) e a MainActivity SOBRESCREVE estas vars com os
+     WindowInsets reais via evaluateJavascript. Use sempre var(--safe-*). */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
 html,
 body,
 #root {
@@ -1590,7 +1600,7 @@ body {
   background: var(--surface-app);
   display: grid;
   justify-items: center;
-  padding: 16px 0 0;
+  padding: calc(16px + var(--safe-top)) var(--safe-right) 0 var(--safe-left);
 }
 
 .device-selection-content {
@@ -2441,7 +2451,7 @@ body {
 }
 
 .app-shell--detail {
-  grid-template-rows: 76px minmax(0, 1fr);
+  grid-template-rows: calc(76px + var(--safe-top)) minmax(0, 1fr);
 }
 
 .connect-blocking-overlay {
@@ -2481,9 +2491,10 @@ body {
 
 .top-nav {
   height: 100%;
-  min-height: 76px;
+  min-height: calc(76px + var(--safe-top));
   margin: 0;
-  padding: 16px;
+  /* topo + laterais respeitam a safe area (status bar / notch / landscape) */
+  padding: calc(16px + var(--safe-top)) calc(16px + var(--safe-right)) 16px calc(16px + var(--safe-left));
   border-bottom: 1px solid var(--border-default);
   background: var(--surface-header);
   display: flex;
@@ -2808,10 +2819,10 @@ body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 183px;
   grid-template-areas: "channels master";
-  padding-top: max(8px, env(safe-area-inset-top, 0px));
-  padding-right: max(8px, env(safe-area-inset-right, 0px));
-  padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
-  padding-left: max(8px, env(safe-area-inset-left, 0px));
+  padding-top: 8px; /* topo já tratado pelo header .top-nav acima */
+  padding-right: max(8px, var(--safe-right));
+  padding-bottom: max(8px, var(--safe-bottom));
+  padding-left: max(8px, var(--safe-left));
   gap: 0;
   overflow: hidden;
   position: relative;
