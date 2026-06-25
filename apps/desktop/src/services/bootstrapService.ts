@@ -77,7 +77,7 @@ export async function fetchBootstrap(params: {
 }): Promise<BootstrapResult | null> {
   const { installationId, appVersion, buildNumber = "", licenseKey = "" } = params;
 
-  const platform = getPlatformLabel();
+  const platform = getPlatformLabel().toLowerCase();
   const url = buildLicenseApiUrl(BOOTSTRAP_PATH);
 
   // POST (corpo JSON) — device_id/license_key fora da query string (logs/proxies).

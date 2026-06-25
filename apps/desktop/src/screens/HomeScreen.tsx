@@ -1,10 +1,11 @@
 import { useState, type ReactNode } from "react";
+import { Download } from "lucide-react";
 import { iemInterestAlreadyRegistered } from "../services/telemetryService";
 import axControlBrand from "../assets/AX-control-Brand-vert.svg";
 import type { LicenseFormalState } from "../lib/licenseState";
 import type { BootstrapMessage, BootstrapVersionInfo } from "../services/bootstrapService";
 import { useFeatureFlag } from "../services/featureFlags";
-import { useUpdateState, dismissUpdateBanner } from "../services/updateService";
+import { useUpdateState, dismissUpdateBanner, startDownload } from "../services/updateService";
 
 // ── Inline SVG icons ──────────────────────────────────────────────────────────
 
@@ -231,31 +232,15 @@ const BANNER_COLORS: Record<BannerSeverity, string> = {
 
 function RemoteBanners({
   messages,
-  versionInfo,
   onDismiss,
-  onRequestInstallUpdate,
 }: {
   messages: BootstrapMessage[];
-  versionInfo: BootstrapVersionInfo | null;
   onDismiss: (key: string) => void;
-  /** Instala a atualização baixada (App confirma se houver mesa conectada → reinicia). */
-  onRequestInstallUpdate?: () => void;
 }) {
   const banners = messages.filter((m) => m.channel === "banner");
-  const update = useUpdateState();
-
-  // Auto-update tem prioridade visual. Banner manual (link) é o fallback quando o
-  // auto-update está inativo (flag off / offline / erro) mas o servidor sinaliza versão nova.
-  const autoActive =
-    !update.dismissed &&
-    (update.phase === "downloading" || update.phase === "ready" || update.phase === "installing");
-  const hasManualUpdate = !autoActive && versionInfo && versionInfo.update_type !== "none";
-
-  if (!autoActive && !hasManualUpdate && banners.length === 0) return null;
-
+  if (banners.length === 0) return null;
   return (
     <div className="hs-banners">
-      {/* Banners de módulo (manutenção, avisos) — topo, full-width */}
       {banners.map((msg) => (
         <div
           key={msg.key}
@@ -265,60 +250,101 @@ function RemoteBanners({
           {msg.title && <span className="hs-banner__title">{msg.title}</span>}
           <span className="hs-banner__text">{msg.body}</span>
           {msg.cta_label && msg.cta_url && (
-            <a
-              className="hs-banner__cta"
-              href={msg.cta_url}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
+            <a className="hs-banner__cta" href={msg.cta_url} target="_blank" rel="noopener noreferrer">
               {msg.cta_label}
             </a>
           )}
           <button className="hs-banner__dismiss" onClick={() => onDismiss(msg.key)} aria-label="Fechar">✕</button>
         </div>
       ))}
+    </div>
+  );
+}
 
-      {/* Atualização — sempre por ÚLTIMO (rodapé), discreto, nunca bloqueia */}
-      {autoActive && (
-        <div className="hs-banner hs-banner--info">
-          {update.phase === "downloading" && (
-            <span className="hs-banner__text">
-              Baixando atualização {update.version}… {update.percent}%
-            </span>
-          )}
-          {update.phase === "ready" && (
-            <>
-              <span className="hs-banner__text">Atualização {update.version} pronta</span>
-              <button className="hs-banner__cta" onClick={onRequestInstallUpdate}>
-                Instalar agora
-              </button>
-            </>
-          )}
-          {update.phase === "installing" && (
-            <span className="hs-banner__text">Instalando atualização {update.version}…</span>
-          )}
-          {update.phase !== "installing" && (
-            <button className="hs-banner__dismiss" onClick={dismissUpdateBanner} aria-label="Fechar">✕</button>
-          )}
-        </div>
-      )}
-      {hasManualUpdate && versionInfo && (
-        <div className="hs-banner hs-banner--info">
-          <span className="hs-banner__text">
-            {versionInfo.message ?? `Nova versão disponível: ${versionInfo.latest_version}`}
-          </span>
-          {versionInfo.download_url && (
-            <a
-              className="hs-banner__cta"
-              href={versionInfo.download_url}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Baixar
-            </a>
-          )}
-        </div>
-      )}
+function UpdateCard({
+  versionInfo,
+  onRequestInstallUpdate,
+}: {
+  versionInfo: BootstrapVersionInfo | null;
+  onRequestInstallUpdate?: () => void;
+}) {
+  const update = useUpdateState();
+
+  const effectiveUpdate = update;
+  const effectiveVersionInfo = versionInfo;
+
+  const autoActive =
+    !effectiveUpdate.dismissed &&
+    (effectiveUpdate.phase === "available" || effectiveUpdate.phase === "downloading" || effectiveUpdate.phase === "ready" || effectiveUpdate.phase === "installing");
+  const hasManualUpdate = !autoActive && effectiveVersionInfo && effectiveVersionInfo.update_type !== "none";
+
+  if (!autoActive && !hasManualUpdate) return null;
+
+  let title = "";
+  let desc = "";
+  let action: React.ReactNode = null;
+  let showProgress = false;
+
+  if (autoActive) {
+    if (effectiveUpdate.phase === "available") {
+      title = `Nova versão ${effectiveUpdate.version} disponível`;
+      desc = "Baixe agora para ter os últimos recursos e correções.";
+      action = (
+        <button className="hs-update-card__btn" onClick={startDownload}>
+          Baixar
+        </button>
+      );
+    } else if (effectiveUpdate.phase === "downloading") {
+      title = `Baixando ${effectiveUpdate.version}…`;
+      desc = `${effectiveUpdate.percent}% concluído`;
+      showProgress = true;
+    } else if (effectiveUpdate.phase === "ready") {
+      title = `Atualização ${effectiveUpdate.version} pronta`;
+      desc = "O app precisa ser reiniciado para concluir a instalação.";
+      action = (
+        <button className="hs-update-card__btn" onClick={onRequestInstallUpdate}>
+          Instalar agora
+        </button>
+      );
+    } else {
+      title = `Instalando ${effectiveUpdate.version}…`;
+      desc = "Reiniciando o app para concluir a instalação…";
+    }
+  } else if (hasManualUpdate && effectiveVersionInfo) {
+    title = `Nova versão ${effectiveVersionInfo.latest_version} disponível`;
+    desc = effectiveVersionInfo.message ?? "Baixe a atualização para ter os últimos recursos e correções.";
+    if (effectiveVersionInfo.download_url) {
+      action = (
+        <a className="hs-update-card__btn" href={effectiveVersionInfo.download_url} target="_blank" rel="noopener noreferrer">
+          Baixar
+        </a>
+      );
+    }
+  }
+
+  return (
+    <div className="hs-update-card">
+      <div className="hs-update-card__icon-pill">
+        <Download size={22} strokeWidth={2} />
+      </div>
+      <div className="hs-update-card__body">
+        <p className="hs-update-card__title">
+          {title}
+          <span className="hs-update-card__badge">Novo</span>
+        </p>
+        <p className="hs-update-card__desc">{desc}</p>
+        {showProgress && (
+          <div className="hs-update-card__progress">
+            <div className="hs-update-card__progress-fill" style={{ width: `${effectiveUpdate.percent}%` }} />
+          </div>
+        )}
+      </div>
+      <div className="hs-update-card__actions">
+        {action}
+        {autoActive && effectiveUpdate.phase !== "installing" && (
+          <button className="hs-update-card__dismiss" onClick={dismissUpdateBanner} aria-label="Fechar">✕</button>
+        )}
+      </div>
     </div>
   );
 }
@@ -521,9 +547,7 @@ export function HomeScreen({
       {/* ── Remote banners ── */}
       <RemoteBanners
         messages={visibleMessages}
-        versionInfo={versionInfo}
         onDismiss={(key) => setDismissedBanners((prev) => new Set([...prev, key]))}
-        onRequestInstallUpdate={onRequestInstallUpdate}
       />
 
       {/* ── Content ── */}
@@ -577,6 +601,7 @@ export function HomeScreen({
                 />
               )}
             </div>
+            <UpdateCard versionInfo={versionInfo} onRequestInstallUpdate={onRequestInstallUpdate} />
           </>
         )}
       </main>
