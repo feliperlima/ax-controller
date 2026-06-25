@@ -97,8 +97,17 @@ export async function fetchBootstrap(params: {
     }
     if (!res || res.statusCode >= 400 || !res.body["success"]) return null;
 
-    const b = res.body as Record<string, unknown>;
+    return parseAccountStatePayload(res.body as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+}
 
+/**
+ * Faz o parse do envelope de account-state (mesmo shape em bootstrap.php e
+ * /api/v1/account/state.php) → BootstrapResult. Exportado p/ reuso no accountStateService.
+ */
+export function parseAccountStatePayload(b: Record<string, unknown>): BootstrapResult {
     const flags: BootstrapFeatureFlags = {};
     const rawFlags = b["feature_flags"];
     if (rawFlags && typeof rawFlags === "object") {
@@ -179,7 +188,4 @@ export async function fetchBootstrap(params: {
       device_trial_used: Boolean(b["device_trial_used"]),
       server_time: typeof b["server_time"] === "string" ? b["server_time"] : null,
     };
-  } catch {
-    return null;
-  }
 }

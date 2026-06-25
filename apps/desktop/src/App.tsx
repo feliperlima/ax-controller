@@ -113,6 +113,7 @@ import {
   cachePublicKey,
 } from "./services/certificateService";
 import { fetchBootstrap } from "./services/bootstrapService";
+import { fetchAccountState } from "./services/accountStateService";
 import { flushTelemetryQueue } from "./services/telemetryService";
 import { FeatureFlagsContext } from "./services/featureFlags";
 import { maybeCheckForUpdate, installUpdateNow } from "./services/updateService";
@@ -2989,11 +2990,18 @@ function App() {
   async function runBootstrap(id: string, { showToasts = false } = {}): Promise<boolean> {
     if (!navigator.onLine) return false;
     const licenseKey = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
-    const boot = await fetchBootstrap({
+    // Dual-read (Fase B): se a flag account_state_v1 está ligada, usa o endpoint canônico
+    // /api/v1/account/state (mesmo payload + ETag/304). Senão, ou se ele falhar, cai no
+    // bootstrap.php (que server-side já usa o mesmo builder). Nunca bloqueia.
+    const useV1 = bootstrapFeatureFlags?.account_state_v1 === true;
+    const boot = await (useV1
+      ? fetchAccountState({ installationId: id, appVersion: APP_VERSION, licenseKey })
+          .then((r) => r ?? fetchBootstrap({ installationId: id, appVersion: APP_VERSION, licenseKey }))
+      : fetchBootstrap({
       installationId: id,
       appVersion: APP_VERSION,
       licenseKey,
-    }).catch(() => {
+    })).catch(() => {
       // A bootstrap failure — including a transient 401 before the device finishes
       // registering — must NOT log the user out. License validity is enforced by
       // runBackgroundLicenseRevalidation; bootstrap is informational (flags/founder/cert).
