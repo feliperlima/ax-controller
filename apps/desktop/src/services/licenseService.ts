@@ -868,7 +868,9 @@ export async function apiGetLicenseStatus(
   );
   if (!endpoint) return null;
 
-  const query = new URLSearchParams({
+  // POST (corpo JSON) — NUNCA query string: credencial/device fora da URL (logs/proxies).
+  // status.php lê php://input com fallback p/ GET/POST, então o corpo basta.
+  const response = await requestLicenseApiViaNative("POST", endpoint, {
     license_key: licenseKey,
     series: installationId,
     installation_uuid: installationId,
@@ -877,20 +879,6 @@ export async function apiGetLicenseStatus(
     device_platform: getPlatformLabel(),
     include_devices: includeDevices ? "1" : "0",
   });
-
-  let response = await requestLicenseApiViaNative("GET", `${endpoint}?${query.toString()}`);
-
-  if (!response || response.statusCode >= 400) {
-    response = await requestLicenseApiViaNative("POST", endpoint, {
-      license_key: licenseKey,
-      series: installationId,
-      installation_uuid: installationId,
-      device_id: installationId,
-      device_name: getDeviceNameLabel(),
-      device_platform: getPlatformLabel(),
-      include_devices: includeDevices ? "1" : "0",
-    });
-  }
   if (!response) return null;
 
   const parsed = response.body;

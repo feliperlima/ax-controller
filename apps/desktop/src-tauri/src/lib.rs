@@ -1,5 +1,8 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use chacha20poly1305::{aead::Aead, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use hkdf::Hkdf;
+use sha2::Sha256;
 use if_addrs::{get_if_addrs, IfAddr};
 use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -1477,6 +1480,139 @@ fn cache_public_key(sig_v: u8, key_base64url: String) -> Result<(), String> {
 
 // ─── End Phase 4 ────────────────────────────────────────────────────────────
 
+// ─── Secure Store (Fase A — cifragem em repouso) ────────────────────────────
+// Guarda credenciais/PII (license_key, e-mail, nome, cache de licença) cifrados em
+// app_local_data_dir/secure_store.bin (XChaCha20-Poly1305). Chave = HKDF-SHA256 de um
+// seed aleatório por instalação (ss_seed) + salt de build. Tira esses dados do
+// localStorage da WebView (DevTools/JS injetado/plaintext em disco). Threat model
+// aceito: atacante com acesso ao app_local_data_dir + binário pode rederivar a chave.
+
+const AX_SECURE_STORE_SALT: &str = match option_env!("AX_SECURE_STORE_SALT") {
+    Some(s) => s,
+    None => "ax-control-secure-store-salt-v1",
+};
+
+static SECURE_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn secure_store_lock() -> &'static Mutex<()> {
+    SECURE_STORE_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn secure_store_seed(dir: &std::path::Path) -> Result<[u8; 32], String> {
+    let path = dir.join("ss_seed");
+    if let Some(stored) = read_stored(&path) {
+        if let Ok(bytes) = URL_SAFE_NO_PAD.decode(stored.trim()) {
+            if let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                return Ok(arr);
+            }
+        }
+    }
+    let mut seed = [0u8; 32];
+    getrandom::getrandom(&mut seed).map_err(|e| format!("rng error: {e}"))?;
+    write_stored(&path, &URL_SAFE_NO_PAD.encode(seed))?;
+    Ok(seed)
+}
+
+fn secure_store_key(dir: &std::path::Path) -> Result<[u8; 32], String> {
+    let seed = secure_store_seed(dir)?;
+    let hk = Hkdf::<Sha256>::new(Some(AX_SECURE_STORE_SALT.as_bytes()), &seed);
+    let mut okm = [0u8; 32];
+    hk.expand(b"ax-secure-store-v1", &mut okm)
+        .map_err(|_| "hkdf expand error".to_string())?;
+    Ok(okm)
+}
+
+fn secure_store_file(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app_storage_dir(app_handle)?.join("secure_store.bin"))
+}
+
+fn secure_store_read_map(app_handle: &tauri::AppHandle) -> Result<HashMap<String, String>, String> {
+    let dir = app_storage_dir(app_handle)?;
+    let path = dir.join("secure_store.bin");
+    let raw = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => return Ok(HashMap::new()),
+    };
+    if raw.len() < 24 {
+        return Ok(HashMap::new());
+    }
+    let key = secure_store_key(&dir)?;
+    let (nonce_bytes, ct) = raw.split_at(24);
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key));
+    let nonce = XNonce::from_slice(nonce_bytes);
+    let plaintext = cipher
+        .decrypt(nonce, ct)
+        .map_err(|_| "decrypt error".to_string())?;
+    let map: HashMap<String, String> =
+        serde_json::from_slice(&plaintext).map_err(|e| format!("parse error: {e}"))?;
+    Ok(map)
+}
+
+fn secure_store_write_map(
+    app_handle: &tauri::AppHandle,
+    map: &HashMap<String, String>,
+) -> Result<(), String> {
+    let dir = app_storage_dir(app_handle)?;
+    let key = secure_store_key(&dir)?;
+    let plaintext = serde_json::to_vec(map).map_err(|e| format!("serialize error: {e}"))?;
+    let mut nonce_bytes = [0u8; 24];
+    getrandom::getrandom(&mut nonce_bytes).map_err(|e| format!("rng error: {e}"))?;
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key));
+    let nonce = XNonce::from_slice(&nonce_bytes);
+    let ct = cipher
+        .encrypt(nonce, plaintext.as_slice())
+        .map_err(|_| "encrypt error".to_string())?;
+    let mut out = Vec::with_capacity(24 + ct.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ct);
+    let path = dir.join("secure_store.bin");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir error: {e}"))?;
+    }
+    std::fs::write(&path, &out).map_err(|e| format!("write error: {e}"))
+}
+
+#[tauri::command]
+async fn secure_store_load_all(
+    app_handle: tauri::AppHandle,
+) -> Result<HashMap<String, String>, String> {
+    let _guard = secure_store_lock().lock().map_err(|_| "lock poisoned".to_string())?;
+    secure_store_read_map(&app_handle)
+}
+
+#[tauri::command]
+async fn secure_store_set(
+    app_handle: tauri::AppHandle,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    let _guard = secure_store_lock().lock().map_err(|_| "lock poisoned".to_string())?;
+    let mut map = secure_store_read_map(&app_handle)?;
+    map.insert(key, value);
+    secure_store_write_map(&app_handle, &map)
+}
+
+#[tauri::command]
+async fn secure_store_remove(app_handle: tauri::AppHandle, key: String) -> Result<(), String> {
+    let _guard = secure_store_lock().lock().map_err(|_| "lock poisoned".to_string())?;
+    let mut map = secure_store_read_map(&app_handle)?;
+    map.remove(&key);
+    secure_store_write_map(&app_handle, &map)
+}
+
+#[tauri::command]
+async fn secure_store_clear(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let _guard = secure_store_lock().lock().map_err(|_| "lock poisoned".to_string())?;
+    let path = secure_store_file(&app_handle)?;
+    match std::fs::remove_file(&path) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove error: {e}")),
+    }
+}
+
+// ─── End Secure Store ───────────────────────────────────────────────────────
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1492,6 +1628,10 @@ pub fn run() {
             store_certificate,
             load_certificate,
             cache_public_key,
+            secure_store_load_all,
+            secure_store_set,
+            secure_store_remove,
+            secure_store_clear,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

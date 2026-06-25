@@ -3,6 +3,16 @@
 Mudanças notáveis do AX Control. Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/);
 versionamento [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.2.3] - 2026-06-25
+
+### Segurança
+- **Credenciais e PII movidos para store seguro** (cifrado com XChaCha20-Poly1305, chave derivada por
+  device via HKDF-SHA256): `license_key`, e-mail, nome, estado de licença e dados de pagamento
+  deixaram de ser gravados em plaintext no `localStorage` da WebView. Migração silenciosa — nenhuma
+  sessão é perdida ao atualizar.
+- **PII removido das URLs**: `status` e `bootstrap` passaram de GET+query para POST+body JSON,
+  eliminando vazamento de `license_key`/`device_id` em logs de proxy/acesso.
+
 ## [1.2.0] - 2026-06-24
 
 ### Adicionado

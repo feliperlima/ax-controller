@@ -1,4 +1,5 @@
 import { isLicenseStateBlocked, type LicenseFormalState, type RuntimeLicenseCache } from "./licenseState";
+import * as secureStore from "./secureStore";
 
 export type LicenseBootDecision = {
   formalState: LicenseFormalState;
@@ -69,7 +70,7 @@ export function resolveBootDecision(cache: RuntimeLicenseCache | null, nowMs = D
 }
 
 export function readRuntimeLicenseCacheFromStorage(storageKey: string): RuntimeLicenseCache | null {
-  const raw = localStorage.getItem(storageKey);
+  const raw = secureStore.get(storageKey);
   if (!raw) return null;
 
   try {
@@ -103,9 +104,9 @@ export function readRuntimeLicenseCacheFromStorage(storageKey: string): RuntimeL
 }
 
 export function writeRuntimeLicenseCacheToStorage(storageKey: string, cache: RuntimeLicenseCache) {
-  localStorage.setItem(storageKey, JSON.stringify(cache));
+  secureStore.set(storageKey, JSON.stringify(cache));
 }
 
 export function clearRuntimeLicenseCacheFromStorage(storageKey: string) {
-  localStorage.removeItem(storageKey);
+  secureStore.remove(storageKey);
 }

@@ -76,6 +76,7 @@ import {
   saveKnownMixer,
 } from "./services/mixerDiscovery";
 import { getMixerCompatibility } from "./lib/mixerCompatibility";
+import * as secureStore from "./lib/secureStore";
 import {
   apiCreatePixPayment,
   apiCheckPixStatus,
@@ -913,7 +914,7 @@ const DEFAULT_FX_COLOR_ID = 7;
 const MASTER_FIXED_COLOR_ID = 10;
 const DEFAULT_MIXER_IP = "";
 const SPLASH_MIN_DURATION_MS = 2000;
-const APP_VERSION = "1.2.2";
+const APP_VERSION = "1.2.3";
 const INSTALLATION_ID_STORAGE_KEY = "ax_installation_id";
 const LICENSE_VALIDATED_STORAGE_KEY = "ax_license_validated";
 const DCA_NAMES_STORAGE_KEY_BASE = "ax_dca_group_names";
@@ -963,7 +964,7 @@ type CachedLicenseStatus = {
 };
 
 function readCachedLicenseStatus(): CachedLicenseStatus | null {
-  const raw = localStorage.getItem(LICENSE_STATUS_STORAGE_KEY);
+  const raw = secureStore.get(LICENSE_STATUS_STORAGE_KEY);
   if (!raw) return null;
 
   try {
@@ -1005,7 +1006,7 @@ function isLicenseDeviceShape(value: unknown): value is LicenseDevice {
 
 function readLicenseDevicesCache(): LicenseDevice[] {
   try {
-    const raw = localStorage.getItem(LICENSE_DEVICES_CACHE_STORAGE_KEY);
+    const raw = secureStore.get(LICENSE_DEVICES_CACHE_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -1017,7 +1018,7 @@ function readLicenseDevicesCache(): LicenseDevice[] {
 
 function writeLicenseDevicesCache(devices: LicenseDevice[]) {
   try {
-    localStorage.setItem(LICENSE_DEVICES_CACHE_STORAGE_KEY, JSON.stringify(devices));
+    secureStore.set(LICENSE_DEVICES_CACHE_STORAGE_KEY, JSON.stringify(devices));
   } catch {
     // best-effort persistence only
   }
@@ -1243,7 +1244,7 @@ function isPendingTrialActivationShape(value: unknown): value is PendingTrialAct
 
 function readPendingTrialActivation(): PendingTrialActivation | null {
   try {
-    const raw = localStorage.getItem(PENDING_TRIAL_ACTIVATION_STORAGE_KEY);
+    const raw = secureStore.get(PENDING_TRIAL_ACTIVATION_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     return isPendingTrialActivationShape(parsed) ? parsed : null;
@@ -1254,14 +1255,14 @@ function readPendingTrialActivation(): PendingTrialActivation | null {
 
 function writePendingTrialActivation(payload: PendingTrialActivation) {
   try {
-    localStorage.setItem(PENDING_TRIAL_ACTIVATION_STORAGE_KEY, JSON.stringify(payload));
+    secureStore.set(PENDING_TRIAL_ACTIVATION_STORAGE_KEY, JSON.stringify(payload));
   } catch {
     // best-effort persistence only
   }
 }
 
 function clearPendingTrialActivation() {
-  localStorage.removeItem(PENDING_TRIAL_ACTIVATION_STORAGE_KEY);
+  secureStore.remove(PENDING_TRIAL_ACTIVATION_STORAGE_KEY);
 }
 
 type ColorScope = "input" | "aux" | "fx" | "master";
@@ -2565,8 +2566,8 @@ function App() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   // Open login immediately on fresh install — no effect/race needed.
   // v1.0.0 → v1.1.0 upgrades have ax_license_key_last stored so modal stays closed.
-  const _freshInstall = !localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() &&
-    localStorage.getItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY) !== "1";
+  const _freshInstall = !secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() &&
+    secureStore.get(LICENSE_ACTIVATED_ONCE_STORAGE_KEY) !== "1";
   const [licenseModalOpen, setLicenseModalOpen] = useState(_freshInstall);
   const [licenseModalMandatory, setLicenseModalMandatory] = useState(_freshInstall);
   const [licenseModalMode, setLicenseModalMode] = useState<"onboarding" | "upgrade">("onboarding");
@@ -2595,8 +2596,8 @@ function App() {
   const [licenseDevices, setLicenseDevices] = useState<LicenseDevice[]>(() => readLicenseDevicesCache());
   const [licenseDevicesLoading, setLicenseDevicesLoading] = useState(false);
   const [licenseDeviceActionBusy, setLicenseDeviceActionBusy] = useState<string | null>(null);
-  const [licenseUserName, setLicenseUserName] = useState(() => localStorage.getItem(USER_NAME_STORAGE_KEY) ?? "");
-  const [licenseUserEmail, setLicenseUserEmail] = useState(() => localStorage.getItem(USER_EMAIL_STORAGE_KEY) ?? "");
+  const [licenseUserName, setLicenseUserName] = useState(() => secureStore.get(USER_NAME_STORAGE_KEY) ?? "");
+  const [licenseUserEmail, setLicenseUserEmail] = useState(() => secureStore.get(USER_EMAIL_STORAGE_KEY) ?? "");
   const [isFounder, setIsFounder] = useState<boolean | null>(() => readRuntimeLicenseCache()?.isFounder ?? null);
   const [bootstrapFeatureFlags, setBootstrapFeatureFlags] = useState<Record<string, boolean>>(() => readRuntimeLicenseCache()?.featureFlags ?? {});
   const [bootstrapMessages, setBootstrapMessages] = useState<import("./services/bootstrapService").BootstrapMessage[]>([]);
@@ -2974,7 +2975,7 @@ function App() {
 
   async function runBootstrap(id: string, { showToasts = false } = {}): Promise<boolean> {
     if (!navigator.onLine) return false;
-    const licenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    const licenseKey = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
     const boot = await fetchBootstrap({
       installationId: id,
       appVersion: APP_VERSION,
@@ -2993,11 +2994,11 @@ function App() {
 
     if (boot.user) {
       if (boot.user.name) {
-        localStorage.setItem(USER_NAME_STORAGE_KEY, boot.user.name);
+        secureStore.set(USER_NAME_STORAGE_KEY, boot.user.name);
         setLicenseUserName(boot.user.name);
       }
       if (boot.user.email) {
-        localStorage.setItem(USER_EMAIL_STORAGE_KEY, boot.user.email);
+        secureStore.set(USER_EMAIL_STORAGE_KEY, boot.user.email);
         setLicenseUserEmail(boot.user.email);
       }
       setIsFounder(boot.user.is_founder);
@@ -3060,7 +3061,7 @@ function App() {
 
       // Persist to runtime cache so offline usage reflects latest server state.
       const nowIso = new Date().toISOString();
-      const licenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+      const licenseKey = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
       writeRuntimeLicenseCache({
         installationUuid: id,
         licenseKey,
@@ -3082,21 +3083,21 @@ function App() {
   useEffect(() => { runBootstrapRef.current = runBootstrap; });
 
   useEffect(() => {
-    const storedInstallationId = localStorage.getItem(INSTALLATION_ID_STORAGE_KEY);
-    const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY);
+    const storedInstallationId = secureStore.get(INSTALLATION_ID_STORAGE_KEY);
+    const storedLicenseKey = secureStore.get(LICENSE_KEY_STORAGE_KEY);
     const nextInstallationId = storedInstallationId && storedInstallationId.trim().length > 0
       ? storedInstallationId
       : generateInstallationId();
 
     if (!storedInstallationId) {
-      localStorage.setItem(INSTALLATION_ID_STORAGE_KEY, nextInstallationId);
+      secureStore.set(INSTALLATION_ID_STORAGE_KEY, nextInstallationId);
     }
 
     setInstallationId(nextInstallationId);
     if (storedLicenseKey && storedLicenseKey.trim().length > 0) {
       setLicenseKeyInput(storedLicenseKey);
     }
-    const activatedOnce = localStorage.getItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY) === "1";
+    const activatedOnce = secureStore.get(LICENSE_ACTIVATED_ONCE_STORAGE_KEY) === "1";
     const cached = readCachedLicenseStatus();
     const runtimeCache = readRuntimeLicenseCache();
     const hasValidCache = isCacheValidForInstallation(cached, nextInstallationId);
@@ -3110,11 +3111,11 @@ function App() {
       bootDecision.isValidated;
 
     if (storedLicenseKey && !activatedOnce) {
-      localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+      secureStore.set(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
     }
 
     if (LICENSE_STRICT_SERVER_VALIDATION) {
-      localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+      secureStore.remove(LICENSE_VALIDATED_STORAGE_KEY);
     }
 
     if (cached?.installationId === nextInstallationId) {
@@ -3149,7 +3150,7 @@ function App() {
     function handleFocus() {
       if (!navigator.onLine || focusRunning) return;
       focusRunning = true;
-      const storedKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+      const storedKey = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
       Promise.all([
         runBootstrapRef.current(nextInstallationId),
         storedKey ? runBackgroundLicenseRevalidation(false, false) : Promise.resolve(),
@@ -3173,7 +3174,7 @@ function App() {
     if (!LICENSE_STRICT_SERVER_VALIDATION) return;
     if (!installationId || strictStartupValidationDoneRef.current) return;
 
-    const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    const storedLicenseKey = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
     const runtimeCache = readRuntimeLicenseCache();
     const bootDecision = resolveBootDecision(runtimeCache, Date.now(), LICENSE_REVALIDATE_WARNING_DAYS);
     const cached = readCachedLicenseStatus();
@@ -3246,7 +3247,7 @@ function App() {
   const lastBootstrappedKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isLicenseValidated || !installationId) return;
-    const key = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    const key = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
     if (!key) return; // no key yet → the anonymous effect handles flags/messages
     if (lastBootstrappedKeyRef.current === key) return;
 
@@ -3274,7 +3275,7 @@ function App() {
   const bootstrapRanAnonymousRef = useRef(false);
   useEffect(() => {
     if (!installationId || bootstrapRanAnonymousRef.current) return;
-    const licenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    const licenseKey = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
     if (licenseKey) return; // will be handled by the validated path
     bootstrapRanAnonymousRef.current = true;
     void runBootstrapRef.current(installationId);
@@ -3346,7 +3347,7 @@ function App() {
           setLicenseRevalidationHint("Teste encerrado — conheça o AX Control+ para liberar tudo.");
           return;
         }
-        localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+        secureStore.remove(LICENSE_VALIDATED_STORAGE_KEY);
         setIsLicenseValidated(false);
         setLicenseFormalState(formalState);
         setLicenseRevalidationHint("");
@@ -3366,8 +3367,8 @@ function App() {
       }
 
       // Purchased license somehow expired — block.
-      localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
-      localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
+      secureStore.remove(LICENSE_VALIDATED_STORAGE_KEY);
+      secureStore.remove(LICENSE_STATUS_STORAGE_KEY);
       setIsLicenseValidated(false);
       setLicenseRevalidationHint("");
       enforceLicenseBlock("Licença expirada. Revalide para continuar.", "upgrade");
@@ -3393,7 +3394,7 @@ function App() {
   useEffect(() => {
     if (!isOnline || !installationId) return;
 
-    const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    const storedLicenseKey = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
     if (!storedLicenseKey) return;
 
     void runBackgroundLicenseRevalidation();
@@ -3434,7 +3435,7 @@ function App() {
     if (!isOnline || !installationId) return;
     if (licenseFormalState !== "TRIAL_ACTIVE" && licenseFormalState !== "TRIAL_EXPIRED") return;
 
-    const pendingPaymentId = localStorage.getItem(PIX_PENDING_PAYMENT_STORAGE_KEY);
+    const pendingPaymentId = secureStore.get(PIX_PENDING_PAYMENT_STORAGE_KEY);
     if (!pendingPaymentId) return;
 
     void apiCheckPixStatus(
@@ -3447,7 +3448,7 @@ function App() {
       if (result.status === "approved" && result.license_key) {
         void handlePixPaymentApproved(result.license_key);
       } else if (result.status === "rejected" || result.status === "cancelled") {
-        localStorage.removeItem(PIX_PENDING_PAYMENT_STORAGE_KEY);
+        secureStore.remove(PIX_PENDING_PAYMENT_STORAGE_KEY);
       }
     }).catch(() => { /* network unavailable — will retry on next boot */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3456,7 +3457,7 @@ function App() {
   useEffect(() => {
     if (!isOnline || !installationId) return;
 
-    const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    const storedLicenseKey = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
     if (!storedLicenseKey) return;
 
     const timer = window.setInterval(() => {
@@ -3515,7 +3516,7 @@ function App() {
       }
 
       if (returnedKey) {
-        localStorage.setItem(LICENSE_KEY_STORAGE_KEY, returnedKey);
+        secureStore.set(LICENSE_KEY_STORAGE_KEY, returnedKey);
         setLicenseKeyInput(returnedKey);
       }
       applyLicenseSnapshot(result.snapshot, returnedKey, "Teste grátis sincronizado automaticamente.");
@@ -8700,7 +8701,7 @@ function App() {
         model: getActiveProfile().model,
         target,
         onProbe: (result) => {
-          const key = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+          const key = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
           void import("./services/telemetryService").then(({ trackEvent }) =>
             trackEvent(key, "rta_probe", { model: result.model, responded: result.responded })
           );
@@ -9572,7 +9573,7 @@ function App() {
     setConnectionError(null);
     setStatus("Conectando...");
 
-    const storedLicenseKey = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    const storedLicenseKey = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
 
     // Free tier (LICENSE_NOT_FOUND) and trial (active or expired) are allowed to connect —
     // only server-confirmed blocked states (suspended/revoked/blocked/revalidation expired)
@@ -9978,7 +9979,7 @@ function App() {
         expiryDate: resolvedTrialExpiryAt,
         message: snapshot.message || "Licença validada.",
       };
-      localStorage.setItem(LICENSE_STATUS_STORAGE_KEY, JSON.stringify(pseudoCache));
+      secureStore.set(LICENSE_STATUS_STORAGE_KEY, JSON.stringify(pseudoCache));
       const hintExpiry = buildLicenseExpiryHint(pseudoCache, installationId);
       const hintRevalidation = buildLicenseRevalidationHint(pseudoCache, installationId, isOnline);
       setLicenseRevalidationHint(hintExpiry || hintRevalidation);
@@ -10076,7 +10077,7 @@ function App() {
 
   async function handleRefreshLicenseStatus() {
     setLicenseDevicesLoading(true);
-    const effectiveKey = licenseKeyInput.trim() || (localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "");
+    const effectiveKey = licenseKeyInput.trim() || (secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "");
     try {
       let snapshot: LicenseSnapshot | null = null;
 
@@ -10219,10 +10220,10 @@ function App() {
     // Defesa: nunca abrir o gate no Demo (operação 100% local, sem licença).
     if (appStageRef.current === "demo") return;
     if (key) {
-      localStorage.setItem(LICENSE_KEY_STORAGE_KEY, key);
+      secureStore.set(LICENSE_KEY_STORAGE_KEY, key);
       setLicenseKeyInput(key);
     }
-    localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+    secureStore.set(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
     setHasLicenseActivatedOnce(true);
     setLicenseModalOpen(false);
     setLicenseModalMandatory(false);
@@ -10235,7 +10236,7 @@ function App() {
   // Após remover/reativar, revalida ESTE device. Se o servidor liberar (entrou sob o
   // limite / reativado), fecha o gate e segue. Senão, recarrega a lista (segue bloqueado).
   async function tryResolveDeviceGate() {
-    const key = licenseKeyInput.trim() || (localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "");
+    const key = licenseKeyInput.trim() || (secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "");
     if (!key || !installationId) return;
     const snap = await apiValidateLicense(key, installationId, APP_VERSION);
     if (!snap) return;
@@ -10437,9 +10438,9 @@ function App() {
     setIsLicenseValidated(true);
     setLicenseTrialExpiryAt(trialExpiryAt);
     setLicenseNextRevalidationAt(null);
-    localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+    secureStore.set(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
     setHasLicenseActivatedOnce(true);
-    localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
+    secureStore.set(LICENSE_VALIDATED_STORAGE_KEY, "1");
 
     setLicenseValidationMessage({
       kind: "success",
@@ -10451,7 +10452,7 @@ function App() {
       return true;
     }
 
-    const userEmail = localStorage.getItem(USER_EMAIL_STORAGE_KEY)?.trim() ?? "";
+    const userEmail = secureStore.get(USER_EMAIL_STORAGE_KEY)?.trim() ?? "";
     const activated = await apiActivateTrial(installationId, userEmail);
 
     // 409 = recusa definitiva do servidor (este device já usou trial, a conta já usou,
@@ -10462,7 +10463,7 @@ function App() {
       const code = (activated.snapshot?.code ?? "").toUpperCase();
       writeRuntimeLicenseCache({
         installationUuid: installationId,
-        licenseKey: localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "",
+        licenseKey: secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "",
         licenseType: "unknown",
         trialExpiryAt: null,
         lastValidatedAt: nowIso,
@@ -10606,7 +10607,7 @@ function App() {
 
       const returnedKey = registered.returnedLicenseKey || licenseKeyInput.trim();
       if (returnedKey) {
-        localStorage.setItem(LICENSE_KEY_STORAGE_KEY, returnedKey);
+        secureStore.set(LICENSE_KEY_STORAGE_KEY, returnedKey);
         setLicenseKeyInput(returnedKey);
       }
 
@@ -10628,17 +10629,17 @@ function App() {
       });
 
       if (!isLicenseStateBlocked(resolvedState)) {
-        localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+        secureStore.set(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
         setHasLicenseActivatedOnce(true);
-        localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
+        secureStore.set(LICENSE_VALIDATED_STORAGE_KEY, "1");
         setIsLicenseValidated(true);
         setLicenseOnboardingView("register");
         if (licenseRegisterName.trim()) {
-          localStorage.setItem(USER_NAME_STORAGE_KEY, licenseRegisterName.trim());
+          secureStore.set(USER_NAME_STORAGE_KEY, licenseRegisterName.trim());
           setLicenseUserName(licenseRegisterName.trim());
         }
         if (licenseRegisterEmail.trim()) {
-          localStorage.setItem(USER_EMAIL_STORAGE_KEY, licenseRegisterEmail.trim());
+          secureStore.set(USER_EMAIL_STORAGE_KEY, licenseRegisterEmail.trim());
           setLicenseUserEmail(licenseRegisterEmail.trim());
         }
         setLicenseRegisterName("");
@@ -10715,7 +10716,7 @@ function App() {
       }
 
       if (returnedKey) {
-        localStorage.setItem(LICENSE_KEY_STORAGE_KEY, returnedKey);
+        secureStore.set(LICENSE_KEY_STORAGE_KEY, returnedKey);
         setLicenseKeyInput(returnedKey);
       }
 
@@ -10774,17 +10775,17 @@ function App() {
         return;
       }
 
-      localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
-      localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+      secureStore.set(LICENSE_VALIDATED_STORAGE_KEY, "1");
+      secureStore.set(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
       setHasLicenseActivatedOnce(true);
       const nameToSave = meResult?.returnedUserName || loginResult.returnedUserName;
       if (nameToSave) {
-        localStorage.setItem(USER_NAME_STORAGE_KEY, nameToSave);
+        secureStore.set(USER_NAME_STORAGE_KEY, nameToSave);
         setLicenseUserName(nameToSave);
       }
       const emailToSave = meResult?.returnedUserEmail || loginResult.returnedUserEmail || licenseSignInEmail.trim();
       if (emailToSave) {
-        localStorage.setItem(USER_EMAIL_STORAGE_KEY, emailToSave);
+        secureStore.set(USER_EMAIL_STORAGE_KEY, emailToSave);
         setLicenseUserEmail(emailToSave);
       }
       setLicenseSignInPassword("");
@@ -10868,12 +10869,12 @@ function App() {
     clientRef.current?.disconnect();
     clientRef.current = null;
 
-    localStorage.removeItem(LICENSE_KEY_STORAGE_KEY);
-    localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
-    localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
-    localStorage.removeItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY);
-    localStorage.removeItem(USER_NAME_STORAGE_KEY);
-    localStorage.removeItem(USER_EMAIL_STORAGE_KEY);
+    secureStore.remove(LICENSE_KEY_STORAGE_KEY);
+    secureStore.remove(LICENSE_VALIDATED_STORAGE_KEY);
+    secureStore.remove(LICENSE_STATUS_STORAGE_KEY);
+    secureStore.remove(LICENSE_ACTIVATED_ONCE_STORAGE_KEY);
+    secureStore.remove(USER_NAME_STORAGE_KEY);
+    secureStore.remove(USER_EMAIL_STORAGE_KEY);
     clearRuntimeLicenseCache();
     clearPendingTrialActivation();
 
@@ -10906,7 +10907,7 @@ function App() {
     setLicenseActiveDevicesCount(null);
     setLicenseRemainingActivations(null);
     setLicenseDevices([]);
-    localStorage.removeItem(LICENSE_DEVICES_CACHE_STORAGE_KEY);
+    secureStore.remove(LICENSE_DEVICES_CACHE_STORAGE_KEY);
     setLicenseRevalidationHint("");
     setLicenseValidationMessage({ kind: "idle", text: "" });
     setIsFounder(null);
@@ -10974,15 +10975,15 @@ function App() {
   async function handlePixPaymentApproved(licenseKey: string) {
     stopPixPolling();
     setPixPayment({ stage: "confirmed" });
-    localStorage.setItem(LICENSE_KEY_STORAGE_KEY, licenseKey);
-    localStorage.setItem(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
+    secureStore.set(LICENSE_KEY_STORAGE_KEY, licenseKey);
+    secureStore.set(LICENSE_ACTIVATED_ONCE_STORAGE_KEY, "1");
     setHasLicenseActivatedOnce(true);
     setLicenseKeyInput(licenseKey);
 
-    localStorage.removeItem(PIX_PENDING_PAYMENT_STORAGE_KEY);
+    secureStore.remove(PIX_PENDING_PAYMENT_STORAGE_KEY);
     // Guard flag: prevents background revalidation from downgrading to trial
     // before the server confirms the purchased status. Stores timestamp for TTL.
-    localStorage.setItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY, String(Date.now()));
+    secureStore.set(PIX_PURCHASE_CONFIRMED_STORAGE_KEY, String(Date.now()));
 
     // Apply purchased state immediately so the UI never reverts to trial.
     const syntheticSnapshot: LicenseSnapshot = {
@@ -11021,7 +11022,7 @@ function App() {
         const payload = normalizeLicenseApiPayload(response.body ?? {});
         const snapshot = parseLicenseSnapshot(payload);
         if (snapshot.licenseType === "purchased") {
-          localStorage.removeItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
+          secureStore.remove(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
           applyLicenseSnapshot(snapshot, licenseKey, "Licença ativada com sucesso!");
         }
       }
@@ -11095,7 +11096,7 @@ function App() {
         qrCodeBase64: result.qr_code_base64,
         expiresAt: result.expires_at,
       });
-      localStorage.setItem(PIX_PENDING_PAYMENT_STORAGE_KEY, result.payment_id);
+      secureStore.set(PIX_PENDING_PAYMENT_STORAGE_KEY, result.payment_id);
       startPixPolling(result.payment_id);
     } catch (err) {
       console.error("[AX] startPixPayment failed:", err);
@@ -11141,10 +11142,10 @@ function App() {
       return false;
     }
 
-    const licenseValue = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+    const licenseValue = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
     if (!licenseValue) {
       if (strict) {
-        localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
+        secureStore.remove(LICENSE_VALIDATED_STORAGE_KEY);
         setIsLicenseValidated(false);
         setLicenseRevalidationHint("");
         setLicenseValidationMessage({ kind: "error", text: "Chave de licença não encontrada neste dispositivo." });
@@ -11159,7 +11160,7 @@ function App() {
     lastBackgroundRevalidationAtRef.current = now;
 
     try {
-      const pixConfirmedAt = Number(localStorage.getItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY) ?? "0");
+      const pixConfirmedAt = Number(secureStore.get(PIX_PURCHASE_CONFIRMED_STORAGE_KEY) ?? "0");
       const pixPurchaseGuardActive = pixConfirmedAt > 0 && (Date.now() - pixConfirmedAt) < PIX_GUARD_TTL_MS;
 
       if (LICENSE_API_BASE_URL) {
@@ -11172,7 +11173,7 @@ function App() {
             return true;
           }
           if (statusSnapshot.licenseType === "purchased") {
-            localStorage.removeItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
+            secureStore.remove(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
           }
 
           const formalState = resolveLicenseFormalState({
@@ -11209,7 +11210,7 @@ function App() {
                 applyLicenseSnapshot(vSnap, licenseValue, vSnap.message || "Dispositivo validado.");
               }
             }
-            localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
+            secureStore.set(LICENSE_VALIDATED_STORAGE_KEY, "1");
             return true;
           }
 
@@ -11226,8 +11227,8 @@ function App() {
             }
           }
 
-          localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
-          localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
+          secureStore.remove(LICENSE_VALIDATED_STORAGE_KEY);
+          secureStore.remove(LICENSE_STATUS_STORAGE_KEY);
           clearRuntimeLicenseCache();
           setIsLicenseValidated(false);
           setLicenseRevalidationHint("");
@@ -11263,7 +11264,7 @@ function App() {
         return true;
       }
       if (snapshot.licenseType === "purchased") {
-        localStorage.removeItem(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
+        secureStore.remove(PIX_PURCHASE_CONFIRMED_STORAGE_KEY);
       }
 
       const formalState = resolveLicenseFormalState({
@@ -11276,12 +11277,12 @@ function App() {
       applyLicenseSnapshot(snapshot, licenseValue, snapshot.message || "Licença validada.");
 
       if (!isLicenseStateBlocked(formalState)) {
-        localStorage.setItem(LICENSE_VALIDATED_STORAGE_KEY, "1");
+        secureStore.set(LICENSE_VALIDATED_STORAGE_KEY, "1");
         return true;
       }
 
-      localStorage.removeItem(LICENSE_VALIDATED_STORAGE_KEY);
-      localStorage.removeItem(LICENSE_STATUS_STORAGE_KEY);
+      secureStore.remove(LICENSE_VALIDATED_STORAGE_KEY);
+      secureStore.remove(LICENSE_STATUS_STORAGE_KEY);
       clearRuntimeLicenseCache();
       setIsLicenseValidated(false);
       setLicenseRevalidationHint("");
@@ -17108,8 +17109,8 @@ function App() {
           hasActivatedOnce={hasLicenseActivatedOnce}
           deviceTrialUsed={deviceTrialUsed}
           isFounder={isFounder}
-          userName={licenseUserName || (localStorage.getItem(USER_NAME_STORAGE_KEY) ?? "")}
-          userEmail={licenseUserEmail || (localStorage.getItem(USER_EMAIL_STORAGE_KEY) ?? "")}
+          userName={licenseUserName || (secureStore.get(USER_NAME_STORAGE_KEY) ?? "")}
+          userEmail={licenseUserEmail || (secureStore.get(USER_EMAIL_STORAGE_KEY) ?? "")}
           messages={bootstrapMessages}
           versionInfo={bootstrapVersionInfo}
           activeNav={homeSubView}
@@ -17135,7 +17136,7 @@ function App() {
             });
           }}
           onIemInterest={() => {
-            const key = localStorage.getItem(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
+            const key = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
             void import("./services/telemetryService").then(({ trackEvent }) =>
               trackEvent(key, "iem_interest")
             );

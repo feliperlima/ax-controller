@@ -1,6 +1,6 @@
 [package]
 name = "desktop"
-version = "1.2.2"
+version = "1.2.3"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -30,6 +30,11 @@ tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
+# Secure store (Fase A): cifragem em repouso de credenciais/PII (pure-Rust → cross-compila p/ windows-gnu + mobile)
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+getrandom = "0.2"
 
 [patch.crates-io]
 swift-rs = { path = "swift-rs-patched" }
