@@ -913,7 +913,7 @@ const DEFAULT_FX_COLOR_ID = 7;
 const MASTER_FIXED_COLOR_ID = 10;
 const DEFAULT_MIXER_IP = "";
 const SPLASH_MIN_DURATION_MS = 2000;
-const APP_VERSION = "1.2.1";
+const APP_VERSION = "1.2.2";
 const INSTALLATION_ID_STORAGE_KEY = "ax_installation_id";
 const LICENSE_VALIDATED_STORAGE_KEY = "ax_license_validated";
 const DCA_NAMES_STORAGE_KEY_BASE = "ax_dca_group_names";
@@ -936,6 +936,18 @@ const LICENSE_REVALIDATE_INTERVAL_DAYS = 30;
 const LICENSE_REVALIDATE_WARNING_DAYS = 5;
 const LICENSE_BACKGROUND_RECHECK_COOLDOWN_MS = 2 * 60 * 1000;
 const LICENSE_STRICT_SERVER_VALIDATION = true;
+// Estados (não-bloqueados) em que a revalidação de fundo deve reconsultar o servidor.
+// Inclui trial/expirado/free para pegar um UPGRADE feito fora do app (ex.: compra pelo
+// portal web) sem exigir logout/login. Estados bloqueados (revoked/suspended) ficam de
+// fora — só são reavaliados em validação forçada/estrita.
+const LICENSE_BACKGROUND_REVALIDATE_CODES = [
+  "LICENSE_VALID",
+  "TRIAL_ACTIVE",
+  "TRIAL_EXPIRED",
+  "LICENSE_EXPIRED",
+  "LICENSE_NOT_FOUND",
+  "LICENSE_FREE",
+];
 const FOUNDER_PRICE_LABEL = "R$99,90";
 const REGULAR_PRICE_LABEL = "R$189,90";
 const SUPPORT_WHATSAPP = (import.meta.env.VITE_SUPPORT_WHATSAPP ?? "+5592993361237").trim();
@@ -11108,7 +11120,14 @@ function App() {
 
     const cached = readCachedLicenseStatus();
     if (!force && !strict) {
-      if (!cached || cached.installationId !== installationId || cached.code !== "LICENSE_VALID") {
+      // Reconsulta o servidor para estados válidos E de trial/expirado/free — assim um
+      // upgrade feito fora do app (compra pelo portal) é detectado e aplicado sozinho,
+      // sem exigir logout/login. Estados bloqueados não entram aqui (só validação forçada).
+      if (
+        !cached ||
+        cached.installationId !== installationId ||
+        !LICENSE_BACKGROUND_REVALIDATE_CODES.includes(cached.code)
+      ) {
         return false;
       }
     } else if (cached && cached.installationId !== installationId) {
