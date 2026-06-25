@@ -112,6 +112,8 @@ struct LicenseApiRequestPayload {
     method: String,
     url: String,
     body: Option<serde_json::Value>,
+    /// Headers extra de request (ex.: If-None-Match p/ ETag). Opcional.
+    headers: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,6 +122,8 @@ struct LicenseApiResponse {
     status_code: u16,
     body: serde_json::Value,
     raw_body: String,
+    /// ETag do response (se houver) — p/ cache condicional no app.
+    etag: Option<String>,
 }
 
 static LICENSE_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -1220,7 +1224,12 @@ async fn license_api_request(payload: LicenseApiRequestPayload) -> Result<Licens
         other => return Err(format!("request error: unsupported method {other}")),
     };
 
-    let request = request.header("Content-Type", "application/json");
+    let mut request = request.header("Content-Type", "application/json");
+    if let Some(extra) = payload.headers {
+        for (k, v) in extra {
+            request = request.header(k, v);
+        }
+    }
     let request = if method == "POST" {
         if let Some(body) = payload.body {
             request.json(&body)
@@ -1237,6 +1246,11 @@ async fn license_api_request(payload: LicenseApiRequestPayload) -> Result<Licens
         .map_err(|error| format!("request error: {error}"))?;
 
     let status_code = response.status().as_u16();
+    let etag = response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
     let raw_body = response
         .text()
         .await
@@ -1252,6 +1266,7 @@ async fn license_api_request(payload: LicenseApiRequestPayload) -> Result<Licens
         status_code,
         body,
         raw_body,
+        etag,
     })
 }
 
@@ -1615,9 +1630,18 @@ async fn secure_store_clear(app_handle: tauri::AppHandle) -> Result<(), String> 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-    .plugin(tauri_plugin_websocket::init())
+        .plugin(tauri_plugin_websocket::init());
+
+    // Auto-update (v1.3.0): só desktop (macOS/Windows). Em mobile estes plugins
+    // não existem — o #[cfg(desktop)] mantém o build iOS/Android intacto.
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+
+    builder
         .invoke_handler(tauri::generate_handler![
             discover_mixers,
             probe_mixer_reachable,

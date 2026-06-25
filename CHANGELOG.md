@@ -3,6 +3,17 @@
 Mudanças notáveis do AX Control. Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/);
 versionamento [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.3.0] - 2026-06 (em desenvolvimento)
+
+### Adicionado
+- **Auto-atualização no desktop** (macOS e Windows): o app baixa a nova versão em segundo plano e
+  oferece "Instalar agora" — sem precisar baixar e instalar manualmente. Offline-first: a verificação
+  nunca bloqueia o uso nem a operação ao vivo.
+
+### Alterado
+- Leitura de estado de conta consolidada em endpoint único versionado (`/api/v1/account/state`) com
+  cache condicional (ETag), reduzindo tráfego — sem alterar comportamento para o usuário.
+
 ## [1.2.3] - 2026-06-25
 
 ### Segurança
