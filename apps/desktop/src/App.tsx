@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { DemoMixerAdapter } from "./adapters/DemoMixerAdapter";
@@ -113,8 +113,10 @@ import {
   cachePublicKey,
 } from "./services/certificateService";
 import { fetchBootstrap } from "./services/bootstrapService";
+import { fetchAccountState } from "./services/accountStateService";
 import { flushTelemetryQueue } from "./services/telemetryService";
 import { FeatureFlagsContext } from "./services/featureFlags";
+import { maybeCheckForUpdate, installUpdateNow } from "./services/updateService";
 import {
   decodeGroupMembers,
   getBitmaskProtocolProfile,
@@ -914,7 +916,7 @@ const DEFAULT_FX_COLOR_ID = 7;
 const MASTER_FIXED_COLOR_ID = 10;
 const DEFAULT_MIXER_IP = "";
 const SPLASH_MIN_DURATION_MS = 2000;
-const APP_VERSION = "1.2.3";
+const APP_VERSION = "1.3.0";
 const INSTALLATION_ID_STORAGE_KEY = "ax_installation_id";
 const LICENSE_VALIDATED_STORAGE_KEY = "ax_license_validated";
 const DCA_NAMES_STORAGE_KEY_BASE = "ax_dca_group_names";
@@ -2602,6 +2604,18 @@ function App() {
   const [bootstrapFeatureFlags, setBootstrapFeatureFlags] = useState<Record<string, boolean>>(() => readRuntimeLicenseCache()?.featureFlags ?? {});
   const [bootstrapMessages, setBootstrapMessages] = useState<import("./services/bootstrapService").BootstrapMessage[]>([]);
   const [bootstrapVersionInfo, setBootstrapVersionInfo] = useState<import("./services/bootstrapService").BootstrapVersionInfo | null>(null);
+
+  // Instala a atualização baixada (reinicia o app). Guarda ao vivo: se conectado a uma
+  // mesa, confirma antes (a instalação reinicia o app — regra "operação ao vivo nunca trava").
+  const handleInstallUpdate = useCallback(() => {
+    if (isConnectedRef.current) {
+      const ok = window.confirm(
+        "Você está conectado a uma mesa. Instalar a atualização vai reiniciar o app e encerrar a conexão. Continuar?",
+      );
+      if (!ok) return;
+    }
+    void installUpdateNow();
+  }, []);
   // Elegibilidade de trial por dispositivo (vem do bootstrap): um device só pode iniciar
   // trial uma vez. Quando true, escondemos a oferta de trial — resta Comprar / Continuar grátis.
   const [deviceTrialUsed, setDeviceTrialUsed] = useState(false);
@@ -2976,11 +2990,18 @@ function App() {
   async function runBootstrap(id: string, { showToasts = false } = {}): Promise<boolean> {
     if (!navigator.onLine) return false;
     const licenseKey = secureStore.get(LICENSE_KEY_STORAGE_KEY)?.trim() ?? "";
-    const boot = await fetchBootstrap({
+    // Dual-read (Fase B): se a flag account_state_v1 está ligada, usa o endpoint canônico
+    // /api/v1/account/state (mesmo payload + ETag/304). Senão, ou se ele falhar, cai no
+    // bootstrap.php (que server-side já usa o mesmo builder). Nunca bloqueia.
+    const useV1 = bootstrapFeatureFlags?.account_state_v1 === true;
+    const boot = await (useV1
+      ? fetchAccountState({ installationId: id, appVersion: APP_VERSION, licenseKey })
+          .then((r) => r ?? fetchBootstrap({ installationId: id, appVersion: APP_VERSION, licenseKey }))
+      : fetchBootstrap({
       installationId: id,
       appVersion: APP_VERSION,
       licenseKey,
-    }).catch(() => {
+    })).catch(() => {
       // A bootstrap failure — including a transient 401 before the device finishes
       // registering — must NOT log the user out. License validity is enforced by
       // runBackgroundLicenseRevalidation; bootstrap is informational (flags/founder/cert).
@@ -3034,6 +3055,12 @@ function App() {
     }
     setBootstrapMessages(messages);
     if (boot.version) setBootstrapVersionInfo(boot.version);
+
+    // Auto-update desktop (v1.3.0): dispara o check em background ~3s depois (não-bloqueante).
+    // Atrás da flag remota desktop_auto_update; offline/erro são silenciosos (banner manual = fallback).
+    if (boot.feature_flags?.desktop_auto_update) {
+      setTimeout(() => { void maybeCheckForUpdate(true, true); }, 3000);
+    }
 
     if (showToasts) {
       boot.messages
@@ -17113,6 +17140,7 @@ function App() {
           userEmail={licenseUserEmail || (secureStore.get(USER_EMAIL_STORAGE_KEY) ?? "")}
           messages={bootstrapMessages}
           versionInfo={bootstrapVersionInfo}
+          onRequestInstallUpdate={handleInstallUpdate}
           activeNav={homeSubView}
           onNavHome={() => setHomeSubView("home")}
           onConnectMixer={() => {

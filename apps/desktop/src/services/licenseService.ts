@@ -439,11 +439,19 @@ function toBrowserUrl(url: string): string {
   return url;
 }
 
+type LicenseApiHttpResponse = {
+  statusCode: number;
+  body: Record<string, unknown>;
+  rawBody: string;
+  etag?: string | null;
+};
+
 async function fetchLicenseApi(
   method: "GET" | "POST",
   url: string,
-  body?: Record<string, unknown>
-): Promise<{ statusCode: number; body: Record<string, unknown>; rawBody: string } | null> {
+  body?: Record<string, unknown>,
+  extraHeaders?: Record<string, string>
+): Promise<LicenseApiHttpResponse | null> {
   const proxyUrl = toBrowserUrl(url);
   const appKey = import.meta.env.VITE_AX_APP_KEY ?? "";
   const res = await fetch(proxyUrl, {
@@ -452,36 +460,38 @@ async function fetchLicenseApi(
       "Content-Type": "application/json",
       ...(appKey ? { "X-AX-App-Key": appKey } : {}),
       "X-App-Version": "1.1.0",
+      ...(extraHeaders ?? {}),
     },
     body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
   });
   const rawBody = await res.text();
   let parsed: Record<string, unknown> = {};
   try { parsed = JSON.parse(rawBody); } catch { /* non-JSON response */ }
-  return { statusCode: res.status, body: parsed, rawBody };
+  return { statusCode: res.status, body: parsed, rawBody, etag: res.headers.get("etag") };
 }
 
 export async function requestLicenseApiViaNative(
   method: "GET" | "POST",
   url: string,
   body?: Record<string, unknown>,
-  options: { skipSessionExpiredThrow?: boolean } = {}
-): Promise<{ statusCode: number; body: Record<string, unknown>; rawBody: string } | null> {
+  options: { skipSessionExpiredThrow?: boolean; headers?: Record<string, string> } = {}
+): Promise<LicenseApiHttpResponse | null> {
   if (!url) return null;
 
   try {
-    let response: { statusCode: number; body: Record<string, unknown>; rawBody: string };
+    let response: LicenseApiHttpResponse;
 
     if (isTauriRuntime()) {
-      response = await invoke<typeof response>("license_api_request", {
+      response = await invoke<LicenseApiHttpResponse>("license_api_request", {
         payload: {
           method,
           url,
           body: method === "POST" ? (body ?? null) : null,
+          headers: options.headers ?? null,
         },
       });
     } else {
-      const fetched = await fetchLicenseApi(method, url, body);
+      const fetched = await fetchLicenseApi(method, url, body, options.headers);
       if (!fetched) return null;
       response = fetched;
     }
