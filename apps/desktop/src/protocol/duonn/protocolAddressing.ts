@@ -334,8 +334,8 @@ export const MASTER_SOLO_AX16_24 = {
 // AX16/24 master comp/EQ (App.tsx MASTER_PROCESSOR_PARAMS_AX16_24).
 export const MASTER_PROCESSOR_AX16_24 = {
   left: {
-    compEnabled: 2552, compRatio: 2553, compAttack: 2554, compRelease: 2555,
-    compThreshold: 2556, compGain: 2557,
+    compEnabled: 2554, compRatio: 2555, compAttack: 2556, compRelease: 2557,
+    compThreshold: 2558, compGain: 2559,
     eqEnabled: 2561, hpfTypeSlope: 2563, hpfFreq: 2564,
     lpfTypeSlope: 2565, lpfFreq: 2566, eqBandBase: 2568,
   },
@@ -344,14 +344,14 @@ export const MASTER_PROCESSOR_AX16_24 = {
 // AX32 master comp/EQ (axios16Client.ts MASTER_AX32, stride 109 between L and R).
 export const MASTER_PROCESSOR_AX32 = {
   left: {
-    compEnabled: 4638, compRatio: 4639, compAttack: 4640, compRelease: 4641,
-    compThreshold: 4642, compGain: 4643,
+    compEnabled: 4640, compRatio: 4641, compAttack: 4642, compRelease: 4643,
+    compThreshold: 4644, compGain: 4645,
     eqEnabled: 4649, hpfTypeSlope: 4651, hpfFreq: 4652,
     lpfTypeSlope: 4653, lpfFreq: 4654, eqBandBase: 4656,
   },
   right: {
-    compEnabled: 4747, compRatio: 4748, compAttack: 4749, compRelease: 4750,
-    compThreshold: 4751, compGain: 4752,
+    compEnabled: 4749, compRatio: 4750, compAttack: 4751, compRelease: 4752,
+    compThreshold: 4753, compGain: 4754,
     eqEnabled: 4758, hpfTypeSlope: 4760, hpfFreq: 4761,
     lpfTypeSlope: 4762, lpfFreq: 4763, eqBandBase: 4765,
   },
@@ -688,8 +688,8 @@ export const PROFILE_AX16: MixerProfile = {
     right: { fader: 2657, mute: 2659, colorParam: 3147, soloL: 1637, soloR: 1638 },
     processor: {
       left: {
-        compEnabled: 2552, compRatio: 2553, compAttack: 2554, compRelease: 2555,
-        compThreshold: 2556, compGain: 2557,
+        compEnabled: 2554, compRatio: 2555, compAttack: 2556, compRelease: 2557,
+        compThreshold: 2558, compGain: 2559,
         eqEnabled: 2563, hpfTypeSlope: 2565, hpfFreq: 2566,
         lpfTypeSlope: 2567, lpfFreq: 2568, eqBandBase: 2570,
       },
@@ -732,8 +732,8 @@ export const PROFILE_AX24: MixerProfile = {
     right: { fader: 2657, mute: 2659, colorParam: 3155, soloL: 1637, soloR: 1638 },
     processor: {
       left: {
-        compEnabled: 2552, compRatio: 2553, compAttack: 2554, compRelease: 2555,
-        compThreshold: 2556, compGain: 2557,
+        compEnabled: 2554, compRatio: 2555, compAttack: 2556, compRelease: 2557,
+        compThreshold: 2558, compGain: 2559,
         eqEnabled: 2563, hpfTypeSlope: 2565, hpfFreq: 2566,
         lpfTypeSlope: 2567, lpfFreq: 2568, eqBandBase: 2570,
       },
@@ -778,14 +778,15 @@ export const PROFILE_AX32: MixerProfile = {
     right: { fader: 4743, mute: 4745, colorParam: 5186, soloL: 4755, soloR: 4756 },
     processor: {
       left: {
-        compEnabled: 4638, compRatio: 4639, compAttack: 4640, compRelease: 4641,
-        compThreshold: 4642, compGain: 4643,
+        // comp +2 vs. assunção antiga (capturado na mesa AX32)
+        compEnabled: 4640, compRatio: 4641, compAttack: 4642, compRelease: 4643,
+        compThreshold: 4644, compGain: 4645,
         eqEnabled: 4649, hpfTypeSlope: 4651, hpfFreq: 4652,
         lpfTypeSlope: 4653, lpfFreq: 4654, eqBandBase: 4656,
       },
       right: {
-        compEnabled: 4747, compRatio: 4748, compAttack: 4749, compRelease: 4750,
-        compThreshold: 4751, compGain: 4752,
+        compEnabled: 4749, compRatio: 4750, compAttack: 4751, compRelease: 4752,
+        compThreshold: 4753, compGain: 4754,
         eqEnabled: 4758, hpfTypeSlope: 4760, hpfFreq: 4761,
         lpfTypeSlope: 4762, lpfFreq: 4763, eqBandBase: 4765,
       },
