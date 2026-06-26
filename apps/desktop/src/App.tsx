@@ -927,7 +927,7 @@ const DEFAULT_FX_COLOR_ID = 7;
 const MASTER_FIXED_COLOR_ID = 10;
 const DEFAULT_MIXER_IP = "";
 const SPLASH_MIN_DURATION_MS = 2000;
-const APP_VERSION = "1.3.1";
+const APP_VERSION = "1.3.2";
 const INSTALLATION_ID_STORAGE_KEY = "ax_installation_id";
 const LICENSE_VALIDATED_STORAGE_KEY = "ax_license_validated";
 const DCA_NAMES_STORAGE_KEY_BASE = "ax_dca_group_names";
@@ -2921,6 +2921,11 @@ function App() {
   );
   const channelFaderUiLastCommitAtRef = useRef(0);
   const recentLocalParamWritesRef = useRef<Map<number, LocalParamWrite>>(new Map());
+  // Polling do detalhe aberto: a mesa NÃO faz push de banda de EQ/comp (só fader/
+  // mute/solo/filtros), mas devolve no readParams. Enquanto um detalhe está aberto
+  // re-lemos o contexto periodicamente p/ refletir mudanças de outro cliente.
+  const lastLocalWriteAtRef = useRef(0);
+  const syncOpenDetailRef = useRef<(() => Promise<void>) | null>(null);
   const localParamWriteUnsubscribeRef = useRef<(() => void) | null>(null);
   const remoteParamReadUnsubscribeRef = useRef<(() => void) | null>(null);
   const fastControlSyncInFlightRef = useRef(false);
@@ -3078,6 +3083,20 @@ function App() {
   }, [detailView, activeProcessorModule, mainView, selectedAuxSendsTarget, selectedFxSendsTarget, channelCount]);
   activeSendParamSetRef.current = activeSendParamSet;
   syncVisibleSendsStateRef.current = syncVisibleSendsState;
+  syncOpenDetailRef.current = syncOpenDetail;
+
+  // Polling do detalhe aberto: enquanto um detalhe (canal/aux/fx/digi/master) está
+  // aberto e conectado, re-lê o contexto a cada ~1,5s p/ refletir mudanças de outro
+  // cliente que a mesa não faz push (bandas de EQ, comp). Pausa durante edição local
+  // (últimos ~1,2s) p/ não brigar com o drag.
+  useEffect(() => {
+    if (!detailView || !isConnected) return;
+    const id = window.setInterval(() => {
+      if (Date.now() - lastLocalWriteAtRef.current < 1200) return;
+      void syncOpenDetailRef.current?.().catch(() => {});
+    }, 1500);
+    return () => window.clearInterval(id);
+  }, [detailView, isConnected]);
 
   // Mapa reverso param → {canal, campo} dos extras de strip (hiZ/phantom/gain/
   // phase/pan/cor) que vivem no estado `channels` (não no raw store). Permite
@@ -7349,6 +7368,7 @@ function App() {
 
   function handleLocalParamWrite(write: LocalParamWrite) {
     recentLocalParamWritesRef.current.set(write.param, write);
+    lastLocalWriteAtRef.current = write.at;
     upsertRawParamFromTransport(write.param, write.value, write.at, "userTxEcho");
   }
 
@@ -8400,6 +8420,23 @@ function App() {
     if (mainView === "fxSends") {
       await syncBusInputSendsState("fx", selectedFxSendsTarget);
     }
+  }
+
+  // Re-lê o contexto do detalhe ABERTO (processor: EQ/comp/GEQ/filtros, ou sends),
+  // pra refletir mudanças de outro cliente em params que a mesa não faz push (bandas
+  // de EQ, comp). Usado pelo polling enquanto o detalhe está aberto.
+  async function syncOpenDetail() {
+    const view = detailViewRef.current;
+    if (!view) return;
+    if (activeProcessorModule === "sends") {
+      await syncVisibleSendsState();
+      return;
+    }
+    if (view.type === "channel") await syncChannelProcessorState(view.channel);
+    else if (view.type === "aux") await syncAuxProcessorState(view.aux);
+    else if (view.type === "fx") await syncFxState(view.fx);
+    else if (view.type === "master") await syncMasterProcessorState(view.side);
+    else if (view.type === "digi") await syncDigiChannels();
   }
 
   async function refreshMixerStateAfterSceneAction(action: "call" | "save") {
