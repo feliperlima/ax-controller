@@ -916,7 +916,7 @@ const DEFAULT_FX_COLOR_ID = 7;
 const MASTER_FIXED_COLOR_ID = 10;
 const DEFAULT_MIXER_IP = "";
 const SPLASH_MIN_DURATION_MS = 2000;
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.3.1";
 const INSTALLATION_ID_STORAGE_KEY = "ax_installation_id";
 const LICENSE_VALIDATED_STORAGE_KEY = "ax_license_validated";
 const DCA_NAMES_STORAGE_KEY_BASE = "ax_dca_group_names";
@@ -2919,6 +2919,15 @@ function App() {
   const ax32OutputPatchMapRef = useRef<Map<number, number>>(new Map());
   const usbReturnPatchSyncInFlightRef = useRef(false);
   const recordOutRxDebounceTimerRef = useRef<number | null>(null);
+  // Re-sync debounced do detalhe master/digi quando outro cliente muda um param
+  // (esses dois não têm apply-from-store; reusam o sync existente).
+  const masterRxResyncTimerRef = useRef<number | null>(null);
+  const digiRxResyncTimerRef = useRef<number | null>(null);
+  // Sends ao vivo: detecção O(1) do param de send do contexto ativo + re-sync
+  // (refs frescas porque o listener remoto é registrado no connect → closure stale).
+  const sendsRxResyncTimerRef = useRef<number | null>(null);
+  const activeSendParamSetRef = useRef<Set<number> | null>(null);
+  const syncVisibleSendsStateRef = useRef<(() => Promise<void>) | null>(null);
   const backgroundLicenseRevalidationBusyRef = useRef(false);
   const lastBackgroundRevalidationAtRef = useRef(0);
   const strictStartupValidationDoneRef = useRef(false);
@@ -2986,6 +2995,62 @@ function App() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appStage, isConnected]);
+
+  // Conjunto de params de send do contexto em exibição (canal/digi/aux/fx no
+  // detalhe aba SENDS, ou mix principal auxSends/fxSends). Permite detectar em O(1)
+  // quando outro cliente mexe um send visível e re-sincronizar (sem reagir a meters).
+  const activeSendParamSet = useMemo<Set<number> | null>(() => {
+    type Ctx =
+      | { kind: "channel"; channel: number }
+      | { kind: "bus"; busType: "aux" | "fx"; busNumber: number };
+    let ctx: Ctx | null = null;
+    if (detailView && activeProcessorModule === "sends") {
+      if (detailView.type === "channel") ctx = { kind: "channel", channel: detailView.channel };
+      else if (detailView.type === "digi") ctx = { kind: "channel", channel: getDigiChannelNumbers()[0] };
+      else if (detailView.type === "aux") ctx = { kind: "bus", busType: "aux", busNumber: detailView.aux };
+      else if (detailView.type === "fx") ctx = { kind: "bus", busType: "fx", busNumber: detailView.fx };
+    } else if (!detailView && mainView === "auxSends") {
+      ctx = { kind: "bus", busType: "aux", busNumber: selectedAuxSendsTarget };
+    } else if (!detailView && mainView === "fxSends") {
+      ctx = { kind: "bus", busType: "fx", busNumber: selectedFxSendsTarget };
+    }
+    if (!ctx) return null;
+    const set = new Set<number>();
+    try {
+      if (ctx.kind === "channel") {
+        for (const sendId of getActiveSendIds()) set.add(sendIdToParam(ctx.channel, sendId));
+      } else {
+        const mappedSendId = `${ctx.busType}${ctx.busNumber}` as SendStripId;
+        for (let ch = 1; ch <= channelCount; ch++) set.add(sendIdToParam(ch, mappedSendId));
+        const [dL, dR] = getDigiChannelNumbers();
+        set.add(sendIdToParam(dL, mappedSendId));
+        set.add(sendIdToParam(dR, mappedSendId));
+      }
+    } catch { /* perfil sem esse send — ignora */ }
+    return set;
+  }, [detailView, activeProcessorModule, mainView, selectedAuxSendsTarget, selectedFxSendsTarget, channelCount]);
+  activeSendParamSetRef.current = activeSendParamSet;
+  syncVisibleSendsStateRef.current = syncVisibleSendsState;
+
+  // Mapa reverso param → {canal, campo} dos extras de strip (hiZ/phantom/gain/
+  // phase/pan/cor) que vivem no estado `channels` (não no raw store). Permite
+  // aplicar ao vivo, em O(1), mudanças feitas por outro cliente. (mute/fader/solo
+  // já vêm do store; inputSource é tratado à parte.)
+  const channelStripParamMap = useMemo(() => {
+    const map = new Map<number, { channel: number; field: "hiZOn" | "phantomOn" | "gain" | "phasePositive" | "pan" | "colorId" }>();
+    for (let ch = 1; ch <= channelCount; ch++) {
+      const p = getChannelStateParams(ch);
+      if (typeof p.hiZ === "number") map.set(p.hiZ, { channel: ch, field: "hiZOn" });
+      if (typeof p.phantom === "number") map.set(p.phantom, { channel: ch, field: "phantomOn" });
+      if (typeof p.gain === "number") map.set(p.gain, { channel: ch, field: "gain" });
+      if (typeof p.phase === "number") map.set(p.phase, { channel: ch, field: "phasePositive" });
+      if (typeof p.pan === "number") map.set(p.pan, { channel: ch, field: "pan" });
+      if (typeof p.color === "number") map.set(p.color, { channel: ch, field: "colorId" });
+    }
+    return map;
+  }, [channelCount]);
+  const channelStripParamMapRef = useRef(channelStripParamMap);
+  channelStripParamMapRef.current = channelStripParamMap;
 
   async function runBootstrap(id: string, { showToasts = false } = {}): Promise<boolean> {
     if (!navigator.onLine) return false;
@@ -7301,6 +7366,47 @@ function App() {
       applyFxStateFromValues(fx, values, getFxStateParams(fx));
       return;
     }
+
+    if (view.type === "master") {
+      // Master/digi não têm apply-from-store; ao receber um param do bloco do
+      // master (comp/filtros/7 bandas de EQ) de outro cliente, re-sincroniza
+      // (debounced) o lado em exibição reusando o sync existente.
+      const p = masterProcessorParams(view.side);
+      const ids = new Set<number>();
+      for (const v of Object.values(p)) if (typeof v === "number") ids.add(v);
+      for (let i = 0; i < 7; i++) {
+        const band = p.eqBandBase + i * 4;
+        ids.add(band); ids.add(band + 1); ids.add(band + 2);
+      }
+      // GEQ do master (EQ gráfico) também dispara o re-sync.
+      const masterGeq = resolveMasterGeqParams(getActiveProfile().model, view.side);
+      if (masterGeq) {
+        ids.add(masterGeq.enable);
+        for (const g of masterGeq.gains) ids.add(g);
+      }
+      if (!ids.has(paramId)) return;
+      if (masterRxResyncTimerRef.current !== null) window.clearTimeout(masterRxResyncTimerRef.current);
+      masterRxResyncTimerRef.current = window.setTimeout(() => {
+        masterRxResyncTimerRef.current = null;
+        void syncMasterProcessorState(view.side).catch(() => {});
+      }, 180);
+      return;
+    }
+
+    if (view.type === "digi") {
+      const [chL, chR] = getDigiChannelNumbers();
+      const ids = new Set<number>();
+      for (const ch of [chL, chR]) {
+        for (const v of Object.values(processorParams(ch))) if (typeof v === "number") ids.add(v);
+      }
+      if (!ids.has(paramId)) return;
+      if (digiRxResyncTimerRef.current !== null) window.clearTimeout(digiRxResyncTimerRef.current);
+      digiRxResyncTimerRef.current = window.setTimeout(() => {
+        digiRxResyncTimerRef.current = null;
+        void syncDigiChannels().catch(() => {});
+      }, 180);
+      return;
+    }
   }
 
   function handleRemoteParamRead(read: RemoteParamRead) {
@@ -7310,6 +7416,29 @@ function App() {
 
     upsertRawParamFromTransport(read.param, read.value, read.at, resolveRawParamSource());
     routeRxParamToDetailView(read.param);
+
+    // Sends ao vivo: se outro cliente mexeu um send do mix em exibição (aux/fx/
+    // channel), re-sincroniza o contexto visível (debounced; só p/ params de send).
+    const sendSet = activeSendParamSetRef.current;
+    if (sendSet && sendSet.has(read.param)) {
+      if (sendsRxResyncTimerRef.current !== null) window.clearTimeout(sendsRxResyncTimerRef.current);
+      sendsRxResyncTimerRef.current = window.setTimeout(() => {
+        sendsRxResyncTimerRef.current = null;
+        void syncVisibleSendsStateRef.current?.().catch(() => {});
+      }, 180);
+    }
+
+    // Extras de strip (hiZ/phantom/gain/phase/pan/cor) mudados por outro cliente.
+    const stripHit = channelStripParamMapRef.current?.get(read.param);
+    if (stripHit) {
+      const { channel, field } = stripHit;
+      if (field === "hiZOn") updateChannelState(channel, { hiZOn: valueToBoolean(read.value) });
+      else if (field === "phantomOn") updateChannelState(channel, { phantomOn: valueToBoolean(read.value) });
+      else if (field === "gain") updateChannelState(channel, { gain: valueToGain(read.value) });
+      else if (field === "phasePositive") updateChannelState(channel, { phasePositive: valueToBoolean(read.value) });
+      else if (field === "pan") updateChannelState(channel, { pan: valueToPan(read.value) });
+      else if (field === "colorId") updateChannelState(channel, { colorId: normalizeColorByScope("input", valueToColorId(read.value)) });
+    }
 
     // Semantic apply — Input Source Mode received from mixer (opcode 0x03 or polling).
     // AX16/AX24: param = inputSource.base + channel (1-based). CH1 → base+1.
