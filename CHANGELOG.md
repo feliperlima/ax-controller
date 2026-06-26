@@ -3,7 +3,23 @@
 Mudanças notáveis do AX Control. Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/);
 versionamento [SemVer](https://semver.org/lang/pt-BR/).
 
-## [1.3.0] - 2026-06 (em desenvolvimento)
+## [1.3.2] - 2026-06-26
+
+### Corrigido
+- **Ajustes do detalhe (EQ, compressor, GEQ, sends) agora sincronizam ao vivo entre aparelhos**: com o
+  mesmo canal/bus aberto em mais de um dispositivo, o que você muda em um aparece no outro sozinho
+  (em ~1,5s), sem precisar sair e entrar na tela. A atualização pausa enquanto você está mexendo, para
+  não atrapalhar o ajuste.
+
+## [1.3.1] - 2026-06-26
+
+### Corrigido
+- **Compressor do Master**: os controles do compressor no bus principal voltaram a responder
+  corretamente (antes o ajuste de um parâmetro acabava mexendo em outro).
+- **Sincronização ao vivo entre dispositivos**: ajustes feitos em um aparelho (faders, mute, solo, EQ,
+  compressor, sends e mais) passam a refletir nos outros conectados à mesma mesa.
+
+## [1.3.0] - 2026-06-25
 
 ### Adicionado
 - **Auto-atualização no desktop** (macOS e Windows): o app baixa a nova versão em segundo plano e
