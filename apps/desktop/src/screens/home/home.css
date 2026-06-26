@@ -1,0 +1,276 @@
+/* AX Control — Layout da Home (escopo de tela: .home-* / .app-*)
+ * Estrutura e medidas extraídas 1:1 do Figma (AX-Control). */
+
+/* ── App shell (Home) ──────────────────────────────────────────────────────
+ * NB: .app-shell já é usada pelo Mixer (display:grid) no App.css → a Home usa
+ * .home-shell para não colidir. */
+.home-shell {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  background: var(--surface-app);
+  overflow: hidden;
+  position: relative;
+  font-family: var(--font-family-base), Inter, sans-serif;
+  color: var(--text-primary);
+}
+
+/* ── Sidebar (256px, #000b1c) ──────────────────────────────────────────── */
+.app-sidebar {
+  width: calc(var(--size-sidebar-desktop) * 1px);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: 48px; /* libera a titlebar overlay (40) + respiro */
+  background: #000b1c;
+  border-right: 1px solid #20304b;
+}
+
+.app-sidebar__header {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  flex-shrink: 0;
+}
+.app-sidebar__logo { height: 24px; width: auto; display: block; }
+
+.app-sidebar__nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 12px 0;
+  gap: 24px;
+}
+
+.app-sidebar__section { display: flex; flex-direction: column; gap: 8px; }
+.app-sidebar__section-label { padding: 0 12px; }
+.app-sidebar__menu { display: flex; flex-direction: column; gap: 4px; }
+
+.app-sidebar__footer {
+  margin-top: auto;
+  flex-shrink: 0;
+  padding: 12px 16px 16px;
+  border-top: 1px solid #1f304a;
+  position: relative;
+}
+
+/* ── ProfileCard (h64, transparente) ───────────────────────────────────── */
+.app-profile-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 64px;
+  padding: 0 12px;
+  border: none;
+  background: transparent;
+  border-radius: calc(var(--radius-md) * 1px);
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease;
+}
+.app-profile-card:hover { background: rgba(255, 255, 255, 0.04); }
+.app-profile-card__info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.app-profile-card__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.app-profile-card__role {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.app-profile-card__role--founder { color: #fbbf24; }
+.app-profile-card__chevron { color: var(--text-tertiary); display: inline-flex; }
+
+.app-profile-menu {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: calc(100% - 4px);
+  background: var(--surface-panel-raised);
+  border: 1px solid var(--border-default);
+  border-radius: calc(var(--radius-md) * 1px);
+  padding: calc(var(--spacing-1) * 1px);
+  z-index: 10;
+}
+.app-profile-menu__item {
+  display: flex; align-items: center; gap: calc(var(--spacing-2) * 1px);
+  width: 100%; padding: calc(var(--spacing-2) * 1px) calc(var(--spacing-3) * 1px);
+  border: none; background: transparent; border-radius: calc(var(--radius-sm) * 1px);
+  color: var(--text-secondary); font-size: 14px; cursor: pointer;
+}
+.app-profile-menu__item:hover { background: var(--surface-control-hover); }
+.app-profile-menu__item--danger { color: var(--text-danger); }
+
+/* ── Main content + Content (max-width travado, centralizado) ───────────── */
+.app-main { flex: 1; min-width: 0; overflow-y: auto; }
+.app-main__inner {
+  /* Content do Figma: 1072px de conteúdo + 56px de gutter de cada lado.
+   * border-box → max-width inclui o padding; centralizado p/ não esticar. */
+  max-width: calc((var(--layout-content-max-desktop) * 1px) + (var(--layout-content-pad-x-desktop) * 2px));
+  margin: 0 auto;
+  padding: calc(var(--layout-content-pad-y-desktop) * 1px) calc(var(--layout-content-pad-x-desktop) * 1px);
+}
+
+/* ── Home dashboard ────────────────────────────────────────────────────── */
+.home-dashboard { display: flex; flex-direction: column; gap: 24px; }
+
+.home-dashboard__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.home-dashboard__title {
+  margin: 0;
+  font-size: calc(var(--font-size-display) * 1px);
+  line-height: calc(var(--line-height-display) * 1px);
+  letter-spacing: calc(var(--letter-spacing-display) * 1px);
+  font-weight: 600;
+  color: #ffffff;
+}
+.home-dashboard__subtitle {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text-secondary);
+}
+
+.home-dashboard__actions {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+.home-dashboard__actions--duo { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+
+/* ── Card: conectar mesa (grande, 3 estados) ───────────────────────────── */
+.home-connect-card { justify-content: space-between; min-height: 300px; }
+/* glow grande à direita-centro (posição do Figma), cor vem do modificador.
+ * Centralização via `top` calculado (sem transform → livre p/ a animação de drift). */
+.home-connect-card .ax-card__glow {
+  bottom: auto; top: calc(50% - 210px); right: -101px;
+  width: 420px; height: 420px;
+}
+.home-connect-card__top { display: flex; flex-direction: column; gap: 20px; }
+
+.home-connect-card__eyebrow { display: flex; align-items: center; gap: 12px; }
+.home-connect-card__icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; border-radius: 10px;
+  border: 1px solid transparent; flex-shrink: 0;
+}
+.home-connect-card__icon--found     { color: #00b7eb; background: rgba(0, 183, 235, 0.15); border-color: #00b7eb; }
+.home-connect-card__icon--scanning,
+.home-connect-card__icon--not-found { color: #64748b; background: rgba(100, 116, 139, 0.15); border-color: #64748b; }
+.home-connect-card__icon--last-session { color: #f59e0b; background: rgba(245, 158, 11, 0.15); border-color: #f59e0b; }
+
+.home-connect-card__eyebrow-label {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.home-connect-card__eyebrow-label--found,
+.home-connect-card__eyebrow-label--scanning,
+.home-connect-card__eyebrow-label--not-found { color: #94a3b8; }
+.home-connect-card__eyebrow-label--last-session { color: #f59e0b; }
+
+/* spinner do estado "escaneando" */
+.home-connect-card__spin { animation: ax-spin 1s linear infinite; }
+@keyframes ax-spin { to { transform: rotate(360deg); } }
+
+.home-connect-card__title-row { display: flex; align-items: center; gap: 12px; }
+.home-connect-card__title { margin: 0; font-size: 28px; font-weight: 700; color: #ffffff; }
+.home-connect-card__title--searching { font-size: 22px; font-weight: 500; }
+
+.home-connect-card__badge {
+  display: inline-flex; align-items: center;
+  padding: 4px 10px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; line-height: 1;
+}
+.home-connect-card__badge--found { background: rgba(0, 200, 83, 0.08); color: #00c853; }
+.home-connect-card__badge--last  { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+
+.home-connect-card__meta {
+  margin: 0; display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 500; color: #94a3b8;
+}
+.home-connect-card__meta--last { opacity: 0.6; }
+.home-connect-card__dot { width: 3px; height: 3px; border-radius: 50%; background: #94a3b8; flex-shrink: 0; }
+.home-connect-card__desc { margin: 0; font-size: 13px; color: #64748b; }
+
+.home-connect-card__button {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  width: 100%; height: 44px; padding: 12px 16px;
+  border-radius: 8px; border: 1px solid transparent;
+  font-family: var(--font-family-base), Inter, sans-serif;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+.home-connect-card__button--found { background: #00b7eb; color: #000814; border-color: #00b7eb; }
+.home-connect-card__button--found:hover { background: #19c2f0; }
+.home-connect-card__button--not-found { background: transparent; color: #64748b; border-color: #64748b; opacity: 0.9; }
+.home-connect-card__button--not-found:hover { opacity: 1; }
+.home-connect-card__button--scanning { background: transparent; color: #64748b; border-color: #64748b; opacity: 0.6; cursor: default; }
+.home-connect-card__button--last-session { background: transparent; color: #f59e0b; border-color: #f59e0b; }
+.home-connect-card__button--last-session:hover { background: rgba(245, 158, 11, 0.1); }
+
+/* ── Card de ação (IEM / Demo, estreitos) ──────────────────────────────── */
+.home-action-card { justify-content: space-between; min-height: 300px; }
+.home-action-card__content { display: flex; flex-direction: column; gap: 20px; }
+.home-action-card__titlearea { display: flex; flex-direction: column; gap: 8px; }
+.home-action-card__title {
+  margin: 0; font-size: 20px; line-height: 26px; letter-spacing: -0.1px;
+  font-weight: 600; color: var(--text-primary);
+}
+.home-action-card__desc {
+  margin: 0; font-size: 14px; line-height: 20px; color: var(--text-secondary);
+}
+
+/* ── UpdateCard (auto-update, full-width, h88) ──────────────────────────── */
+.home-update-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 88px;
+  padding: 16px 20px;
+  background: #0a1628;
+  border: 1px solid #20304b;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.home-update-card__icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0;
+}
+.home-update-card__icon--info  { background: rgba(0, 183, 235, 0.15); color: #00b7eb; }
+.home-update-card__icon--ready { background: rgba(0, 200, 83, 0.15); color: #00c853; }
+.home-update-card__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.home-update-card__title-row { display: flex; align-items: center; gap: 8px; }
+.home-update-card__title { margin: 0; font-size: 14px; font-weight: 600; color: #ffffff; }
+.home-update-card__new { background: #00c853; color: #ffffff; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 99px; text-transform: uppercase; }
+.home-update-card__desc { margin: 0; font-size: 12px; color: #64748b; }
+.home-update-card__progress { height: 4px; background: #1e293b; border-radius: 2px; overflow: hidden; }
+.home-update-card__progress-fill { height: 100%; background: #00b7eb; border-radius: 2px; transition: width 200ms ease; }
+.home-update-card__actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.home-update-card__btn {
+  display: inline-flex; align-items: center; height: 36px; padding: 0 16px;
+  border: none; border-radius: 8px; cursor: pointer;
+  font-family: var(--font-family-base), Inter, sans-serif; font-size: 14px; font-weight: 600;
+}
+.home-update-card__btn--info  { background: #00b7eb; color: #0a1628; }
+.home-update-card__btn--ready { background: #00c853; color: #ffffff; }
+.home-update-card__dismiss { border: none; background: transparent; color: #64748b; cursor: pointer; display: inline-flex; padding: 0; }
+.home-update-card__cancel { border: none; background: transparent; color: #64748b; cursor: pointer; font-size: 12px; font-weight: 600; }
+
+/* ── Reflow tablet (≤1100px de viewport) ───────────────────────────────── */
+@media (max-width: 1100px) {
+  .app-main__inner {
+    padding: calc(var(--layout-content-pad-y-tablet) * 1px) calc(var(--layout-content-pad-x-tablet) * 1px);
+  }
+  .home-dashboard__actions,
+  .home-dashboard__actions--duo { grid-template-columns: 1fr 1fr; }
+  .home-connect-card { grid-column: 1 / -1; min-height: 0; }
+  .home-action-card { min-height: 0; }
+}

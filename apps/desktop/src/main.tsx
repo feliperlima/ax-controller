@@ -2,7 +2,12 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { hydrate as hydrateSecureStore } from "./lib/secureStore";
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/600.css";
+import "@fontsource/inter/700.css";
 import "./design-system/tokens/tokens.css";
+import "./design-system/components/components.css";
 import "./App.css";
 
 function mount() {

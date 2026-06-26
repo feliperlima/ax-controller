@@ -301,6 +301,7 @@
   --spacing-8: 32;
   --spacing-10: 40;
   --spacing-12: 48;
+  --spacing-14: 56;
   --radius-xs: 4;
   --radius-sm: 6;
   --radius-md: 8;
@@ -311,8 +312,14 @@
   --size-header-tablet: 64;
   --size-header-desktop: 72;
   --size-status-bar: 40;
+  --size-status-bar-ipad: 32;
   --size-sidebar-tablet: 148;
-  --size-sidebar-desktop: 200;
+  --size-sidebar-desktop: 256;
+  --layout-content-pad-x-desktop: 56;
+  --layout-content-pad-y-desktop: 48;
+  --layout-content-pad-x-tablet: 40;
+  --layout-content-pad-y-tablet: 40;
+  --layout-content-max-desktop: 1072;
   --size-master-tablet: 148;
   --size-master-desktop: 180;
   --size-touch-min: 44;
@@ -335,6 +342,7 @@
   --opacity-hover: 80;
   --opacity-full: 100;
   /* AX Typography */
+  --font-size-display: 30;
   --font-size-heading-large: 22;
   --font-size-heading-medium: 18;
   --font-size-heading-small: 16;
@@ -347,6 +355,7 @@
   --font-size-value-medium: 14;
   --font-size-value-small: 12;
   --font-size-graph-axis: 12;
+  --line-height-display: 36;
   --line-height-heading-large: 30;
   --line-height-heading-medium: 26;
   --line-height-heading-small: 22;
@@ -364,6 +373,7 @@
   --font-weight-semibold: 600;
   --font-weight-bold: 700;
   --font-weight-extra-bold: 800;
+  --letter-spacing-display: -0.75;
   --letter-spacing-label-large: 8;
   --letter-spacing-label-medium: 10;
   --letter-spacing-label-small: 12;

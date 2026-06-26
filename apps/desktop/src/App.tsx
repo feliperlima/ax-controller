@@ -442,6 +442,17 @@ function resolveMixerChannelCount(mixer?: DiscoveredMixer) {
   return inferred === undefined ? undefined : normalizeSupportedChannelCount(inferred);
 }
 
+/** Modelo AXIOS válido (16|24|32) de uma mesa descoberta, ou null se ainda não for
+ * 100% confiável. Prioriza o identity (model/name); só aceita o channel count cru
+ * quando for EXATAMENTE um modelo válido — evita "AXIOS 34/18/26" transitório. */
+function resolveValidAxiosModel(mixer?: DiscoveredMixer): 16 | 24 | 32 | null {
+  if (!mixer) return null;
+  const fromIdentity = inferChannelCountFromIdentity(`${mixer.model ?? ""} ${mixer.name ?? ""}`);
+  if (fromIdentity === 16 || fromIdentity === 24 || fromIdentity === 32) return fromIdentity;
+  if (mixer.channels === 16 || mixer.channels === 24 || mixer.channels === 32) return mixer.channels;
+  return null;
+}
+
 function resolveConnectionTargetProfile(
   targetIp: string,
   mixers: DiscoveredMixer[],
@@ -2950,6 +2961,42 @@ function App() {
     error: discoveryError,
     refresh: refreshMixerDiscovery,
   } = useMixerDiscovery(true);
+
+  // ── Estado do card principal de mesa (Home), estabilizado p/ não piscar ──────
+  // O status "bruto" da descoberta oscila a cada probe (online→checking→offline,
+  // ~3s) e fica intermitente ao perder rede. Comita o estado com debounce: "found"
+  // aparece rápido (boa notícia); sair de found / trocar entre os demais espera
+  // ~800ms estável → evita flicker entre escaneando/última sessão/encontrada.
+  const rawConnectCard = useMemo<{
+    status: "found" | "scanning" | "not-found" | "last-session";
+    mixer?: DiscoveredMixer;
+    model: 16 | 24 | 32 | null;
+  }>(() => {
+    const online = discoveredMixers.find(
+      (m) => m.status === "online" && resolveValidAxiosModel(m) !== null
+    );
+    if (online) return { status: "found", mixer: online, model: resolveValidAxiosModel(online) };
+    if (isDiscoveringMixers || !mixerDiscoveryHasSearched) return { status: "scanning", model: null };
+    const last = knownDiscoveryMixers.find((m) => resolveValidAxiosModel(m) !== null);
+    if (last) return { status: "last-session", mixer: last, model: resolveValidAxiosModel(last) };
+    return { status: "not-found", model: null };
+  }, [discoveredMixers, knownDiscoveryMixers, isDiscoveringMixers, mixerDiscoveryHasSearched]);
+
+  // Mantém a referência mais recente do estado bruto sem re-disparar o efeito.
+  const rawConnectCardRef = useRef(rawConnectCard);
+  rawConnectCardRef.current = rawConnectCard;
+  const [connectCard, setConnectCard] = useState(rawConnectCard);
+  // Debounce baseado SÓ nos primitivos (status/ip/model) — não na referência do
+  // objeto (que muda a cada probe). Assim o timer não é reiniciado a cada ciclo e
+  // o estado comita de fato. "found" comita rápido; demais esperam ~800ms estável.
+  const rawCardStatus = rawConnectCard.status;
+  const rawCardIp = rawConnectCard.mixer?.ip ?? "";
+  const rawCardModel = rawConnectCard.model ?? 0;
+  useEffect(() => {
+    const delay = rawCardStatus === "found" ? 150 : 800;
+    const timer = window.setTimeout(() => setConnectCard(rawConnectCardRef.current), delay);
+    return () => window.clearTimeout(timer);
+  }, [rawCardStatus, rawCardIp, rawCardModel]);
   const assignableMemberIds = useMemo(
     () => buildAssignableMemberIds(channelCount),
     [channelCount]
@@ -17126,11 +17173,24 @@ function App() {
   }
 
   if (appStage === "home") {
+    // ── Card principal de mesa: usa o estado estabilizado (debounce) ──────────
+    // Conectar só acontece no estado "found"; demais estados re-escaneiam (nunca
+    // tentam conectar numa mesa offline). Modelo já vem validado (16/24/32).
+    const { status: connectStatus, mixer: connectMixer, model: connectModel } = connectCard;
+    const onConnectCardAction: () => void =
+      connectStatus === "found" && connectMixer
+        ? () => handlePreconnectMixerSelection(connectMixer)
+        : () => void refreshMixerDiscovery(true);
     return (
       <FeatureFlagsContext.Provider value={bootstrapFeatureFlags}>
       <>
         <HomeScreen
           version={APP_VERSION}
+          connectStatus={connectStatus}
+          connectMixerName={connectModel ? `AXIOS ${connectModel}` : undefined}
+          connectMixerIp={connectMixer?.ip}
+          connectMixerChannels={connectModel ?? undefined}
+          onConnectCardAction={onConnectCardAction}
           licenseFormalState={licenseFormalState}
           licenseTrialExpiryAt={licenseTrialExpiryAt}
           hasActivatedOnce={hasLicenseActivatedOnce}

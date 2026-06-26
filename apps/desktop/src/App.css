@@ -593,6 +593,17 @@ body {
 .home-screen__license-badge--error { color: var(--semantic-error, #f87171);   border-color: color-mix(in srgb, var(--semantic-error, #f87171)   30%, var(--border-subtle)); }
 .home-screen__license-badge--neutral { color: var(--text-secondary); }
 
+/* ── Titlebar drag region (overlay mode) ────────────────────────────────── */
+.titlebar-drag {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  -webkit-app-region: drag;
+  z-index: 9999;
+}
+
 /* ── Home Screen (sidebar layout) ───────────────────────────────────────── */
 
 .hs-root {
@@ -679,9 +690,10 @@ body {
   height: 100%;
   width: 220px;
   flex-shrink: 0;
-  padding: calc(var(--spacing-5) * 1px) calc(var(--spacing-4) * 1px) calc(var(--spacing-6) * 1px);
+  padding: 40px calc(var(--spacing-4) * 1px) calc(var(--spacing-6) * 1px);
   overflow: hidden;
   background: linear-gradient(164.34deg, var(--surface-panel-raised) 0%, var(--surface-panel) 100.17%);
+  -webkit-app-region: drag;
 }
 
 @media (min-width: 1200px) {
@@ -692,6 +704,12 @@ body {
 
 .hs-sidebar__brand {
   flex-shrink: 0;
+}
+
+.hs-sidebar a,
+.hs-sidebar button,
+.hs-sidebar__brand {
+  -webkit-app-region: no-drag;
 }
 
 .hs-sidebar__logo {
