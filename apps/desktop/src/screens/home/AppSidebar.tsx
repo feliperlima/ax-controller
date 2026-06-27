@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Home, Wifi, Sparkles, Headphones, Shield, Monitor, Settings } from "lucide-react";
 import { NavItem, SectionLabel } from "../../design-system/components";
-import { ProfileCard } from "./ProfileCard";
+import { ProfileCard, type ProfilePlan } from "./ProfileCard";
 import axControlBrand from "../../assets/AX-control-Brand-vert.svg";
 import type { HomeNavView } from "../HomeScreen";
 
@@ -20,8 +20,7 @@ type AppSidebarProps = {
   /** Slot opcional de upsell (cards de trial/licença), renderizado acima do perfil. */
   upsell?: ReactNode;
   userName?: string;
-  userEmail?: string;
-  isFounder?: boolean | null;
+  plan?: ProfilePlan;
   onLogout?: () => void;
 };
 
@@ -38,8 +37,7 @@ export function AppSidebar({
   onIemInterest,
   upsell,
   userName,
-  userEmail,
-  isFounder,
+  plan,
   onLogout,
 }: AppSidebarProps) {
   return (
@@ -71,7 +69,7 @@ export function AppSidebar({
 
       <div className="app-sidebar__footer">
         {upsell}
-        <ProfileCard userName={userName} userEmail={userEmail} isFounder={isFounder} onLogout={onLogout} />
+        <ProfileCard userName={userName} plan={plan} onLogout={onLogout} />
       </div>
     </aside>
   );

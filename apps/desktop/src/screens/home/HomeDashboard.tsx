@@ -1,3 +1,4 @@
+import { Crown } from "lucide-react";
 import type { BootstrapVersionInfo } from "../../services/bootstrapService";
 import { MixerConnectCard, type MixerConnectStatus } from "./cards/MixerConnectCard";
 import { MonitorCard } from "./cards/MonitorCard";
@@ -6,6 +7,7 @@ import { UpdateCard } from "./cards/UpdateCard";
 
 type HomeDashboardProps = {
   firstName?: string;
+  isFounder?: boolean | null;
   showIem?: boolean;
   onDemo?: () => void;
   onIemInterest?: () => void;
@@ -23,6 +25,7 @@ type HomeDashboardProps = {
 /** Conteúdo da Home (header + grid de ações + update). Figma `Content` → `.home-dashboard`. */
 export function HomeDashboard({
   firstName,
+  isFounder,
   showIem,
   onDemo,
   onIemInterest,
@@ -38,9 +41,17 @@ export function HomeDashboard({
     <div className="home-dashboard">
       <header className="home-dashboard__header">
         <div>
-          <h1 className="home-dashboard__title">
-            {firstName ? `Bem-vindo, ${firstName}` : "Bem-vindo"}
-          </h1>
+          <div className="home-dashboard__titlerow">
+            <h1 className="home-dashboard__title">
+              {firstName ? `Bem-vindo, ${firstName}` : "Bem-vindo"}
+            </h1>
+            {isFounder && (
+              <span className="home-dashboard__founder-chip">
+                <Crown size={12} aria-hidden="true" />
+                Membro Fundador
+              </span>
+            )}
+          </div>
           <p className="home-dashboard__subtitle">Sua mesa está pronta para conectar!</p>
         </div>
       </header>

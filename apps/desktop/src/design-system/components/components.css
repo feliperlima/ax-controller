@@ -176,7 +176,7 @@
 }
 .ax-nav-item__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ax-nav-item--active { background: rgba(0, 229, 255, 0.08); color: #ffffff; font-weight: 600; }
-.ax-nav-item--active .ax-nav-item__icon { color: #ffffff; }
+.ax-nav-item--active .ax-nav-item__icon { color: #00E5FF; }
 
 /* ── SectionLabel ──────────────────────────────────────────────────────── */
 .ax-section-label {

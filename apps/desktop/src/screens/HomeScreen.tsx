@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import type { LicenseFormalState } from "../lib/licenseState";
+import type { ProfilePlan } from "./home/ProfileCard";
 import type { BootstrapMessage, BootstrapVersionInfo } from "../services/bootstrapService";
 import { useFeatureFlag } from "../services/featureFlags";
 import { AppSidebar } from "./home/AppSidebar";
@@ -180,12 +181,25 @@ type HomeScreenProps = {
   onRequestInstallUpdate?: () => void;
 };
 
+/** Mapeia o estado formal de licença → plano exibido no ProfileCard. "pro" não é
+ *  derivável hoje (entra na v1.5.0 via entitlement Pro); por ora nunca é retornado. */
+function resolveProfilePlan(state: LicenseFormalState): ProfilePlan {
+  if (state === "TRIAL_ACTIVE") return "trial";
+  if (
+    state === "PURCHASED_ACTIVE" ||
+    state === "PURCHASED_REVALIDATION_DUE" ||
+    state === "PURCHASED_REVALIDATION_EXPIRED"
+  ) {
+    return "plus";
+  }
+  return "free";
+}
+
 export function HomeScreen({
   licenseFormalState,
   licenseTrialExpiryAt,
   isFounder = null,
   userName = "",
-  userEmail = "",
   activeNav = "home",
   mainContent,
   messages = [],
@@ -210,6 +224,7 @@ export function HomeScreen({
 }: HomeScreenProps) {
   const [dismissedBanners, setDismissedBanners] = useState<Set<string>>(new Set());
   const firstName = userName.trim().split(/\s+/)[0] ?? "";
+  const plan = resolveProfilePlan(licenseFormalState);
   const showIem = useFeatureFlag("feature_iem_banner");
   const visibleMessages = messages.filter((m) => !dismissedBanners.has(m.key));
 
@@ -238,8 +253,7 @@ export function HomeScreen({
         onIemInterest={onIemInterest}
         upsell={upsell}
         userName={userName}
-        userEmail={userEmail}
-        isFounder={isFounder}
+        plan={plan}
         onLogout={onLogout}
       />
 
@@ -255,6 +269,7 @@ export function HomeScreen({
           ) : (
             <HomeDashboard
               firstName={firstName}
+              isFounder={isFounder}
               showIem={showIem}
               connectStatus={connectStatus}
               mixerName={connectMixerName}
