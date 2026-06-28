@@ -4132,7 +4132,7 @@ function MediaLibrary({
       <div style={{ flex: 1, overflowY: "auto", padding: 5, minHeight: 0 }}>
         {state.entries.length === 0 ? (
           <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>
-            Pasta vazia
+            {state.scanning ? "Lendo…" : "Pasta vazia"}
           </div>
         ) : (
           state.entries.map((entry, i) => {
@@ -4202,6 +4202,8 @@ function MediaLibrary({
 function MediaNowPlaying({
   state,
   disabled,
+  trackName,
+  durSec,
   onPlay,
   onPause,
   onNext,
@@ -4210,26 +4212,16 @@ function MediaNowPlaying({
 }: {
   state: MediaState;
   disabled: boolean;
+  // Nome e duração da faixa atual — resolvidos pelo MediaPlayer (que persiste o valor mesmo
+  // quando você navega para fora da pasta da faixa). Aqui só exibimos.
+  trackName: string | null;
+  durSec: number;
   onPlay: () => void;
   onPause: () => void;
   onNext: () => void;
   onPrev: () => void;
   onRepeatToggle: () => void;
 }) {
-  // A faixa atual é casada pelo índice (track 1-based) entre os arquivos da lista — o handle
-  // do Type A não corresponde aos offsets do scan. Fallback por handle, depois por nome genérico.
-  const files = state.entries.filter(
-    (e): e is Extract<MediaEntry, { kind: "file" }> => e.kind === "file"
-  );
-  const currentFile =
-    (state.trackIndex > 0 ? files[state.trackIndex - 1] : undefined) ??
-    files.find((e) => e.handle === state.trackHandle);
-  const trackName = currentFile
-    ? currentFile.name.replace(/\.wav$/i, "")
-    : state.trackIndex > 0
-      ? `Faixa ${state.trackIndex}`
-      : null;
-  const durSec = currentFile?.durSec ?? 0;
   const elapsedSec = state.tickElapsed * MEDIA_TICK_SECONDS;
   const playing = state.mode === "playing";
   const hasTrack = trackName !== null;
@@ -4502,33 +4494,40 @@ export function MediaPlayer({
     state.source !== "none" ? state.source : "usb"
   );
   const [libraryOpen, setLibraryOpen] = useState(false);
-  const prevDiskPresent = useRef(state.diskPresent);
 
   useEffect(() => {
-    const wasPresent = prevDiskPresent.current;
-    prevDiskPresent.current = state.diskPresent;
-    // Inserção de disco: força USB tab — ignora o source transitório (BT/none) que a mesa
-    // manda durante a inicialização do pendrive.
-    if (!wasPresent && state.diskPresent) {
-      setSelectedSource("usb");
-      return;
-    }
-    // Com disco presente, a mesa pode continuar reportando BT/none enquanto reconhece o pendrive.
-    // Não seguimos automaticamente — o usuário permanece na aba USB.
-    // Só seguimos se a fonte for USB (ex: mesa confirma USB ativo) ou se não houver disco.
-    if (state.diskPresent && state.source !== "usb") return;
     if (state.source !== "none") setSelectedSource(state.source);
-  }, [state.source, state.diskPresent]);
+  }, [state.source]);
 
   function handleSelectSource(src: MediaSource) {
     setSelectedSource(src);
     if (!disabled) onSourceChange(src);
   }
 
-  // A biblioteca (scan da lista) só aparece quando houver entradas — protocolo de navegação
-  // da árvore ainda não decifrado. Até lá, o USB mostra só o now-playing (Faixa N de M).
+  // A biblioteca (scan da lista) só aparece quando houver entradas.
   const hasLibrary = state.entries.length > 0;
   const showLibraryToggle = selectedSource === "usb" && state.diskPresent && !state.scanning && hasLibrary;
+
+  // Resolve nome + duração da faixa tocando a partir da pasta exibida e PERSISTE (ref keyed por
+  // trackIndex). Assim, a barra de duração e o nome continuam no "tocando" mesmo navegando para
+  // fora da pasta da faixa (a mesa só manda o tempo decorrido; o total vem do scan do arquivo).
+  const playingTrackRef = useRef<{ index: number; name: string; durSec: number }>({ index: -1, name: "", durSec: 0 });
+  const usbFiles = state.entries.filter(
+    (e): e is Extract<MediaEntry, { kind: "file" }> => e.kind === "file"
+  );
+  const resolvedFile =
+    (state.trackIndex > 0 ? usbFiles[state.trackIndex - 1] : undefined) ??
+    usbFiles.find((e) => e.handle === state.trackHandle);
+  if (resolvedFile && state.trackIndex > 0) {
+    playingTrackRef.current = {
+      index: state.trackIndex,
+      name: resolvedFile.name.replace(/\.wav$/i, ""),
+      durSec: resolvedFile.durSec,
+    };
+  }
+  const playingMemo = playingTrackRef.current.index === state.trackIndex ? playingTrackRef.current : null;
+  const nowPlayingName = playingMemo?.name ?? (state.trackIndex > 0 ? `Faixa ${state.trackIndex}` : null);
+  const nowPlayingDurSec = playingMemo?.durSec ?? 0;
 
   function renderBody() {
     switch (selectedSource) {
@@ -4539,24 +4538,32 @@ export function MediaPlayer({
         // Só mostra "Lendo pendrive…" quando não há NADA pra exibir (1ª carga, sem faixa).
         // Se já há uma faixa tocando, mantém o player visível e a lista/duração entram quando
         // o scan termina — sem trocar a tela toda.
+        // Biblioteca aberta: mantém a view da biblioteca mesmo durante um sub-scan (navegar numa
+        // pasta zera entries por um instante). Sem isso a tela "voltava pro tocando" e reabria a
+        // lib. O MediaLibrary mostra o breadcrumb (voltar) + "Lendo…"/"Pasta vazia" enquanto isso.
+        if (libraryOpen) {
+          return (
+            <MediaLibrary
+              state={state}
+              disabled={disabled}
+              onEnterFolder={onEnterFolder}
+              onSelectTrack={(entry) => {
+                onSelectTrack(entry);
+                setLibraryOpen(false);
+              }}
+              onNavigateTo={onNavigateTo}
+            />
+          );
+        }
         if (state.scanning && state.trackIndex === 0) {
           return <MediaEmptyState icon={ListMusic} title="Lendo pendrive…" subtitle="Montando a lista de faixas" />;
         }
-        return libraryOpen && hasLibrary ? (
-          <MediaLibrary
-            state={state}
-            disabled={disabled}
-            onEnterFolder={onEnterFolder}
-            onSelectTrack={(entry) => {
-              onSelectTrack(entry);
-              setLibraryOpen(false);
-            }}
-            onNavigateTo={onNavigateTo}
-          />
-        ) : (
+        return (
           <MediaNowPlaying
             state={state}
             disabled={disabled}
+            trackName={nowPlayingName}
+            durSec={nowPlayingDurSec}
             onPlay={onPlay}
             onPause={onPause}
             onNext={onNext}
