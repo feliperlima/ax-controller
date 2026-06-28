@@ -17,6 +17,7 @@
 
 /* ── Sidebar (256px, #000b1c) ──────────────────────────────────────────── */
 .app-sidebar {
+  position: relative;
   width: calc(var(--size-sidebar-desktop) * 1px);
   flex-shrink: 0;
   display: flex;
@@ -25,6 +26,32 @@
   background: #000b1c;
   border-right: 1px solid #20304b;
 }
+/* Handle de redimensionamento (256 → 320), borda direita. Abaixo da titlebar (40).
+   Área de clique generosa (8px), mas o indicador visível é uma alça pequena e neutra
+   centralizada (estilo Claude) — discreta por padrão, sutilmente mais visível no hover. */
+.app-sidebar__resize {
+  position: absolute;
+  top: 40px;
+  right: -4px;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 30;
+}
+.app-sidebar__resize::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 44px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.42);
+  opacity: 0; /* só aparece ao pairar o mouse na borda */
+  transition: opacity 220ms ease;
+}
+.app-sidebar__resize:hover::after { opacity: 1; }
 
 .app-sidebar__header {
   display: flex;

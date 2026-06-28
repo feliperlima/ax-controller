@@ -59,10 +59,9 @@ import { FxPresetGrid, FxPresetControlPanel } from "./components/FxPresetPanel";
 import { SplashScreen } from "./components/SplashScreen";
 import { DeviceSelectionPanel } from "./components/DeviceSelectionScreen";
 import { HomeScreen, type HomeNavView } from "./screens/HomeScreen";
-import { LicensePanel } from "./screens/LicensePanel";
-import { DevicesPanel } from "./screens/DevicesPanel";
 import { DeviceGateModal } from "./screens/DeviceGateModal";
-import { SettingsPanel } from "./screens/SettingsPanel";
+import { SettingsScreen, type SettingsDevice } from "./screens/settings/SettingsScreen";
+import type { PlanCardState } from "./screens/settings/PlanCard";
 import { UpgradeModal } from "./screens/UpgradeModal";
 import { TrialActivatedModal } from "./screens/TrialActivatedModal";
 import { MixerTabs, type MixerTabDefinition } from "./components/MixerTabs";
@@ -2593,7 +2592,6 @@ function App() {
   >({ stage: "idle" });
   const [installationId, setInstallationId] = useState("");
   const [licenseKeyInput, setLicenseKeyInput] = useState("");
-  const [licenseValidationBusy] = useState(false);
   const [licenseValidationMessage, setLicenseValidationMessage] = useState<{ kind: "idle" | "success" | "error"; text: string }>({
     kind: "idle",
     text: "",
@@ -16804,8 +16802,6 @@ function App() {
       ? licenseActiveDevicesCount + licenseRemainingActivations
       : null;
   const associatedDeviceLimit = hasUnlimitedActivations ? null : (apiDeviceLimit ?? defaultDeviceLimit);
-  const activeDeviceCount = visibleAssociatedDevices.filter((d) => d.active).length;
-  const canReactivate = hasUnlimitedActivations || associatedDeviceLimit === null || activeDeviceCount < associatedDeviceLimit;
   const upgradeBadgeLabel = trialIsActive
     ? trialDaysRemaining !== null && trialDaysRemaining >= 0
       ? `Teste ativo · ${trialDaysRemaining} dias`
@@ -17415,49 +17411,57 @@ function App() {
                 />
               );
             }
-            if (homeSubView === "license") {
+            if (homeSubView === "license" || homeSubView === "devices" || homeSubView === "settings") {
+              const settingsPlanState: PlanCardState =
+                licenseFormalState === "TRIAL_ACTIVE"
+                  ? "trial"
+                  : (licenseFormalState === "PURCHASED_ACTIVE" ||
+                     licenseFormalState === "PURCHASED_REVALIDATION_DUE" ||
+                     licenseFormalState === "PURCHASED_REVALIDATION_EXPIRED")
+                    ? "plus"
+                    : "free";
+              const settingsTrialDaysLeft = licenseTrialExpiryAt
+                ? Math.max(0, Math.ceil((Date.parse(licenseTrialExpiryAt) - Date.now()) / 86_400_000))
+                : 0;
+              const settingsDevices: SettingsDevice[] = visibleAssociatedDevices.map((d) => ({
+                deviceId: d.deviceId,
+                deviceName: d.deviceName,
+                devicePlatform: d.devicePlatform,
+                active: d.active,
+                isCurrent: d.deviceId === normalizedInstallationId,
+              }));
+              const supportDigits = SUPPORT_WHATSAPP.replace(/\D/g, "");
+              const settingsUserName = licenseUserName || (secureStore.get(USER_NAME_STORAGE_KEY) ?? "");
+              const settingsUserEmail = licenseUserEmail || (secureStore.get(USER_EMAIL_STORAGE_KEY) ?? "");
               return (
-                <LicensePanel
-                  licenseFormalState={licenseFormalState}
-                  licenseTrialExpiryAt={licenseTrialExpiryAt}
-                  licenseNextRevalidationAt={licenseNextRevalidationAt}
-                  licenseRevalidationHint={licenseRevalidationHint}
-                  licenseValidationBusy={licenseValidationBusy}
-                  upgradePriceLabel={UPGRADE_PRICE_LABEL}
+                <SettingsScreen
+                  userName={settingsUserName}
+                  userEmail={settingsUserEmail}
+                  planState={settingsPlanState}
+                  trialUsed={deviceTrialUsed}
+                  trialDaysLeft={settingsTrialDaysLeft}
+                  priceLabel={UPGRADE_PRICE_LABEL}
                   isOnline={isOnline}
-                  onStartPixPayment={() => {
+                  onUpgrade={() => {
                     setLicenseModalMode("upgrade");
                     setLicenseModalMandatory(false);
                     setLicenseModalOpen(true);
                     void startPixPayment();
                   }}
-                  onContactForUpgrade={() => void handleContactForUpgrade()}
                   onStartTrial={() => void startTrialNow()}
-                  deviceTrialUsed={deviceTrialUsed}
-                />
-              );
-            }
-            if (homeSubView === "devices") {
-              return (
-                <DevicesPanel
-                  devices={visibleAssociatedDevices}
-                  loading={licenseDevicesLoading}
-                  actionBusy={licenseDeviceActionBusy}
-                  installationId={normalizedInstallationId}
-                  deviceLimit={associatedDeviceLimit}
-                  isUnlimited={hasUnlimitedActivations}
-                  isTrial={isTrialLicense}
-                  canReactivate={canReactivate}
-                  onRefresh={() => void handleRefreshLicenseStatus()}
-                  onRevoke={handleRevokeLicenseDevice}
-                  onReactivate={handleReactivateLicenseDevice}
-                />
-              );
-            }
-            if (homeSubView === "settings") {
-              return (
-                <SettingsPanel
+                  onSubscribePro={() => void handleContactForUpgrade()}
+                  onManageSubscription={() => void handleContactForUpgrade()}
+                  devices={settingsDevices}
+                  deviceLimit={associatedDeviceLimit ?? 3}
+                  deviceActionBusy={licenseDeviceActionBusy != null}
+                  onRemoveDevice={handleRevokeLicenseDevice}
+                  onReactivateDevice={handleReactivateLicenseDevice}
+                  onContactSupport={() => void handleContactForUpgrade()}
+                  onOpenCommunity={() => { if (supportDigits) void openUrl(`https://wa.me/${supportDigits}`); }}
                   version={APP_VERSION}
+                  platformLabel={getPlatformLabel()}
+                  onOpenTerms={() => void openUrl("https://www.axcontrol.com.br/termos")}
+                  onOpenPrivacy={() => void openUrl("https://www.axcontrol.com.br/privacidade")}
                 />
               );
             }

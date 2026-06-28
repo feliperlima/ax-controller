@@ -212,7 +212,6 @@ export function HomeScreen({
   onConnectCardAction,
   onNavHome,
   onNavLicense,
-  onNavDevices,
   onNavSettings,
   onDemo,
   onLogout,
@@ -239,15 +238,12 @@ export function HomeScreen({
 
   return (
     <div className="home-shell">
-      <div className="titlebar-drag" />
 
       <AppSidebar
         activeNav={activeNav}
         onNavHome={onNavHome}
         onConnectMixer={onConnectMixer}
         onDemo={onDemo}
-        onNavLicense={onNavLicense}
-        onNavDevices={onNavDevices}
         onNavSettings={onNavSettings}
         showIem={showIem}
         onIemInterest={onIemInterest}

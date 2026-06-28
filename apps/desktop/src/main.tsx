@@ -11,9 +11,25 @@ import "./design-system/components/components.css";
 import "./App.css";
 
 function mount() {
-  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+  const rootEl = document.getElementById("root") as HTMLElement;
+  // DEV-only: galeria de variants do PlanCard via #gallery (não vai pra produção).
+  if (import.meta.env.DEV && window.location.hash === "#gallery") {
+    void import("./screens/settings/__PlanCardGallery").then(({ PlanCardGallery }) => {
+      ReactDOM.createRoot(rootEl).render(<PlanCardGallery />);
+    });
+    return;
+  }
+  if (import.meta.env.DEV && window.location.hash === "#modals") {
+    void import("./screens/__ModalsGallery").then(({ ModalsGallery }) => {
+      ReactDOM.createRoot(rootEl).render(<ModalsGallery />);
+    });
+    return;
+  }
+  ReactDOM.createRoot(rootEl).render(
     <React.StrictMode>
       <App />
+      {/* Região de arraste da janela (titlebar overlay) — global, em qualquer tela. */}
+      <div className="titlebar-drag" data-tauri-drag-region />
     </React.StrictMode>,
   );
 }
