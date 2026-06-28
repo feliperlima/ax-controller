@@ -3,6 +3,22 @@
 Mudanças notáveis do AX Control. Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/);
 versionamento [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.3.3] - 2026-06-28
+
+### Adicionado
+- **MEDIA: lista de pastas do pendrive (AX32)**: o player USB agora lê a raiz do pendrive e mostra as
+  pastas que existirem (RECORD e outras), com navegação (entrar/voltar), rolagem e duração das faixas.
+- **MEDIA no AX16/24**: o media player (USB/Recorder/Bluetooth/Coax) passa a funcionar também nas mesas
+  AX16 e AX24 (Beta), além da AX32.
+
+### Corrigido
+- **Mute Groups**: ao abrir o app com um grupo de mute ativo, os canais não são mais desmutados sozinhos.
+  Ligar/desligar um grupo é uma ação pontual e respeita quem você desmutou na mão (sem "vazar" entre grupos).
+- **EQ / HPF / LPF "desligar de verdade"**: desligar o filtro de graves (HPF) ou agudos (LPF) — pelo botão
+  ou arrastando para fora da borda — agora realmente desliga na mesa, em canal, auxiliar e master.
+- **Compressor — taxa (ratio) no AX16/24**: leitura e escrita da taxa do compressor corrigidas para a
+  escala do AX16/24 (canal, auxiliar e master).
+
 ## [1.3.2] - 2026-06-26
 
 ### Corrigido
