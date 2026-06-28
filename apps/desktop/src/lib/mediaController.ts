@@ -19,7 +19,9 @@ import {
   MEDIA_CMD,
   MEDIA_DEVICE,
   MEDIA_KEEPALIVE_PARAM,
+  MEDIA_KEEPALIVE_PARAM_AX16,
   MEDIA_SUBSCRIBE_PARAMS,
+  MEDIA_SUBSCRIBE_PARAMS_AX16,
 } from "../protocol/duonn/protocolAddressing";
 
 // ─── Tipos ───────────────────────────────────────────────────────────────────────
@@ -103,9 +105,6 @@ const DISK_INSERT_GUARD_MS = 15000; // janela do auto-play intercept após inser
 const SELECT_PLAY_GUARD_MS = 4000; // janela p/ pausar o auto-retomar ao selecionar USB
 const SCAN_IDLE_MS = 1500; // sem frame novo por esse tempo → considera o scan terminado
 const NAME_DEBOUNCE_MS = 40; // espera os frames de nome pararem antes de pedir a próxima entrada
-// Offset da pasta RECORD (gravações) na raiz do pendrive — confirmado neste pendrive de teste.
-// TODO fase 2: descobrir dinamicamente via scan da raiz (navegação por handle).
-const RECORD_DIR_HANDLE = 0x0006;
 
 // Debug: ative no console com `localStorage.ax_media_debug = "1"` (e recarregue ou reabra a aba).
 // Loga cada frame op0x71 RX e cada TX do media player — usado para validar scan/comandos na mesa.
@@ -125,7 +124,7 @@ function dlog(...args: unknown[]) {
 
 // Cache da lista do USB em localStorage — evita re-escanear ao reabrir o app. Invalidado
 // quando o nº de faixas (b[8]) não bate com o cache (pendrive trocado).
-const USB_CACHE_KEY = "ax_media_usb_record_cache";
+const USB_CACHE_KEY = "ax_media_usb_root_cache";
 function loadUsbCache(): { count: number; entries: MediaEntry[] } | null {
   try {
     const raw = localStorage.getItem(USB_CACHE_KEY);
@@ -182,18 +181,25 @@ function deriveMode(source: MediaSource, mode: number): MediaMode {
 // TYPE byte do scan (sub-frame header b[11]).
 // TYPE byte (sub-frame header b[11]), confirmado no log da UI oficial:
 //   bit 0 (0x01) = arquivo (vs diretório)
-//   0x41 = último arquivo do dir · 0xc0 = último diretório do nível
+//   bit 6 (0x40) = entrada VISÍVEL/válida (dir regular = 0x40, arquivo = 0x41)
+//   bit 7 (0x80) = marcador de ÚLTIMA entrada do nível quando combinado com 0x40
+//                  (0xc0 = último dir, 0x41 = último arquivo); 0x80 SOZINHO = oculto/sistema
+//   0x40 = diretório regular visível (ex.: RECORD) · 0xc0 = último diretório do nível
 //   0x80 = diretório de sistema/macOS (nome UTF-16, começa com ".") → ocultar
-//   0x40 = diretório regular visível (ex.: RECORD)
 function isFileType(type: number): boolean {
   return (type & 0x01) !== 0;
 }
+// Última entrada do nível = bit 0x40 (0x40 dir, 0x41 arquivo, 0xc0 dir oculto-borda, 0xc1 arquivo).
+// Confirmado na captura: não-últimas são 0x00/0x01/0x80/0x81 (sem 0x40); últimas têm 0x40.
 function isLastType(type: number): boolean {
-  return type === 0x41 || type === 0xc0;
+  return (type & 0x40) !== 0;
 }
 // Entradas de sistema/macOS a ocultar (nome UTF-16, dirs ".xxx" / arquivos "._xxx").
+// CUIDADO: 0xc0 (último diretório) também tem o bit 0x80 — NÃO é oculto. Oculto real é o
+// 0x80 SEM o bit 0x40 (visível). Sem essa distinção, a última pasta do nível (ex.: RECORD 0)
+// era descartada como se fosse pasta de sistema → raiz vinha vazia/incompleta.
 function isHiddenType(type: number): boolean {
-  return (type & 0x80) !== 0;
+  return (type & 0x80) !== 0 && (type & 0x40) === 0;
 }
 
 function asciiName(bytes: Uint8Array, start: number, endExclusive: number): string {
@@ -225,6 +231,8 @@ type ScanState = {
 type MediaControllerDeps = {
   client: Axios16Client;
   onStateChange: (state: MediaState) => void;
+  // Perfil da mesa: AX32 usa params de keepalive/subscribe distintos do AX16/24.
+  isAx32: boolean;
   // Estado preservado da sessão anterior (ao reabrir a aba MEDIA) — evita re-escanear e
   // perder a lista só porque o controller foi recriado.
   initialState?: MediaState;
@@ -233,6 +241,7 @@ type MediaControllerDeps = {
 export class MediaController {
   private readonly client: Axios16Client;
   private readonly onStateChange: (state: MediaState) => void;
+  private readonly isAx32: boolean;
 
   private state: MediaState = createDefaultMediaState();
   private stopped = false;
@@ -240,6 +249,7 @@ export class MediaController {
   private keepaliveTimer: number | null = null;
   private scanTimer: number | null = null;
   private diskGuardUntil = 0;
+  private scanRetryAt = 0; // cooldown do scan da raiz quando volta vazio (evita loop "lendo pendrive")
   private unsubscribeRaw: (() => void) | null = null;
 
   private scan: ScanState = { active: false, entries: [], pending: null };
@@ -249,12 +259,15 @@ export class MediaController {
   constructor(deps: MediaControllerDeps) {
     this.client = deps.client;
     this.onStateChange = deps.onStateChange;
+    this.isAx32 = deps.isAx32;
     if (deps.initialState) {
       // Herda a lista/estado já conhecidos; scanning sempre false (sem scan em andamento).
       this.state = { ...deps.initialState, scanning: false };
     }
     // Sem lista em memória (app recém-aberto)? Tenta o cache em disco — evita re-escanear.
-    if (this.state.entries.length === 0) {
+    // Em modo debug, IGNORAMOS o cache: todo teste com ax_media_debug=1 força um scan real
+    // (senão um cache antigo/quebrado mascara o resultado e nunca vemos scanFolder/scan done).
+    if (this.state.entries.length === 0 && !mediaDebugOn()) {
       const cache = loadUsbCache();
       if (cache && cache.entries.length > 0) {
         this.state.entries = cache.entries;
@@ -263,12 +276,18 @@ export class MediaController {
   }
 
   start() {
+    // AX32 e AX16/24 têm params de subscribe/keepalive distintos (perfis diferentes).
+    const keepaliveParam = this.isAx32 ? MEDIA_KEEPALIVE_PARAM : MEDIA_KEEPALIVE_PARAM_AX16;
     this.safeSend(() => {
-      this.client.sendParam(MEDIA_SUBSCRIBE_PARAMS[0], MEDIA_SUBSCRIBE_PARAMS[1]);
-      this.client.sendParam(MEDIA_KEEPALIVE_PARAM, 1);
+      if (this.isAx32) {
+        this.client.sendParam(MEDIA_SUBSCRIBE_PARAMS[0], MEDIA_SUBSCRIBE_PARAMS[1]);
+      } else {
+        this.client.readParams([...MEDIA_SUBSCRIBE_PARAMS_AX16]);
+      }
+      this.client.sendParam(keepaliveParam, 1);
     });
     this.keepaliveTimer = window.setInterval(() => {
-      this.safeSend(() => this.client.sendParam(MEDIA_KEEPALIVE_PARAM, 1));
+      this.safeSend(() => this.client.sendParam(keepaliveParam, 1));
     }, KEEPALIVE_INTERVAL_MS);
     this.unsubscribeRaw = this.client.onRawMessage((buf) => this.handleFrame(buf));
   }
@@ -429,21 +448,28 @@ export class MediaController {
       // Inserção REAL (depois do boot): arma o auto-play intercept e invalida a lista.
       this.diskGuardUntil = Date.now() + DISK_INSERT_GUARD_MS;
       this.state.entries = [];
+      this.scanRetryAt = 0;
     } else if (wasDiskPresent && !diskPresent) {
       this.state.entries = [];
+      this.scanRetryAt = 0;
     }
 
-    // Escaneia a lista do USB UMA vez — só quando entra em USB com disco e ainda NÃO temos a
-    // lista. Re-escanear à toa (ao voltar pra aba/re-selecionar) interrompe a reprodução e
-    // zera a lista, então não fazemos. As faixas = WAVs da pasta RECORD (offset 0x0006 neste
-    // pendrive; fase 2: descobrir dinâmico via árvore).
+    // Escaneia a RAIZ uma vez quando a mesa está em USB com disco e sem lista. NÃO forçamos a
+    // troca de fonte: a captura mostrou que mandar SELECT_USB com a mesa em Bluetooth a deixa em
+    // loop de "seeking" e ela reverte pra BT (a mesa não troca de fonte por comando enquanto o
+    // BT a segura). O scan do filesystem só responde com device=USB (a UI oficial escaneia com o
+    // usuário já em USB). Então: o usuário coloca a mesa em USB → o app lista sozinho.
+    // Handle 0x0000 = raiz; lista as pastas que existirem (RECORD, RECORD 0, etc.) + arquivos
+    // soltos. O usuário entra nas pastas (onEnterFolder → scanFolder do handle). O cooldown
+    // (scanRetryAt) evita o loop de "lendo pendrive" se o scan voltar vazio.
     if (
       source === "usb" &&
       diskPresent &&
       this.state.entries.length === 0 &&
-      !this.scan.active
+      !this.scan.active &&
+      Date.now() > this.scanRetryAt
     ) {
-      this.scanFolder(RECORD_DIR_HANDLE, []);
+      this.scanFolder(0, []);
     }
 
     // Auto-play intercept: a mesa começa a tocar sozinha após inserir o pendrive.
@@ -463,11 +489,15 @@ export class MediaController {
     this.emit();
   }
 
-  // Scan: sub-frames op0x71 type 0x82 (confirmado no log da UI oficial). Sequência por entrada:
-  //   RX header(0xaa): IDX=b[10], TYPE=b[11]
-  //   RX nome: handle BE=b[5..6], nome ASCII em b[7..]  → TX readEntry(IDX)
-  //   RX ext(0x06): ".WAV" + dur=b[10] (arquivo)  |  RX 0x05: metadados (pasta)
-  // O readEntry(IDX) é enviado DEPOIS do nome e provoca o ext/metadados + a próxima entrada.
+  // Scan (sub-frames op0x71 type 0x82). Modelo CONFIRMADO na captura da UI oficial (atualizar):
+  //   header(0xaa): IDX=b[10], TYPE=b[11]  → FECHA a entrada anterior e abre uma nova
+  //   nome: handle BE=b[5..6] + texto em b[7..] (1º frame) / b[5..] (continuação UTF-16)
+  //   0x06: ".WAV" + dur=b[10] (arquivo) · 0x05: metadados (pasta) → só ENRIQUECEM (duração)
+  // A entrada é finalizada quando chega o PRÓXIMO header (ou no fim do scan), NÃO no 0x05/0x06:
+  // o RECORD não manda 0x05 antes do próximo header. O readEntry(IDX) é enviado após o header
+  // (e/ou após o nome) — pastas como RECORD mandam o nome só DEPOIS do readEntry, então mandar
+  // só ao receber o nome travava (deadlock). A última entrada (isLast) já traz o nome com o
+  // header e não precisa de readEntry.
   private parseScan(b: Uint8Array) {
     if (!this.scan.active) return;
     this.armScanWatchdog(); // chegou frame de scan → reinicia o watchdog (scan ainda vivo)
@@ -475,7 +505,8 @@ export class MediaController {
     const b5 = b[5];
 
     if (b4 === 0x0a && b5 === 0xaa) {
-      // Header de uma nova entrada.
+      // Novo header: finaliza (empurra) a entrada anterior e abre a nova.
+      this.commitPending();
       const idx = b[10] ?? 0;
       const type = b[11] ?? 0;
       this.scan.pending = {
@@ -487,6 +518,9 @@ export class MediaController {
         durSec: 0,
         readSent: false,
       };
+      // Agenda o avanço: pastas mandam o nome só após o readEntry (avança mesmo sem nome); a
+      // última entrada é finalizada quando os frames de nome dela param (ver scheduleAdvance).
+      this.scheduleAdvance();
       return;
     }
 
@@ -501,30 +535,39 @@ export class MediaController {
       } else {
         p.name += asciiName(b, 5, Math.max(5, b.length - 2));
       }
-      // ARQUIVO: pedir a entrada (readEntry) após o nome provoca o ext 0x06 (com a duração).
-      // PASTA: o metadado 0x05 chega automático após o nav; o readEntry vai no finalize.
-      // O debounce evita enviar no meio de um nome multi-frame (dessincronizaria o scan).
-      if (isFileType(p.type)) this.scheduleReadEntry();
+      // Re-agenda enquanto chegam frames de nome (debounce). Para não-últimas já com readEntry
+      // enviado, não re-agenda (evita reenviar). Últimas sempre re-agendam até o nome parar.
+      if (p.isLast || !p.readSent) this.scheduleAdvance();
       return;
     }
 
     if (b4 === 0x06) {
-      // Extensão de arquivo: ".WAV\0" + duração (segundos) em b[10]. Fecha um arquivo.
+      // Extensão de arquivo: ".WAV\0" + duração (segundos) em b[10]. Só enriquece (duração);
+      // a entrada fecha no próximo header. Se for a última, finaliza agora.
       const p = this.scan.pending;
       if (!p) return;
       p.durSec = b[10] ?? 0;
-      this.finalizeScanEntry();
+      if (p.isLast) {
+        this.commitPending();
+        this.completeScan();
+      }
       return;
     }
 
     if (b4 === 0x05) {
-      // Metadados de diretório (sem duração). Fecha uma pasta.
-      if (!this.scan.pending) return;
-      this.finalizeScanEntry();
+      // Metadados de diretório (sem duração). Não finaliza — fecha no próximo header.
+      const p = this.scan.pending;
+      if (!p) return;
+      if (p.isLast) {
+        this.commitPending();
+        this.completeScan();
+      }
     }
   }
 
-  private finalizeScanEntry() {
+  // Empurra a entrada pendente para a lista (se válida) e limpa o pending. Chamado ao receber
+  // o próximo header e no fim do scan (completeScan).
+  private commitPending() {
     if (this.nameTimer !== null) {
       window.clearTimeout(this.nameTimer);
       this.nameTimer = null;
@@ -532,35 +575,28 @@ export class MediaController {
     const p = this.scan.pending;
     this.scan.pending = null;
     if (!p) return;
-
-    if (!isHiddenType(p.type) && p.name.length > 0) {
+    if (!isHiddenType(p.type) && p.name.length > 0 && !p.name.startsWith(".")) {
       if (isFileType(p.type)) {
         this.scan.entries.push({ kind: "file", handle: p.handle, name: p.name, durSec: p.durSec });
       } else {
         this.scan.entries.push({ kind: "folder", handle: p.handle, name: p.name });
       }
     }
-
-    if (p.isLast) {
-      this.completeScan();
-      return;
-    }
-    // Avança para a próxima entrada. Para PASTAS o readEntry ainda não foi enviado (o 0x05
-    // veio sozinho), então pedimos aqui. Para ARQUIVOS já foi enviado após o nome (readSent).
-    if (!p.readSent) {
-      p.readSent = true;
-      this.sendRaw(buildMediaReadEntry(p.idx));
-    }
   }
 
-  // Debounce: só pede a próxima entrada (readEntry SEQ=IDX) quando os frames de nome param
-  // de chegar. Enviar no meio de um nome multi-frame dessincroniza o scan.
-  private scheduleReadEntry() {
+  // Debounce: age quando os frames de nome param de chegar (não no meio de um nome multi-frame).
+  // Última entrada → finaliza o scan (ela não fecha num header seguinte nem sempre traz 0x06).
+  // Demais → pede a próxima entrada (readEntry SEQ=IDX).
+  private scheduleAdvance() {
     if (this.nameTimer !== null) window.clearTimeout(this.nameTimer);
     this.nameTimer = window.setTimeout(() => {
       this.nameTimer = null;
       const p = this.scan.pending;
-      if (p && !p.readSent) {
+      if (!p) return;
+      if (p.isLast) {
+        this.commitPending();
+        this.completeScan();
+      } else if (!p.readSent) {
         p.readSent = true;
         this.sendRaw(buildMediaReadEntry(p.idx));
       }
@@ -602,6 +638,7 @@ export class MediaController {
     }
     if (!this.scan.active) return;
     this.scan.active = false;
+    this.commitPending(); // finaliza a ÚLTIMA entrada (que fecha no fim do scan, não num header)
     this.state.entries = this.scan.entries;
     const fileCount = this.scan.entries.filter((e) => e.kind === "file").length;
     // NÃO sobrescreve trackCount com fileCount: o total "Faixa N / M" vem do b[8] (status),
@@ -610,6 +647,9 @@ export class MediaController {
     // Persiste a lista em disco p/ não re-escanear no próximo boot.
     if (this.scan.entries.length > 0) {
       saveUsbCache(fileCount, this.scan.entries);
+    } else {
+      // Scan voltou vazio: aplica cooldown p/ não re-escanear a cada status (loop "lendo pendrive").
+      this.scanRetryAt = Date.now() + 3000;
     }
     dlog("scan done", { count: this.scan.entries.length, entries: this.scan.entries });
     this.emit();

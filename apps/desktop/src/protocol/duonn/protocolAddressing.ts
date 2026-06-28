@@ -524,10 +524,15 @@ export function getAuxStereoSourceIds(auxNumber: number): [number, number] {
 // enquanto a aba MEDIA está aberta. Comandos de transporte/fonte vão por op0x72 (frame raw),
 // e o status chega por op0x71 (RX raw, lido via Axios16Client.onRawMessage).
 
-/** Subscribe da página MEDIA: [param, value] enviado ao abrir a aba. */
+/** Subscribe da página MEDIA (AX32): [param, value] enviado ao abrir a aba. */
 export const MEDIA_SUBSCRIBE_PARAMS = [75, 917] as const;
-/** Keepalive/heartbeat de "página MEDIA ativa" — enviar 1 a cada ~1s enquanto aberta. */
+/** Keepalive/heartbeat de "página MEDIA ativa" (AX32) — enviar 1 a cada ~1s enquanto aberta. */
 export const MEDIA_KEEPALIVE_PARAM = 5212;
+
+/** Keepalive MEDIA para AX16/24 (capturado: param 0xC0C = 3084). */
+export const MEDIA_KEEPALIVE_PARAM_AX16 = 3084;
+/** Subscribe MEDIA para AX16/24: bloco de leitura enviado ao abrir a aba (op6 reads). */
+export const MEDIA_SUBSCRIBE_PARAMS_AX16 = [3085, 1, 3075, 3076, 3077, 3078, 3079, 3080, 3081, 3082, 3083, 3086] as const;
 
 /** Comandos op0x72 (byte CMD). Frame: 80 06 72 00 00 [CMD] crc crc. */
 export const MEDIA_CMD = {
