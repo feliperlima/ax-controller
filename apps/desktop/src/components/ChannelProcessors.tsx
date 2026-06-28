@@ -2540,7 +2540,9 @@ function EqGraph({
     pendingBandIndex: number | null;
     pendingFilter: "hpf" | "lpf" | null;
     rafId: number | null;
-  }>({ svgRect: null, pendingX: 0, pendingY: 0, pendingBandIndex: null, pendingFilter: null, rafId: null });
+    dwellTimerId: ReturnType<typeof setTimeout> | null;
+    dwellFilter: "hpf" | "lpf" | null;
+  }>({ svgRect: null, pendingX: 0, pendingY: 0, pendingBandIndex: null, pendingFilter: null, rafId: null, dwellTimerId: null, dwellFilter: null });
 
   useEffect(() => {
     const node = graphFrameRef.current;
@@ -2663,12 +2665,51 @@ function EqGraph({
     });
   }
 
+  function clearFilterDwell() {
+    const ref = eqDragRef.current;
+    if (ref.dwellTimerId !== null) {
+      clearTimeout(ref.dwellTimerId);
+      ref.dwellTimerId = null;
+      ref.dwellFilter = null;
+    }
+  }
+
   function updateFilterFromRect(filter: "hpf" | "lpf", clientX: number, _clientY: number) {
     const rect = eqDragRef.current.svgRect;
     if (!rect) return;
     const scaleX = width / rect.width;
     const x = clamp((clientX - rect.left) * scaleX - graphX, 0, graphWidth);
     const freq = xToActiveFreq(x, graphWidth);
+    const rawFreq = Math.pow(10, (x / graphWidth) * (Math.log10(EQ_ACTIVE_MAX_FREQ) - Math.log10(EQ_ACTIVE_MIN_FREQ)) + Math.log10(EQ_ACTIVE_MIN_FREQ));
+    const ref = eqDragRef.current;
+
+    const beyondEdge =
+      (filter === "hpf" && rawFreq < EQ_ACTIVE_MIN_FREQ) ||
+      (filter === "lpf" && rawFreq > EQ_ACTIVE_MAX_FREQ);
+
+    if (beyondEdge) {
+      // Clamp visual position at the boundary — don't move the handle
+      if (ref.dwellFilter !== filter) {
+        ref.dwellFilter = filter;
+        ref.dwellTimerId = setTimeout(() => {
+          ref.dwellTimerId = null;
+          ref.dwellFilter = null;
+          if (filter === "hpf") onEqChange({ hpfEnabled: false });
+          else onEqChange({ lpfEnabled: false });
+        }, 500);
+      }
+      // Keep handle clamped at boundary during dwell
+      if (filter === "hpf") {
+        onEqChange({ hpfEnabled: true, hpfFreq: EQ_ACTIVE_MIN_FREQ });
+      } else {
+        onEqChange({ lpfEnabled: true, lpfFreq: EQ_ACTIVE_MAX_FREQ });
+      }
+      return;
+    }
+
+    // Moved back inside range — cancel dwell
+    clearFilterDwell();
+
     if (filter === "hpf") {
       onEqChange({ hpfEnabled: true, hpfFreq: clamp(Math.min(freq, eq.lpfFreq - 10), EQ_ACTIVE_MIN_FREQ, EQ_ACTIVE_MAX_FREQ) });
     } else {
@@ -2866,10 +2907,12 @@ function EqGraph({
               event.stopPropagation();
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
               eqDragRef.current.svgRect = null;
+              clearFilterDwell();
             }}
             onPointerCancel={(event) => {
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
               eqDragRef.current.svgRect = null;
+              clearFilterDwell();
             }}
             style={{ cursor: disabled ? "not-allowed" : "ew-resize" }}
           >
@@ -2927,10 +2970,12 @@ function EqGraph({
               event.stopPropagation();
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
               eqDragRef.current.svgRect = null;
+              clearFilterDwell();
             }}
             onPointerCancel={(event) => {
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
               eqDragRef.current.svgRect = null;
+              clearFilterDwell();
             }}
             style={{ cursor: disabled ? "not-allowed" : "grab" }}
           >
@@ -4087,7 +4132,7 @@ function MediaLibrary({
       <div style={{ flex: 1, overflowY: "auto", padding: 5, minHeight: 0 }}>
         {state.entries.length === 0 ? (
           <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>
-            Pasta vazia
+            {state.scanning ? "Lendo…" : "Pasta vazia"}
           </div>
         ) : (
           state.entries.map((entry, i) => {
@@ -4157,6 +4202,8 @@ function MediaLibrary({
 function MediaNowPlaying({
   state,
   disabled,
+  trackName,
+  durSec,
   onPlay,
   onPause,
   onNext,
@@ -4165,26 +4212,16 @@ function MediaNowPlaying({
 }: {
   state: MediaState;
   disabled: boolean;
+  // Nome e duração da faixa atual — resolvidos pelo MediaPlayer (que persiste o valor mesmo
+  // quando você navega para fora da pasta da faixa). Aqui só exibimos.
+  trackName: string | null;
+  durSec: number;
   onPlay: () => void;
   onPause: () => void;
   onNext: () => void;
   onPrev: () => void;
   onRepeatToggle: () => void;
 }) {
-  // A faixa atual é casada pelo índice (track 1-based) entre os arquivos da lista — o handle
-  // do Type A não corresponde aos offsets do scan. Fallback por handle, depois por nome genérico.
-  const files = state.entries.filter(
-    (e): e is Extract<MediaEntry, { kind: "file" }> => e.kind === "file"
-  );
-  const currentFile =
-    (state.trackIndex > 0 ? files[state.trackIndex - 1] : undefined) ??
-    files.find((e) => e.handle === state.trackHandle);
-  const trackName = currentFile
-    ? currentFile.name.replace(/\.wav$/i, "")
-    : state.trackIndex > 0
-      ? `Faixa ${state.trackIndex}`
-      : null;
-  const durSec = currentFile?.durSec ?? 0;
   const elapsedSec = state.tickElapsed * MEDIA_TICK_SECONDS;
   const playing = state.mode === "playing";
   const hasTrack = trackName !== null;
@@ -4467,10 +4504,30 @@ export function MediaPlayer({
     if (!disabled) onSourceChange(src);
   }
 
-  // A biblioteca (scan da lista) só aparece quando houver entradas — protocolo de navegação
-  // da árvore ainda não decifrado. Até lá, o USB mostra só o now-playing (Faixa N de M).
+  // A biblioteca (scan da lista) só aparece quando houver entradas.
   const hasLibrary = state.entries.length > 0;
   const showLibraryToggle = selectedSource === "usb" && state.diskPresent && !state.scanning && hasLibrary;
+
+  // Resolve nome + duração da faixa tocando a partir da pasta exibida e PERSISTE (ref keyed por
+  // trackIndex). Assim, a barra de duração e o nome continuam no "tocando" mesmo navegando para
+  // fora da pasta da faixa (a mesa só manda o tempo decorrido; o total vem do scan do arquivo).
+  const playingTrackRef = useRef<{ index: number; name: string; durSec: number }>({ index: -1, name: "", durSec: 0 });
+  const usbFiles = state.entries.filter(
+    (e): e is Extract<MediaEntry, { kind: "file" }> => e.kind === "file"
+  );
+  const resolvedFile =
+    (state.trackIndex > 0 ? usbFiles[state.trackIndex - 1] : undefined) ??
+    usbFiles.find((e) => e.handle === state.trackHandle);
+  if (resolvedFile && state.trackIndex > 0) {
+    playingTrackRef.current = {
+      index: state.trackIndex,
+      name: resolvedFile.name.replace(/\.wav$/i, ""),
+      durSec: resolvedFile.durSec,
+    };
+  }
+  const playingMemo = playingTrackRef.current.index === state.trackIndex ? playingTrackRef.current : null;
+  const nowPlayingName = playingMemo?.name ?? (state.trackIndex > 0 ? `Faixa ${state.trackIndex}` : null);
+  const nowPlayingDurSec = playingMemo?.durSec ?? 0;
 
   function renderBody() {
     switch (selectedSource) {
@@ -4481,24 +4538,32 @@ export function MediaPlayer({
         // Só mostra "Lendo pendrive…" quando não há NADA pra exibir (1ª carga, sem faixa).
         // Se já há uma faixa tocando, mantém o player visível e a lista/duração entram quando
         // o scan termina — sem trocar a tela toda.
+        // Biblioteca aberta: mantém a view da biblioteca mesmo durante um sub-scan (navegar numa
+        // pasta zera entries por um instante). Sem isso a tela "voltava pro tocando" e reabria a
+        // lib. O MediaLibrary mostra o breadcrumb (voltar) + "Lendo…"/"Pasta vazia" enquanto isso.
+        if (libraryOpen) {
+          return (
+            <MediaLibrary
+              state={state}
+              disabled={disabled}
+              onEnterFolder={onEnterFolder}
+              onSelectTrack={(entry) => {
+                onSelectTrack(entry);
+                setLibraryOpen(false);
+              }}
+              onNavigateTo={onNavigateTo}
+            />
+          );
+        }
         if (state.scanning && state.trackIndex === 0) {
           return <MediaEmptyState icon={ListMusic} title="Lendo pendrive…" subtitle="Montando a lista de faixas" />;
         }
-        return libraryOpen && hasLibrary ? (
-          <MediaLibrary
-            state={state}
-            disabled={disabled}
-            onEnterFolder={onEnterFolder}
-            onSelectTrack={(entry) => {
-              onSelectTrack(entry);
-              setLibraryOpen(false);
-            }}
-            onNavigateTo={onNavigateTo}
-          />
-        ) : (
+        return (
           <MediaNowPlaying
             state={state}
             disabled={disabled}
+            trackName={nowPlayingName}
+            durSec={nowPlayingDurSec}
             onPlay={onPlay}
             onPause={onPause}
             onNext={onNext}
