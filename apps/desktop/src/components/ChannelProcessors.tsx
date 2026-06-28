@@ -2540,7 +2540,9 @@ function EqGraph({
     pendingBandIndex: number | null;
     pendingFilter: "hpf" | "lpf" | null;
     rafId: number | null;
-  }>({ svgRect: null, pendingX: 0, pendingY: 0, pendingBandIndex: null, pendingFilter: null, rafId: null });
+    dwellTimerId: ReturnType<typeof setTimeout> | null;
+    dwellFilter: "hpf" | "lpf" | null;
+  }>({ svgRect: null, pendingX: 0, pendingY: 0, pendingBandIndex: null, pendingFilter: null, rafId: null, dwellTimerId: null, dwellFilter: null });
 
   useEffect(() => {
     const node = graphFrameRef.current;
@@ -2663,12 +2665,51 @@ function EqGraph({
     });
   }
 
+  function clearFilterDwell() {
+    const ref = eqDragRef.current;
+    if (ref.dwellTimerId !== null) {
+      clearTimeout(ref.dwellTimerId);
+      ref.dwellTimerId = null;
+      ref.dwellFilter = null;
+    }
+  }
+
   function updateFilterFromRect(filter: "hpf" | "lpf", clientX: number, _clientY: number) {
     const rect = eqDragRef.current.svgRect;
     if (!rect) return;
     const scaleX = width / rect.width;
     const x = clamp((clientX - rect.left) * scaleX - graphX, 0, graphWidth);
     const freq = xToActiveFreq(x, graphWidth);
+    const rawFreq = Math.pow(10, (x / graphWidth) * (Math.log10(EQ_ACTIVE_MAX_FREQ) - Math.log10(EQ_ACTIVE_MIN_FREQ)) + Math.log10(EQ_ACTIVE_MIN_FREQ));
+    const ref = eqDragRef.current;
+
+    const beyondEdge =
+      (filter === "hpf" && rawFreq < EQ_ACTIVE_MIN_FREQ) ||
+      (filter === "lpf" && rawFreq > EQ_ACTIVE_MAX_FREQ);
+
+    if (beyondEdge) {
+      // Clamp visual position at the boundary — don't move the handle
+      if (ref.dwellFilter !== filter) {
+        ref.dwellFilter = filter;
+        ref.dwellTimerId = setTimeout(() => {
+          ref.dwellTimerId = null;
+          ref.dwellFilter = null;
+          if (filter === "hpf") onEqChange({ hpfEnabled: false });
+          else onEqChange({ lpfEnabled: false });
+        }, 500);
+      }
+      // Keep handle clamped at boundary during dwell
+      if (filter === "hpf") {
+        onEqChange({ hpfEnabled: true, hpfFreq: EQ_ACTIVE_MIN_FREQ });
+      } else {
+        onEqChange({ lpfEnabled: true, lpfFreq: EQ_ACTIVE_MAX_FREQ });
+      }
+      return;
+    }
+
+    // Moved back inside range — cancel dwell
+    clearFilterDwell();
+
     if (filter === "hpf") {
       onEqChange({ hpfEnabled: true, hpfFreq: clamp(Math.min(freq, eq.lpfFreq - 10), EQ_ACTIVE_MIN_FREQ, EQ_ACTIVE_MAX_FREQ) });
     } else {
@@ -2866,10 +2907,12 @@ function EqGraph({
               event.stopPropagation();
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
               eqDragRef.current.svgRect = null;
+              clearFilterDwell();
             }}
             onPointerCancel={(event) => {
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
               eqDragRef.current.svgRect = null;
+              clearFilterDwell();
             }}
             style={{ cursor: disabled ? "not-allowed" : "ew-resize" }}
           >
@@ -2927,10 +2970,12 @@ function EqGraph({
               event.stopPropagation();
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
               eqDragRef.current.svgRect = null;
+              clearFilterDwell();
             }}
             onPointerCancel={(event) => {
               if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
               eqDragRef.current.svgRect = null;
+              clearFilterDwell();
             }}
             style={{ cursor: disabled ? "not-allowed" : "grab" }}
           >
@@ -4457,10 +4502,23 @@ export function MediaPlayer({
     state.source !== "none" ? state.source : "usb"
   );
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const prevDiskPresent = useRef(state.diskPresent);
 
   useEffect(() => {
+    const wasPresent = prevDiskPresent.current;
+    prevDiskPresent.current = state.diskPresent;
+    // Inserção de disco: força USB tab — ignora o source transitório (BT/none) que a mesa
+    // manda durante a inicialização do pendrive.
+    if (!wasPresent && state.diskPresent) {
+      setSelectedSource("usb");
+      return;
+    }
+    // Com disco presente, a mesa pode continuar reportando BT/none enquanto reconhece o pendrive.
+    // Não seguimos automaticamente — o usuário permanece na aba USB.
+    // Só seguimos se a fonte for USB (ex: mesa confirma USB ativo) ou se não houver disco.
+    if (state.diskPresent && state.source !== "usb") return;
     if (state.source !== "none") setSelectedSource(state.source);
-  }, [state.source]);
+  }, [state.source, state.diskPresent]);
 
   function handleSelectSource(src: MediaSource) {
     setSelectedSource(src);

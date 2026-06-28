@@ -10,6 +10,7 @@ import {
   type NameTarget,
   valueToCompGain,
   valueToCompRatio,
+  valueToCompRatioAx16,
   valueToCompThreshold,
   valueToCompTime,
   valueToEqGain,
@@ -17,6 +18,8 @@ import {
   valueToBoolean,
   valueToFaderDb,
   valueToFrequency,
+  HPF_OFF_VALUE,
+  LPF_OFF_VALUE,
   valueToGain,
   getActiveProtocolProfile,
   valueToGateAttack,
@@ -510,6 +513,18 @@ const AUX_FX_METER_CONFIGS: Record<"ax16_24" | "ax32", AuxFxMeterConfig> = {
 
 function getAuxFxMeterConfig(): AuxFxMeterConfig {
   return getActiveProfile().model === "AX32" ? AUX_FX_METER_CONFIGS.ax32 : AUX_FX_METER_CONFIGS.ax16_24;
+}
+
+// AX16/24 encodes comp ratio as ratio×10; AX32 as ratio×100.
+function decodeCompRatio(rawValue: number): number {
+  return getActiveProfile().model === "AX32"
+    ? valueToCompRatio(rawValue)
+    : valueToCompRatioAx16(rawValue);
+}
+function encodeCompRatioFallback(ratio: number): number {
+  return getActiveProfile().model === "AX32"
+    ? Math.round(ratio * 100)
+    : Math.round(ratio * 10);
 }
 
 function getDigiChannelNumbers(): [number, number] {
@@ -2405,13 +2420,15 @@ function shouldKeepCachedLpfFreq(rawValue: number | undefined) {
 
 function resolveHpfFreqFromRaw(rawValue: number | undefined, fallback: number) {
   if (rawValue === undefined) return fallback;
-  if (rawValue === 0) return DEFAULT_EQ.hpfFreq;
+  // 0 ou sentinel de OFF (fora da banda 20Hz–20kHz) → mantém o freq cacheado/default,
+  // NÃO sobrescreve com ~19,6Hz. Preserva o valor real salvo (restore ao religar).
+  if (!inferHpfEnabledFromRaw(rawValue)) return fallback;
   return valueToFrequency(rawValue);
 }
 
 function resolveLpfFreqFromRaw(rawValue: number | undefined, fallback: number) {
   if (rawValue === undefined) return fallback;
-  if (rawValue === 0) return DEFAULT_EQ.lpfFreq;
+  if (!inferLpfEnabledFromRaw(rawValue)) return fallback;
   return valueToFrequency(rawValue);
 }
 
@@ -2936,7 +2953,6 @@ function App() {
   const backgroundLicenseRevalidationBusyRef = useRef(false);
   const lastBackgroundRevalidationAtRef = useRef(0);
   const strictStartupValidationDoneRef = useRef(false);
-  const lastAppliedMuteTargetsRef = useRef<Map<AssignableMemberId, boolean>>(new Map());
   const channelLinkTransitionUntilRef = useRef<Map<string, number>>(new Map());
   const auxLinkTransitionUntilRef = useRef<Map<string, number>>(new Map());
   const masterLinkTransitionUntilRef = useRef(0);
@@ -4093,13 +4109,12 @@ function App() {
   }
 
   function updateMuteGroupState(id: MuteGroupId, patch: Partial<MuteGroupState>) {
-    setMuteGroups((current) => {
-      const next = current.map((group, index) =>
-        index === id - 1 ? { ...group, ...patch } : group
-      );
-      applyManagedMutes(next);
-      return next;
-    });
+    // Só reflete o estado do grupo. A aplicação de mute por canal é one-shot,
+    // feita pelos handlers (toggle/membros), NUNCA reforçada continuamente —
+    // o estado de mute do canal é soberano.
+    setMuteGroups((current) =>
+      current.map((group, index) => (index === id - 1 ? { ...group, ...patch } : group))
+    );
   }
 
   function expandMuteGroupManagedMembers(members: Iterable<GroupMember>): AssignableMemberId[] {
@@ -4143,7 +4158,6 @@ function App() {
   async function syncAllGroupStates(options?: { ignoreConnectionState?: boolean; suppressManagedMuteWrites?: boolean }) {
     const client = clientRef.current;
     if (!client || (!isConnected && !options?.ignoreConnectionState)) {
-      lastAppliedMuteTargetsRef.current = new Map();
       return;
     }
 
@@ -4232,45 +4246,38 @@ function App() {
         };
       });
 
-      if (!options?.suppressManagedMuteWrites) {
-        applyManagedMutes(next, options);
-      }
+      // Sync é READ-ONLY: reflete active+membros da mesa, NUNCA reescreve mute por
+      // canal (o estado do canal é soberano). A aplicação é one-shot nos handlers.
       return next;
     });
   }
 
-  function applyManagedMutes(nextGroups: MuteGroupState[], options?: { ignoreConnectionState?: boolean }) {
+  // Membros (expandidos p/ links) cobertos por grupos ATIVOS diferentes de exceptId.
+  // Usado no OFF/remoção: não desmuta quem ainda é mantido por outro grupo ativo.
+  function expandedMembersOfOtherActiveGroups(
+    groups: MuteGroupState[],
+    exceptId: MuteGroupId
+  ): Set<AssignableMemberId> {
+    const held = new Set<AssignableMemberId>();
+    groups.forEach((group, index) => {
+      if (index === exceptId - 1 || !group.active) return;
+      for (const member of expandMuteGroupManagedMembers(group.members)) held.add(member);
+    });
+    return held;
+  }
+
+  // Aplica mute/unmute ONE-SHOT a um conjunto de membros (expande links + DIGI),
+  // escopado só a esses membros. No unmute, pula quem ainda está em outro grupo
+  // ativo (heldByOthers). Atualiza o display do strip otimisticamente.
+  function applyGroupMemberMutes(
+    members: Iterable<GroupMember>,
+    mute: boolean,
+    heldByOthers?: ReadonlySet<AssignableMemberId>
+  ) {
     const client = clientRef.current;
-    if (!client || (!isConnected && !options?.ignoreConnectionState)) {
-      lastAppliedMuteTargetsRef.current = new Map();
-      return;
-    }
-
-    // Alvo derivado por membro: mutado sse pertence a algum grupo ativo.
-    const nextTargets = new Map<AssignableMemberId, boolean>();
-    for (const group of nextGroups) {
-      for (const member of expandMuteGroupManagedMembers(group.members)) {
-        nextTargets.set(member, (nextTargets.get(member) ?? false) || group.active);
-      }
-    }
-
-    const last = lastAppliedMuteTargetsRef.current;
-    const writes: Array<{ member: AssignableMemberId; mute: boolean }> = [];
-
-    // (a) membros gerenciados cujo alvo mudou desde a última aplicação.
-    // Diff por membro (não assinatura global) preserva mutes manuais em canais cujo
-    // alvo de grupo não mudou — ex.: mexer no MG2 não toca num canal só do MG1.
-    for (const member of assignableMemberIds) {
-      if (!nextTargets.has(member)) continue;
-      const target = nextTargets.get(member)!;
-      if (last.get(member) !== target) writes.push({ member, mute: target });
-    }
-    // (b) membros que saíram de gerência e estavam mutados → desmutar uma vez.
-    for (const [member, prev] of last) {
-      if (!nextTargets.has(member) && prev) writes.push({ member, mute: false });
-    }
-
-    for (const { member, mute } of writes) {
+    if (!client || !isConnected) return;
+    for (const member of expandMuteGroupManagedMembers(members)) {
+      if (!mute && heldByOthers?.has(member)) continue;
       if (member === "DIGI") {
         const [digiChL, digiChR] = getDigiChannelNumbers();
         client.setMute(digiChL, mute);
@@ -4280,8 +4287,6 @@ function App() {
       }
       handleMuteGroupsMemberMuteApplied(member, mute);
     }
-
-    lastAppliedMuteTargetsRef.current = nextTargets;
   }
 
   useEffect(() => {
@@ -4289,7 +4294,6 @@ function App() {
     const groupsViewActive = mainView === "dcaGroups" || mainView === "muteGroups";
 
     if (appStage === "demo" || !client || !isConnected || isSyncing || !groupsViewActive) {
-      lastAppliedMuteTargetsRef.current = new Map();
       return;
     }
 
@@ -4514,11 +4518,21 @@ function App() {
       return;
     }
 
+    // Ação one-shot escopada SÓ aos membros deste grupo (não reaplica máscara global):
+    // ON muta todos os membros; OFF desmuta os que não estão em outro grupo ativo.
+    if (nextActive) {
+      applyGroupMemberMutes(group.members, true);
+    } else {
+      const nextGroups = muteGroups.map((g, i) => (i === id - 1 ? { ...g, active: false } : g));
+      applyGroupMemberMutes(group.members, false, expandedMembersOfOtherActiveGroups(nextGroups, id));
+    }
+
     updateMuteGroupState(id, { active: nextActive });
   }
 
   function handleMuteGroupMembersChange(id: MuteGroupId, members: GroupMember[]) {
-    const currentMembers = muteGroups[id - 1]?.members ?? [];
+    const group = muteGroups[id - 1];
+    const currentMembers = group?.members ?? [];
     const normalizedMembers = normalizeMuteGroupMembersForLinkedTargets(currentMembers, members);
 
     const client = clientRef.current;
@@ -4531,10 +4545,21 @@ function App() {
       return;
     }
 
+    // Se o grupo está ON, aplica só o DELTA (1x), escopado: novos membros → mute;
+    // removidos → unmute (se não estiverem em outro grupo ativo).
+    if (group?.active) {
+      const added = normalizedMembers.filter((m) => !currentMembers.includes(m));
+      const removed = currentMembers.filter((m) => !normalizedMembers.includes(m));
+      applyGroupMemberMutes(added, true);
+      const nextGroups = muteGroups.map((g, i) => (i === id - 1 ? { ...g, members: normalizedMembers } : g));
+      applyGroupMemberMutes(removed, false, expandedMembersOfOtherActiveGroups(nextGroups, id));
+    }
+
     updateMuteGroupState(id, { members: normalizedMembers });
   }
 
   function handleMuteGroupClear(id: MuteGroupId) {
+    const group = muteGroups[id - 1];
     const client = clientRef.current;
     if (!client || !isConnected) return;
 
@@ -4543,6 +4568,12 @@ function App() {
     } catch (error) {
       console.error("[Mute] clear error:", error);
       return;
+    }
+
+    // Se o grupo estava ON, desmuta os membros que saíram (e não estão em outro ativo).
+    if (group?.active) {
+      const nextGroups = muteGroups.map((g, i) => (i === id - 1 ? { ...g, members: [] } : g));
+      applyGroupMemberMutes(group.members, false, expandedMembersOfOtherActiveGroups(nextGroups, id));
     }
 
     updateMuteGroupState(id, { members: [] });
@@ -4559,6 +4590,11 @@ function App() {
     } catch (error) {
       console.error("[Mute] all muted error:", error);
       return;
+    }
+
+    // Se o grupo está ON, muta todos os novos membros (one-shot).
+    if (muteGroups[id - 1]?.active) {
+      applyGroupMemberMutes(mappedMembers as GroupMember[], true);
     }
 
     updateMuteGroupState(id, { members: mappedMembers as GroupMember[] });
@@ -4956,7 +4992,7 @@ function App() {
         },
         comp: {
           enabled: valueToBoolean(getValue(procParams.compEnabled, 0)),
-          ratio: valueToCompRatio(getValue(procParams.compRatio, 100)),
+          ratio: decodeCompRatio(getValue(procParams.compRatio, encodeCompRatioFallback(1))),
           attack: valueToCompTime(getValue(procParams.compAttack, 300)),
           release: valueToCompTime(getValue(procParams.compRelease, 1450)),
           threshold: valueToCompThreshold(getValue(procParams.compThreshold, 0)),
@@ -5457,8 +5493,12 @@ function App() {
 
       const rawHpfFreq = getValue(params.hpfFreq, 0);
       const rawLpfFreq = getValue(params.lpfFreq, 0);
-      const nextHpfEnabled = inferHpfEnabledFromRaw(rawHpfFreq, currentState.eq.hpfEnabled);
-      const nextLpfEnabled = inferLpfEnabledFromRaw(rawLpfFreq, currentState.eq.lpfEnabled);
+      const nextHpfEnabled = currentState.eq.enabled
+        ? inferHpfEnabledFromRaw(rawHpfFreq, currentState.eq.hpfEnabled)
+        : currentState.eq.hpfEnabled;
+      const nextLpfEnabled = currentState.eq.enabled
+        ? inferLpfEnabledFromRaw(rawLpfFreq, currentState.eq.lpfEnabled)
+        : currentState.eq.lpfEnabled;
 
       const parsedState: ProcessorState = {
         gate: {
@@ -5470,7 +5510,7 @@ function App() {
         },
         comp: {
           enabled: valueToBoolean(getValue(params.compEnabled, 0)),
-          ratio: valueToCompRatio(getValue(params.compRatio, 100)),
+          ratio: decodeCompRatio(getValue(params.compRatio, encodeCompRatioFallback(1))),
           attack: valueToCompTime(getValue(params.compAttack, 300)),
           release: valueToCompTime(getValue(params.compRelease, 1450)),
           threshold: valueToCompThreshold(getValue(params.compThreshold, 0)),
@@ -5709,11 +5749,11 @@ function App() {
       const rawHpfFreq = values.get(params.hpfFreq);
       const rawLpfFreq = values.get(params.lpfFreq);
       const nextHpfEnabled =
-        rawHpfFreq === undefined
+        rawHpfFreq === undefined || !current.eq.enabled
           ? current.eq.hpfEnabled
           : inferHpfEnabledFromRaw(rawHpfFreq, current.eq.hpfEnabled);
       const nextLpfEnabled =
-        rawLpfFreq === undefined
+        rawLpfFreq === undefined || !current.eq.enabled
           ? current.eq.lpfEnabled
           : inferLpfEnabledFromRaw(rawLpfFreq, current.eq.lpfEnabled);
 
@@ -5721,7 +5761,7 @@ function App() {
         ...current,
         comp: {
           enabled: valueToBoolean(getValue(params.compEnabled, 0)),
-          ratio: valueToCompRatio(getValue(params.compRatio, 100)),
+          ratio: decodeCompRatio(getValue(params.compRatio, encodeCompRatioFallback(1))),
           attack: valueToCompTime(getValue(params.compAttack, 300)),
           release: valueToCompTime(getValue(params.compRelease, 1450)),
           threshold: valueToCompThreshold(getValue(params.compThreshold, 0)),
@@ -5931,11 +5971,11 @@ function App() {
       const rawHpfTypeSlope = values.get(processorParams.hpfTypeSlope);
       const rawLpfTypeSlope = values.get(processorParams.lpfTypeSlope);
       const nextHpfEnabled =
-        rawHpfFreq === undefined
+        rawHpfFreq === undefined || !current.eq.enabled
           ? current.eq.hpfEnabled
           : inferHpfEnabledFromRaw(rawHpfFreq, current.eq.hpfEnabled);
       const nextLpfEnabled =
-        rawLpfFreq === undefined
+        rawLpfFreq === undefined || !current.eq.enabled
           ? current.eq.lpfEnabled
           : inferLpfEnabledFromRaw(rawLpfFreq, current.eq.lpfEnabled);
 
@@ -6918,11 +6958,11 @@ function App() {
       const rawHpfTypeSlope = values.get(p.hpfTypeSlope);
       const rawLpfTypeSlope = values.get(p.lpfTypeSlope);
       const nextHpfEnabled =
-        rawHpfFreq === undefined
+        rawHpfFreq === undefined || !current.eq.enabled
           ? current.eq.hpfEnabled
           : inferHpfEnabledFromRaw(rawHpfFreq, current.eq.hpfEnabled);
       const nextLpfEnabled =
-        rawLpfFreq === undefined
+        rawLpfFreq === undefined || !current.eq.enabled
           ? current.eq.lpfEnabled
           : inferLpfEnabledFromRaw(rawLpfFreq, current.eq.lpfEnabled);
 
@@ -6931,7 +6971,7 @@ function App() {
         comp: {
           ...current.comp,
           enabled: valueToBoolean(values.get(p.compEnabled) ?? (current.comp.enabled ? 1 : 0)),
-          ratio: valueToCompRatio(values.get(p.compRatio) ?? Math.round(current.comp.ratio * 100)),
+          ratio: decodeCompRatio(values.get(p.compRatio) ?? encodeCompRatioFallback(current.comp.ratio)),
           attack: valueToCompTime(values.get(p.compAttack) ?? Math.round(current.comp.attack * 10)),
           release: valueToCompTime(values.get(p.compRelease) ?? Math.round(current.comp.release * 10)),
           threshold:
@@ -8561,11 +8601,11 @@ function App() {
             const rawHpfTypeSlope = values.get(p.hpfTypeSlope);
             const rawLpfTypeSlope = values.get(p.lpfTypeSlope);
             const nextHpfEnabled =
-              rawHpfFreq === undefined
+              rawHpfFreq === undefined || !state.eq.enabled
                 ? state.eq.hpfEnabled
                 : inferHpfEnabledFromRaw(rawHpfFreq, state.eq.hpfEnabled);
             const nextLpfEnabled =
-              rawLpfFreq === undefined
+              rawLpfFreq === undefined || !state.eq.enabled
                 ? state.eq.lpfEnabled
                 : inferLpfEnabledFromRaw(rawLpfFreq, state.eq.lpfEnabled);
 
@@ -8582,7 +8622,7 @@ function App() {
               comp: {
                 ...state.comp,
                 enabled: valueToBoolean(values.get(p.compEnabled) ?? (state.comp.enabled ? 1 : 0)),
-                ratio: valueToCompRatio(values.get(p.compRatio) ?? Math.round(state.comp.ratio * 100)),
+                ratio: decodeCompRatio(values.get(p.compRatio) ?? encodeCompRatioFallback(state.comp.ratio)),
                 attack: valueToCompTime(values.get(p.compAttack) ?? Math.round(state.comp.attack * 10)),
                 release: valueToCompTime(values.get(p.compRelease) ?? Math.round(state.comp.release * 10)),
                 threshold:
@@ -8673,11 +8713,11 @@ function App() {
           const rawHpfTypeSlope = values.get(p.hpfTypeSlope);
           const rawLpfTypeSlope = values.get(p.lpfTypeSlope);
           const nextHpfEnabled =
-            rawHpfFreq === undefined
+            rawHpfFreq === undefined || !state.eq.enabled
               ? state.eq.hpfEnabled
               : inferHpfEnabledFromRaw(rawHpfFreq, state.eq.hpfEnabled);
           const nextLpfEnabled =
-            rawLpfFreq === undefined
+            rawLpfFreq === undefined || !state.eq.enabled
               ? state.eq.lpfEnabled
               : inferLpfEnabledFromRaw(rawLpfFreq, state.eq.lpfEnabled);
 
@@ -8686,7 +8726,7 @@ function App() {
             comp: {
               ...state.comp,
               enabled: valueToBoolean(values.get(p.compEnabled) ?? (state.comp.enabled ? 1 : 0)),
-              ratio: valueToCompRatio(values.get(p.compRatio) ?? Math.round(state.comp.ratio * 100)),
+              ratio: decodeCompRatio(values.get(p.compRatio) ?? encodeCompRatioFallback(state.comp.ratio)),
               attack: valueToCompTime(values.get(p.compAttack) ?? Math.round(state.comp.attack * 10)),
               release: valueToCompTime(values.get(p.compRelease) ?? Math.round(state.comp.release * 10)),
               threshold:
@@ -8932,6 +8972,7 @@ function App() {
     if (!mediaControllerRef.current) {
       const controller = new MediaController({
         client,
+        isAx32: getActiveProfile().model === "AX32",
         initialState: mediaState, // preserva a lista/estado ao reabrir a aba (não re-escaneia)
         onStateChange: (next) => setMediaState(next),
       });
@@ -8940,10 +8981,10 @@ function App() {
     }
   }, [activeProcessorModule, detailView, isConnected, appStage]);
 
-  // MEDIA só existe no AX32 (gate por modelo). Se a aba ficou ativa e o perfil não é AX32
-  // (ex.: troca de mesa na mesma sessão), volta pra EQ — evita painel preso sem aba.
+  // MEDIA existe no AX32 e AX16/24. Se a aba ficou ativa e a mesa não suporta (ex.: troca
+  // de perfil na mesma sessão), volta pra EQ — evita painel preso sem aba.
   useEffect(() => {
-    if (activeProcessorModule === "media" && getActiveProfile().model !== "AX32") {
+    if (activeProcessorModule === "media" && !isConnected) {
       setActiveProcessorModule("eq");
     }
   }, [activeProcessorModule, isConnected]);
@@ -12946,7 +12987,9 @@ function App() {
         client.setCompThreshold(target, patch.threshold);
       }
       if (patch.ratio !== undefined) {
-        client.setCompRatio(target, patch.ratio);
+        getActiveProfile().model === "AX32"
+          ? client.setCompRatio(target, patch.ratio)
+          : client.setCompRatioAx16(target, patch.ratio);
       }
       if (patch.attack !== undefined) {
         client.setCompAttack(target, patch.attack);
@@ -12985,20 +13028,20 @@ function App() {
       if (patch.enabled !== undefined) {
         client.setEqEnabled(target, nextEq.enabled);
       }
-      if (patch.hpfEnabled !== undefined) {
-        client.setHpfFreq(
-          target,
-          nextEq.hpfEnabled ? nextEq.hpfFreq : DEFAULT_EQ.hpfFreq
-        );
-      } else if (patch.hpfFreq !== undefined && nextEq.hpfEnabled) {
+      // HPF/LPF ativo = EQ não-bypassado E filtro ligado. Caso contrário manda o
+      // sentinel de OFF (a mesa não tem enable de filtro; o bypass não cobre HPF/LPF).
+      const hpfActive = nextEq.enabled && nextEq.hpfEnabled;
+      const lpfActive = nextEq.enabled && nextEq.lpfEnabled;
+      if (patch.enabled !== undefined || patch.hpfEnabled !== undefined) {
+        if (hpfActive) client.setHpfFreq(target, nextEq.hpfFreq);
+        else client.setHpfFreqRaw(target, HPF_OFF_VALUE);
+      } else if (patch.hpfFreq !== undefined && hpfActive) {
         client.setHpfFreq(target, nextEq.hpfFreq);
       }
-      if (patch.lpfEnabled !== undefined) {
-        client.setLpfFreq(
-          target,
-          nextEq.lpfEnabled ? nextEq.lpfFreq : DEFAULT_EQ.lpfFreq
-        );
-      } else if (patch.lpfFreq !== undefined && nextEq.lpfEnabled) {
+      if (patch.enabled !== undefined || patch.lpfEnabled !== undefined) {
+        if (lpfActive) client.setLpfFreq(target, nextEq.lpfFreq);
+        else client.setLpfFreqRaw(target, LPF_OFF_VALUE);
+      } else if (patch.lpfFreq !== undefined && lpfActive) {
         client.setLpfFreq(target, nextEq.lpfFreq);
       }
       if (patch.hpfType !== undefined || patch.hpfSlope !== undefined) {
@@ -13164,7 +13207,11 @@ function App() {
     for (const ch of [chL, chR]) {
       if (patch.enabled !== undefined) client.setCompEnabled(ch, patch.enabled);
       if (patch.threshold !== undefined) client.setCompThreshold(ch, patch.threshold);
-      if (patch.ratio !== undefined) client.setCompRatio(ch, patch.ratio);
+      if (patch.ratio !== undefined) {
+        getActiveProfile().model === "AX32"
+          ? client.setCompRatio(ch, patch.ratio)
+          : client.setCompRatioAx16(ch, patch.ratio);
+      }
       if (patch.attack !== undefined) client.setCompAttack(ch, patch.attack);
       if (patch.release !== undefined) client.setCompRelease(ch, patch.release);
       if (patch.gain !== undefined) client.setCompGain(ch, patch.gain);
@@ -13179,14 +13226,18 @@ function App() {
     if (!client) return;
     for (const ch of [chL, chR]) {
       if (patch.enabled !== undefined) client.setEqEnabled(ch, nextEq.enabled);
-      if (patch.hpfEnabled !== undefined) {
-        client.setHpfFreq(ch, nextEq.hpfEnabled ? nextEq.hpfFreq : DEFAULT_EQ.hpfFreq);
-      } else if (patch.hpfFreq !== undefined && nextEq.hpfEnabled) {
+      const hpfActive = nextEq.enabled && nextEq.hpfEnabled;
+      const lpfActive = nextEq.enabled && nextEq.lpfEnabled;
+      if (patch.enabled !== undefined || patch.hpfEnabled !== undefined) {
+        if (hpfActive) client.setHpfFreq(ch, nextEq.hpfFreq);
+        else client.setHpfFreqRaw(ch, HPF_OFF_VALUE);
+      } else if (patch.hpfFreq !== undefined && hpfActive) {
         client.setHpfFreq(ch, nextEq.hpfFreq);
       }
-      if (patch.lpfEnabled !== undefined) {
-        client.setLpfFreq(ch, nextEq.lpfEnabled ? nextEq.lpfFreq : DEFAULT_EQ.lpfFreq);
-      } else if (patch.lpfFreq !== undefined && nextEq.lpfEnabled) {
+      if (patch.enabled !== undefined || patch.lpfEnabled !== undefined) {
+        if (lpfActive) client.setLpfFreq(ch, nextEq.lpfFreq);
+        else client.setLpfFreqRaw(ch, LPF_OFF_VALUE);
+      } else if (patch.lpfFreq !== undefined && lpfActive) {
         client.setLpfFreq(ch, nextEq.lpfFreq);
       }
       if (patch.hpfType !== undefined || patch.hpfSlope !== undefined) {
@@ -14761,7 +14812,9 @@ function App() {
                   client.setAuxCompEnabled(target, patch.enabled);
                 }
                 if (patch.ratio !== undefined) {
-                  client.setAuxCompRatio(target, patch.ratio);
+                  getActiveProfile().model === "AX32"
+                    ? client.setAuxCompRatio(target, patch.ratio)
+                    : client.setAuxCompRatioAx16(target, patch.ratio);
                 }
                 if (patch.attack !== undefined) {
                   client.setAuxCompAttack(target, patch.attack);
@@ -14801,20 +14854,18 @@ function App() {
                   client.setAuxEqEnabled(target, eqToSend.enabled);
                 }
 
-                if (patch.hpfEnabled !== undefined) {
-                  client.setAuxHpfFreq(
-                    target,
-                    eqToSend.hpfEnabled ? eqToSend.hpfFreq : DEFAULT_AUX_EQ.hpfFreq
-                  );
-                } else if (patch.hpfFreq !== undefined && eqToSend.hpfEnabled) {
+                const hpfActive = eqToSend.enabled && eqToSend.hpfEnabled;
+                const lpfActive = eqToSend.enabled && eqToSend.lpfEnabled;
+                if (patch.enabled !== undefined || patch.hpfEnabled !== undefined) {
+                  if (hpfActive) client.setAuxHpfFreq(target, eqToSend.hpfFreq);
+                  else client.setAuxHpfFreqRaw(target, HPF_OFF_VALUE);
+                } else if (patch.hpfFreq !== undefined && hpfActive) {
                   client.setAuxHpfFreq(target, eqToSend.hpfFreq);
                 }
-                if (patch.lpfEnabled !== undefined) {
-                  client.setAuxLpfFreq(
-                    target,
-                    eqToSend.lpfEnabled ? eqToSend.lpfFreq : DEFAULT_AUX_EQ.lpfFreq
-                  );
-                } else if (patch.lpfFreq !== undefined && eqToSend.lpfEnabled) {
+                if (patch.enabled !== undefined || patch.lpfEnabled !== undefined) {
+                  if (lpfActive) client.setAuxLpfFreq(target, eqToSend.lpfFreq);
+                  else client.setAuxLpfFreqRaw(target, LPF_OFF_VALUE);
+                } else if (patch.lpfFreq !== undefined && lpfActive) {
                   client.setAuxLpfFreq(target, eqToSend.lpfFreq);
                 }
                 if (patch.hpfType !== undefined || patch.hpfSlope !== undefined) {
@@ -15108,21 +15159,23 @@ function App() {
                       client.sendParam(fxParams.eqEnabled, nextEq.enabled ? 1 : 0);
                     }
 
-                    if (patch.hpfEnabled !== undefined) {
+                    const hpfActive = nextEq.enabled && nextEq.hpfEnabled;
+                    const lpfActive = nextEq.enabled && nextEq.lpfEnabled;
+                    if (patch.enabled !== undefined || patch.hpfEnabled !== undefined) {
                       client.sendParam(
                         fxParams.hpfFreq,
-                        frequencyToRawValue(nextEq.hpfEnabled ? nextEq.hpfFreq : DEFAULT_EQ.hpfFreq)
+                        hpfActive ? frequencyToRawValue(nextEq.hpfFreq) : HPF_OFF_VALUE
                       );
-                    } else if (patch.hpfFreq !== undefined && nextEq.hpfEnabled) {
+                    } else if (patch.hpfFreq !== undefined && hpfActive) {
                       client.sendParam(fxParams.hpfFreq, frequencyToRawValue(nextEq.hpfFreq));
                     }
 
-                    if (patch.lpfEnabled !== undefined) {
+                    if (patch.enabled !== undefined || patch.lpfEnabled !== undefined) {
                       client.sendParam(
                         fxParams.lpfFreq,
-                        frequencyToRawValue(nextEq.lpfEnabled ? nextEq.lpfFreq : DEFAULT_EQ.lpfFreq)
+                        lpfActive ? frequencyToRawValue(nextEq.lpfFreq) : LPF_OFF_VALUE
                       );
-                    } else if (patch.lpfFreq !== undefined && nextEq.lpfEnabled) {
+                    } else if (patch.lpfFreq !== undefined && lpfActive) {
                       client.sendParam(fxParams.lpfFreq, frequencyToRawValue(nextEq.lpfFreq));
                     }
 
@@ -15517,7 +15570,9 @@ function App() {
                     client.setMasterCompEnabled(target, patch.enabled);
                   }
                   if (patch.ratio !== undefined) {
-                    client.setMasterCompRatio(target, patch.ratio);
+                    getActiveProfile().model === "AX32"
+                      ? client.setMasterCompRatio(target, patch.ratio)
+                      : client.setMasterCompRatioAx16(target, patch.ratio);
                   }
                   if (patch.attack !== undefined) {
                     client.setMasterCompAttack(target, patch.attack);
@@ -15546,21 +15601,19 @@ function App() {
                         client.setMasterEqEnabled(target, nextEq.enabled);
                       }
 
-                      if (patch.hpfEnabled !== undefined) {
-                        client.setMasterHpfFreq(
-                          target,
-                          nextEq.hpfEnabled ? nextEq.hpfFreq : DEFAULT_AUX_EQ.hpfFreq
-                        );
-                      } else if (patch.hpfFreq !== undefined && nextEq.hpfEnabled) {
+                      const hpfActive = nextEq.enabled && nextEq.hpfEnabled;
+                      const lpfActive = nextEq.enabled && nextEq.lpfEnabled;
+                      if (patch.enabled !== undefined || patch.hpfEnabled !== undefined) {
+                        if (hpfActive) client.setMasterHpfFreq(target, nextEq.hpfFreq);
+                        else client.setMasterHpfFreqRaw(target, HPF_OFF_VALUE);
+                      } else if (patch.hpfFreq !== undefined && hpfActive) {
                         client.setMasterHpfFreq(target, nextEq.hpfFreq);
                       }
 
-                      if (patch.lpfEnabled !== undefined) {
-                        client.setMasterLpfFreq(
-                          target,
-                          nextEq.lpfEnabled ? nextEq.lpfFreq : DEFAULT_AUX_EQ.lpfFreq
-                        );
-                      } else if (patch.lpfFreq !== undefined && nextEq.lpfEnabled) {
+                      if (patch.enabled !== undefined || patch.lpfEnabled !== undefined) {
+                        if (lpfActive) client.setMasterLpfFreq(target, nextEq.lpfFreq);
+                        else client.setMasterLpfFreqRaw(target, LPF_OFF_VALUE);
+                      } else if (patch.lpfFreq !== undefined && lpfActive) {
                         client.setMasterLpfFreq(target, nextEq.lpfFreq);
                       }
 
@@ -15658,7 +15711,9 @@ function App() {
                 if (!client) return;
 
                 targets.forEach((target) => {
-                  client.setMasterCompRatio(target, DEFAULT_COMP.ratio);
+                  getActiveProfile().model === "AX32"
+                    ? client.setMasterCompRatio(target, DEFAULT_COMP.ratio)
+                    : client.setMasterCompRatioAx16(target, DEFAULT_COMP.ratio);
                   client.setMasterCompAttack(target, DEFAULT_COMP.attack);
                   client.setMasterCompRelease(target, DEFAULT_COMP.release);
                   client.setMasterCompThreshold(target, DEFAULT_COMP.threshold);
@@ -15920,11 +15975,7 @@ function App() {
                 { id: "comp" as const, label: "COMP" },
                 { id: "gate" as const, label: "GATE" },
                 { id: "sends" as const, label: "SENDS" },
-                // MEDIA validado só no AX32. Em AX16/24 o protocolo pode diferir (play/pause
-                // invertido etc.) — gate por modelo até validar nesse perfil (fase 2).
-                ...(getActiveProfile().model === "AX32"
-                  ? [{ id: "media" as const, label: "MEDIA", beta: true }]
-                  : []),
+                { id: "media" as const, label: "MEDIA", beta: true },
               ]}
               customModuleContent={{
                 media: (

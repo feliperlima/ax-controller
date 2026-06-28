@@ -912,6 +912,12 @@ function frequencyToValue(freqHz: number) {
   return Math.round(freqHz);
 }
 
+// "Off" dos filtros HPF/LPF na DUONN = frequência logo FORA da banda 20Hz–20kHz
+// (a mesa não tem bit de enable; capturado na UI oficial). frequencyToValue rejeita
+// esses valores de propósito, então o off usa os setters *Raw com estas constantes.
+export const HPF_OFF_VALUE = 32964; // 19,6 Hz (logo abaixo do piso 20Hz)
+export const LPF_OFF_VALUE = 20001; // 20,001 kHz (logo acima do teto 20kHz)
+
 function eqGainToValue(db: number) {
   return Math.round(500 + clamp(db, -12, 12) * 10);
 }
@@ -945,6 +951,13 @@ function compRatioToValue(ratio: number | "inf") {
   if (ratio === "inf" || !Number.isFinite(ratio) || ratio >= 40) return 4040;
 
   return Math.round(ratio * 100);
+}
+
+// AX16/24 encodes ratio×10 (max 20:1 = value 200); AX32 encodes ratio×100 (max ~40:1 = 4040).
+function compRatioToValueAx16(ratio: number | "inf") {
+  if (ratio === "inf" || !Number.isFinite(ratio) || ratio >= 20) return 200;
+
+  return Math.round(ratio * 10);
 }
 
 function compTimeToValue(ms: number) {
@@ -1033,6 +1046,13 @@ export function valueToCompRatio(value: number) {
   if (value >= 4000) return 40;
 
   return Math.round(value) / 100;
+}
+
+// AX16/24: ratio×10 (max 20:1 = 200)
+export function valueToCompRatioAx16(value: number) {
+  if (value >= 200) return 20;
+
+  return Math.round(value) / 10;
 }
 
 export function valueToCompTime(value: number) {
@@ -2047,6 +2067,10 @@ export class Axios16Client {
     this.sendParam(chParam(channel, BASE.compRatio), compRatioToValue(ratio));
   }
 
+  setCompRatioAx16(channel: number, ratio: number | "inf") {
+    this.sendParam(chParam(channel, BASE.compRatio), compRatioToValueAx16(ratio));
+  }
+
   setCompAttack(channel: number, ms: number) {
     this.sendParam(chParam(channel, BASE.compAttack), compTimeToValue(ms));
   }
@@ -2069,6 +2093,16 @@ export class Axios16Client {
 
   setLpfFreq(channel: number, freqHz: number) {
     this.sendParam(chParam(channel, BASE.lpfFreq), frequencyToValue(freqHz));
+  }
+
+  // Envio RAW (fora da banda 20Hz–20kHz) — usado p/ mandar o sentinel de OFF do
+  // filtro, que frequencyToValue rejeita.
+  setHpfFreqRaw(channel: number, rawValue: number) {
+    this.sendParam(chParam(channel, BASE.hpfFreq), rawValue);
+  }
+
+  setLpfFreqRaw(channel: number, rawValue: number) {
+    this.sendParam(chParam(channel, BASE.lpfFreq), rawValue);
   }
 
   setHpfTypeSlope(channel: number, type: FilterType, slope: FilterSlope) {
@@ -2404,6 +2438,12 @@ export class Axios16Client {
     this.sendParam(auxParams.comp.ratio, compRatioToValue(ratio));
   }
 
+  setAuxCompRatioAx16(auxNumber: number, ratio: number | "inf") {
+    const auxParams = getAuxProcessorParams(auxNumber);
+
+    this.sendParam(auxParams.comp.ratio, compRatioToValueAx16(ratio));
+  }
+
   setAuxCompAttack(auxNumber: number, ms: number) {
     const auxParams = getAuxProcessorParams(auxNumber);
 
@@ -2444,6 +2484,14 @@ export class Axios16Client {
     const auxParams = getAuxProcessorParams(auxNumber);
 
     this.sendParam(auxParams.filters.lpfFreq, frequencyToValue(freqHz));
+  }
+
+  setAuxHpfFreqRaw(auxNumber: number, rawValue: number) {
+    this.sendParam(getAuxProcessorParams(auxNumber).filters.hpfFreq, rawValue);
+  }
+
+  setAuxLpfFreqRaw(auxNumber: number, rawValue: number) {
+    this.sendParam(getAuxProcessorParams(auxNumber).filters.lpfFreq, rawValue);
   }
 
   setAuxHpfTypeSlope(auxNumber: number, value: number) {
@@ -2513,6 +2561,10 @@ export class Axios16Client {
     this.sendParam(getMasterSideParams(side).compRatio, compRatioToValue(ratio));
   }
 
+  setMasterCompRatioAx16(side: MasterSide, ratio: number | "inf") {
+    this.sendParam(getMasterSideParams(side).compRatio, compRatioToValueAx16(ratio));
+  }
+
   setMasterCompAttack(side: MasterSide, ms: number) {
     this.sendParam(getMasterSideParams(side).compAttack, compTimeToValue(ms));
   }
@@ -2535,6 +2587,14 @@ export class Axios16Client {
 
   setMasterLpfFreq(side: MasterSide, freqHz: number) {
     this.sendParam(getMasterSideParams(side).lpfFreq, frequencyToValue(freqHz));
+  }
+
+  setMasterHpfFreqRaw(side: MasterSide, rawValue: number) {
+    this.sendParam(getMasterSideParams(side).hpfFreq, rawValue);
+  }
+
+  setMasterLpfFreqRaw(side: MasterSide, rawValue: number) {
+    this.sendParam(getMasterSideParams(side).lpfFreq, rawValue);
   }
 
   setMasterHpfTypeSlopeValue(side: MasterSide, value: number) {
