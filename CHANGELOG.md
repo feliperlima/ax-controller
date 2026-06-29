@@ -3,6 +3,15 @@
 Mudanças notáveis do AX Control. Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/);
 versionamento [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.3.4] - 2026-06-29
+
+### Corrigido
+- **Estabilidade da conexão com a mesa**: o app não deixa mais conexões "penduradas" ao reconectar.
+  Com o tempo, conexões antigas não fechadas (somadas a vários aparelhos) podiam ocupar todos os
+  espaços de conexão da mesa e fazê-la **parar de aceitar qualquer cliente** até reiniciar — o áudio
+  continuava, mas o controle não conectava. Agora cada aparelho mantém **uma única conexão limpa**,
+  sempre fechada antes de reconectar, com reconexão mais suave e detecção de conexão travada.
+
 ## [1.3.3] - 2026-06-28
 
 ### Adicionado

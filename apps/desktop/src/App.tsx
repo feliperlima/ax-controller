@@ -931,7 +931,7 @@ const DEFAULT_FX_COLOR_ID = 7;
 const MASTER_FIXED_COLOR_ID = 10;
 const DEFAULT_MIXER_IP = "";
 const SPLASH_MIN_DURATION_MS = 2000;
-const APP_VERSION = "1.3.3";
+const APP_VERSION = "1.3.4";
 const INSTALLATION_ID_STORAGE_KEY = "ax_installation_id";
 const LICENSE_VALIDATED_STORAGE_KEY = "ax_license_validated";
 const DCA_NAMES_STORAGE_KEY_BASE = "ax_dca_group_names";
@@ -2935,6 +2935,7 @@ function App() {
   const localParamWriteUnsubscribeRef = useRef<(() => void) | null>(null);
   const remoteParamReadUnsubscribeRef = useRef<(() => void) | null>(null);
   const fastControlSyncInFlightRef = useRef(false);
+  const globalControlSyncInFlightRef = useRef(false);
   const usbInputToUsbPatchMapRef = useRef<Map<number, number>>(new Map());
   const usbReturnPatchMapRef = useRef<Map<number, number>>(new Map());
   const usbReturnOutputPatchMapRef = useRef<Map<number, number>>(new Map());
@@ -8825,9 +8826,17 @@ function App() {
     if (appStage === "demo") return;
 
     const run = () => {
-      void syncGlobalControlStates().catch(() => {
-        // Ignore transient read failures in periodic control polling.
-      });
+      // Guard in-flight: o sync global lê ~1000 params; se a mesa está lenta, não empilhar um
+      // novo ciclo sobre o anterior (evita backlog crescente de leituras no socket).
+      if (globalControlSyncInFlightRef.current) return;
+      globalControlSyncInFlightRef.current = true;
+      void syncGlobalControlStates()
+        .catch(() => {
+          // Ignore transient read failures in periodic control polling.
+        })
+        .finally(() => {
+          globalControlSyncInFlightRef.current = false;
+        });
     };
 
     run();
@@ -9714,14 +9723,25 @@ function App() {
 
     let cancelled = false;
     let meterPollCycle = 0;
+    let prevPollAt = Date.now(); // p/ detectar gap de suspensão (background) e não dar falso half-open
     const METER_POLL_INTERVAL_MS = isConstrainedDevice ? 82 : 70;
     const METER_POLL_INTERVAL_DRAGGING_MS = isConstrainedDevice ? 125 : 110;
     const METER_READ_TIMEOUT_MS = isConstrainedDevice ? 170 : 140;
     const METER_MIN_RESCHEDULE_MS = 16;
+    // Half-open: estamos pollando (mandando reads a cada ~70-150ms) mas a mesa não envia NENHUM
+    // frame há tanto tempo → socket morto (a mesa caiu mas o socket continua "aberto" do nosso
+    // lado, então o "close" nunca dispara). Limiar ALTO (6s) p/ nunca derrubar conexão boa ao
+    // vivo por um blip — em conexão saudável esse valor fica < ~300ms enquanto há polling.
+    const HALF_OPEN_RX_SILENCE_MS = 6000;
 
     async function poll() {
       if (cancelled) return;
       const startedAt = Date.now();
+      // Gap desde a iteração anterior. Em loop saudável é ~70-150ms; um gap grande significa que
+      // o loop ficou suspenso (app em background/throttle) — nesse caso NÃO avaliamos half-open
+      // (lastRxAt cresceu por suspensão, não por mesa morta) para não reconectar à toa ao voltar.
+      const sincePrevPoll = startedAt - prevPollAt;
+      prevPollAt = startedAt;
 
       const client = clientRef.current;
 
@@ -9755,6 +9775,18 @@ function App() {
         } finally {
           meterBusyRef.current = false;
         }
+      }
+
+      // Half-open: pollando de forma contínua (sem gap de suspensão) mas sem nenhum frame da
+      // mesa há muito tempo → socket morto. Força UMA reconexão limpa. Ver constante acima.
+      if (
+        !cancelled &&
+        client &&
+        sincePrevPoll < 3000 &&
+        client.msSinceLastRx() > HALF_OPEN_RX_SILENCE_MS
+      ) {
+        handleHalfOpenReconnect();
+        return;
       }
 
       if (!cancelled) {
@@ -9793,6 +9825,38 @@ function App() {
 
     meterBusyRef.current = false;
     channelMeterLastUpdateAtRef.current = [];
+  }
+
+  // Fecha e descarta a conexão atual (se houver) ANTES de abrir outra. Garante a invariante de
+  // NO MÁXIMO UMA conexão viva por instância e que o socket antigo seja efetivamente fechado na
+  // mesa (não vira "órfão" que consome um slot do servidor WebSocket da mesa até reiniciar).
+  // Age SÓ no socket DESTA instância (clientRef.current) — nunca afeta conexões de OUTROS
+  // dispositivos conectados à mesma mesa.
+  function teardownMixerClient() {
+    stopMeterPolling();
+    clearScheduledSendWrites();
+    clearLocalParamWriteTracking();
+    clientRef.current?.disconnect();
+    clientRef.current = null;
+  }
+
+  // Socket half-open detectado (mesa parou de responder mas o "close" não disparou): fecha o
+  // socket morto de forma limpa e dispara UMA reconexão (tentativas frescas). Mesmo caminho de
+  // uma queda inesperada, só que detectada por silêncio de RX em vez de evento de close.
+  function handleHalfOpenReconnect() {
+    if (import.meta.env.DEV) {
+      console.debug("[AX] socket half-open (mesa sem resposta) — forçando reconexão limpa");
+    }
+    rawParamStoreRef.current.clear();
+    teardownMixerClient();
+    setIsConnected(false);
+    if (reconnectParamsRef.current) {
+      reconnectAttemptsRef.current = 0;
+      setStatus("Reconectando...");
+      scheduleAutoReconnect(0);
+    } else {
+      setStatus("Conexao com a mesa perdida.");
+    }
   }
 
   async function connectToMixer(
@@ -9884,6 +9948,10 @@ function App() {
         }
       }
 
+      // Fecha qualquer conexão anterior DESTA instância antes de abrir a nova — evita deixar
+      // socket órfão na mesa (que esgotaria os slots do servidor WS e travaria a mesa p/ todos).
+      teardownMixerClient();
+
       const client = new Axios16Client(normalizedIp, 8088, selectedProfile, {
         channelCount: targetChannelCount,
       });
@@ -9898,11 +9966,10 @@ function App() {
         if (import.meta.env.DEV) {
           console.debug(`[AX] unexpected disconnect from: ${normalizedIp}`);
         }
-        stopMeterPolling();
-        clearScheduledSendWrites();
-        clearLocalParamWriteTracking();
         rawParamStoreRef.current.clear();
-        clientRef.current = null;
+        // Fecha de fato o cliente que caiu (remove listeners + close do socket) e zera clientRef
+        // — evita deixar o socket pendurado na mesa antes da reconexão.
+        teardownMixerClient();
         setIsConnected(false);
 
         if (reconnectParamsRef.current) {
@@ -11073,12 +11140,7 @@ function App() {
     reconnectParamsRef.current = null;
     reconnectAttemptsRef.current = 0;
 
-    stopMeterPolling();
-    clearScheduledSendWrites();
-    clearLocalParamWriteTracking();
-
-    clientRef.current?.disconnect();
-    clientRef.current = null;
+    teardownMixerClient();
     setIsConnected(false);
     setConnectionError(null);
     setStatus("Desconectado");
@@ -11096,12 +11158,7 @@ function App() {
   }
 
   function handleLogout() {
-    stopMeterPolling();
-    clearScheduledSendWrites();
-    clearLocalParamWriteTracking();
-
-    clientRef.current?.disconnect();
-    clientRef.current = null;
+    teardownMixerClient();
 
     secureStore.remove(LICENSE_KEY_STORAGE_KEY);
     secureStore.remove(LICENSE_VALIDATED_STORAGE_KEY);

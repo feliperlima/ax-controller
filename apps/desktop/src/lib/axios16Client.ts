@@ -1245,6 +1245,10 @@ export class Axios16Client {
   private rawMessageListeners = new Set<(buffer: ArrayBuffer) => void>();
   private capabilities: ProfileCapabilities;
   private globalRxHandler: MixerSocketListener<"message"> | null = null;
+  private closeHandler: MixerSocketListener<"close"> | null = null;
+  // Timestamp do último frame RX recebido da mesa (qualquer frame). Usado para detectar
+  // socket "half-open" (a mesa morreu mas o socket continua "aberto" do nosso lado).
+  private lastRxAt = 0;
 
   constructor(
     private ip: string,
@@ -1320,6 +1324,7 @@ export class Axios16Client {
 
   private createGlobalRxHandler(): MixerSocketListener<"message"> {
     return (event: MixerMessageEvent) => {
+      this.lastRxAt = Date.now(); // qualquer frame conta como "mesa viva" (anti half-open)
       // Frames brutos (ex.: op0x71 do media player) — entregue a quem quiser inspecionar
       // o pacote inteiro, antes de qualquer decode de pares param/valor.
       if (this.rawMessageListeners.size > 0) {
@@ -1371,11 +1376,12 @@ export class Axios16Client {
 
       const socket = new TauriMixerSocket(ws);
       this.ws = socket;
+      this.lastRxAt = Date.now();
 
       this.globalRxHandler = this.createGlobalRxHandler();
       socket.addEventListener("message", this.globalRxHandler);
 
-      socket.addEventListener("close", (event) => {
+      this.closeHandler = (event) => {
         console.log("WebSocket fechado:", {
           code: event.code,
           reason: event.reason,
@@ -1388,7 +1394,8 @@ export class Axios16Client {
             this.onDisconnectCallback();
           }
         }
-      });
+      };
+      socket.addEventListener("close", this.closeHandler);
 
       return;
     } catch (error) {
@@ -1428,6 +1435,7 @@ export class Axios16Client {
       rawSocket.onopen = () => {
         if (settled) return;
         settled = true;
+        this.lastRxAt = Date.now();
         window.clearTimeout(connectTimeout);
         resolve();
       };
@@ -1475,13 +1483,31 @@ export class Axios16Client {
   }
 
   disconnect() {
-    if (this.globalRxHandler && this.ws) {
-      this.ws.removeEventListener("message", this.globalRxHandler);
-      this.globalRxHandler = null;
+    // Fechamento DELIBERADO: zera o callback ANTES de fechar para que o "close" do socket
+    // não dispare onDisconnectCallback (que agendaria reconexão). Isso evita reconnect-storm
+    // ao trocar/recriar conexão. Remove TODOS os listeners (message + close) e fecha o socket
+    // mesmo em CONNECTING/half-open. Idempotente (seguro chamar mais de uma vez).
+    this.onDisconnectCallback = null;
+    const socket = this.ws;
+    if (socket) {
+      if (this.globalRxHandler) socket.removeEventListener("message", this.globalRxHandler);
+      if (this.closeHandler) socket.removeEventListener("close", this.closeHandler);
+      try {
+        socket.close();
+      } catch {
+        /* best-effort: socket pode estar em estado que rejeita close() */
+      }
     }
-    this.ws?.close();
+    this.globalRxHandler = null;
+    this.closeHandler = null;
     this.ws = null;
     this.readQueue = Promise.resolve();
+  }
+
+  /** ms desde o último frame RX da mesa (qualquer frame). Valor alto = possível socket half-open
+   *  (a mesa parou de responder mas o socket continua "aberto" do nosso lado). 0 = nunca recebeu. */
+  msSinceLastRx(): number {
+    return this.lastRxAt === 0 ? 0 : Date.now() - this.lastRxAt;
   }
 
   sendParam(param: number, value: number) {
